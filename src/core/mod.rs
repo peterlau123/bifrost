@@ -3,3 +3,4 @@ pub mod models;
 pub mod error;
 pub mod protocol;
 pub mod lock;
+pub mod config;

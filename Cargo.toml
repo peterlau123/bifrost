@@ -19,6 +19,7 @@ fs2 = "0.4"
 # CLI
 clap = { version = "4.0", features = ["derive"] }
 serde_yaml = "0.9"
+humantime = "2.1"
 
 # Optional SQLite
 rusqlite = { version = "0.28", optional = true }
