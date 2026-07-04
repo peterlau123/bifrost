@@ -1,0 +1,38 @@
+[Unit]
+Description=Bifrost - Offline Machine Command Execution Daemon
+Documentation=https://github.com/your-org/bifrost
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/bifrost
+ExecStart=/usr/local/bin/bifrost daemon --config /etc/bifrost/daemon.yaml --systemd
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment="RUST_LOG=info"
+Environment="BIFROST_DATA_DIR=/var/lib/bifrost"
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+TasksMax=100
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/bifrost
+
+# Health check
+ExecStartPost=/usr/local/bin/bifrost-health-check.sh startup
+ExecStopPost=/usr/local/bin/bifrost-health-check.sh shutdown
+
+[Install]
+WantedBy=multi-user.target
