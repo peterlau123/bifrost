@@ -45,15 +45,15 @@ impl FileLock {
         Ok(lock)
     }
 
-    /// Acquire exclusive lock (for writing)
-    pub fn exclusive(&self) -> Result<()> {
+    /// Acquire exclusive lock (for writing) - instance method
+    pub fn lock_exclusive(&self) -> Result<()> {
         self.file.lock_exclusive()
             .map_err(BifrostError::LockError)?;
         Ok(())
     }
 
-    /// Acquire shared lock (for reading)
-    pub fn shared(&self) -> Result<()> {
+    /// Acquire shared lock (for reading) - instance method
+    pub fn lock_shared(&self) -> Result<()> {
         self.file.lock_shared()
             .map_err(BifrostError::LockError)?;
         Ok(())
@@ -92,7 +92,7 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     let lock = FileLock::new(path)
         .map_err(BifrostError::IoError)?;
 
-    lock.exclusive()?;
+    lock.lock_exclusive()?;
 
     // Use a temporary file for atomic write
     let temp_path = path.with_extension("tmp");
@@ -113,7 +113,7 @@ pub fn atomic_read(path: &Path) -> Result<Vec<u8>> {
     let lock = FileLock::new(path)
         .map_err(BifrostError::IoError)?;
 
-    lock.shared()?;
+    lock.lock_shared()?;
 
     let content = std::fs::read(path)
         .map_err(BifrostError::IoError)?;
@@ -134,7 +134,7 @@ mod tests {
         let lock_path = temp_dir.path().join("test.lock");
 
         let lock = FileLock::new(&lock_path).unwrap();
-        assert!(lock.exclusive().is_ok());
+        assert!(lock.lock_exclusive().is_ok());
         assert!(lock.unlock().is_ok());
     }
 
@@ -144,7 +144,7 @@ mod tests {
         let lock_path = temp_dir.path().join("test_shared.lock");
 
         let lock = FileLock::new(&lock_path).unwrap();
-        assert!(lock.shared().is_ok());
+        assert!(lock.lock_shared().is_ok());
         assert!(lock.unlock().is_ok());
     }
 
