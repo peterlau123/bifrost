@@ -18,18 +18,19 @@ pub struct Protocol {
 
 impl Protocol {
     /// Create a new protocol instance with the given shared storage path
-    pub fn new(shared_storage: PathBuf) -> Self {
+    pub fn new(shared_storage: PathBuf) -> Result<Self> {
         let commands_dir = shared_storage.join("commands");
 
-        // Ensure commands directory exists
+        // Ensure commands directory exists (propagate error if fails)
         if !commands_dir.exists() {
-            fs::create_dir_all(&commands_dir).ok();
+            fs::create_dir_all(&commands_dir)
+                .map_err(|e| BifrostError::IoError(e))?;
         }
 
-        Self {
+        Ok(Self {
             shared_storage,
             commands_dir,
-        }
+        })
     }
 
     /// Submit a task to the commands directory
@@ -169,7 +170,7 @@ mod tests {
     #[test]
     fn test_protocol_new() {
         let temp_dir = TempDir::new().unwrap();
-        let protocol = Protocol::new(temp_dir.path().to_path_buf());
+        let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
         assert!(protocol.commands_dir().exists());
     }
@@ -177,7 +178,7 @@ mod tests {
     #[test]
     fn test_submit_and_read_task() {
         let temp_dir = TempDir::new().unwrap();
-        let protocol = Protocol::new(temp_dir.path().to_path_buf());
+        let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
         let task = create_test_task();
         protocol.submit_task(&task).unwrap();
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn test_list_tasks() {
         let temp_dir = TempDir::new().unwrap();
-        let protocol = Protocol::new(temp_dir.path().to_path_buf());
+        let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
         let task1 = create_test_task();
         let task2 = create_test_task();
@@ -205,7 +206,7 @@ mod tests {
     #[test]
     fn test_remove_task() {
         let temp_dir = TempDir::new().unwrap();
-        let protocol = Protocol::new(temp_dir.path().to_path_buf());
+        let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
         let task = create_test_task();
         protocol.submit_task(&task).unwrap();

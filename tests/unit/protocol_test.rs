@@ -10,7 +10,7 @@ use uuid::Uuid;
 #[test]
 fn test_submit_task() {
     let temp_dir = TempDir::new().unwrap();
-    let protocol = Protocol::new(temp_dir.path().to_path_buf());
+    let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
     let task = Task {
         task_id: Uuid::new_v4(),
@@ -48,7 +48,7 @@ fn test_submit_task() {
 #[test]
 fn test_read_task() {
     let temp_dir = TempDir::new().unwrap();
-    let protocol = Protocol::new(temp_dir.path().to_path_buf());
+    let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
     let task = Task {
         task_id: Uuid::new_v4(),
@@ -79,7 +79,7 @@ fn test_read_task() {
 #[test]
 fn test_read_task_not_found() {
     let temp_dir = TempDir::new().unwrap();
-    let protocol = Protocol::new(temp_dir.path().to_path_buf());
+    let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
     let non_existent_id = Uuid::new_v4();
     let result = protocol.read_task(&non_existent_id);
@@ -90,7 +90,7 @@ fn test_read_task_not_found() {
 #[test]
 fn test_protocol_creates_commands_dir() {
     let temp_dir = TempDir::new().unwrap();
-    let protocol = Protocol::new(temp_dir.path().to_path_buf());
+    let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
     // Protocol should create commands directory on initialization
     assert!(temp_dir.path().join("commands").exists());

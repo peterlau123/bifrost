@@ -88,38 +88,44 @@ impl Drop for FileLock {
 }
 
 /// Helper function for atomic write with exclusive lock
+/// Uses separate .lock file to avoid inode race condition during rename
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    let lock = FileLock::new(path)
-        .map_err(BifrostError::IoError)?;
+    // Lock a separate .lock file (not the target file) to avoid inode race
+    let lock_path = path.with_extension("lock");
+    let lock = FileLock::exclusive(&lock_path)?;
 
-    lock.lock_exclusive()?;
+    // Use unique temp file to avoid collisions
+    let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
 
-    // Use a temporary file for atomic write
-    let temp_path = path.with_extension("tmp");
+    // Write to temp file
     std::fs::write(&temp_path, content)
         .map_err(BifrostError::IoError)?;
 
     // Rename is atomic on most filesystems
-    std::fs::rename(&temp_path, path)
-        .map_err(BifrostError::IoError)?;
+    let rename_result = std::fs::rename(&temp_path, path);
 
-    lock.unlock()?;
+    // Cleanup temp file if rename fails
+    if rename_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);  // Best-effort cleanup
+    }
 
+    rename_result.map_err(BifrostError::IoError)?;
+
+    // Lock released automatically via Drop
     Ok(())
 }
 
 /// Helper function for atomic read with shared lock
+/// Uses separate .lock file for consistency with atomic_write
 pub fn atomic_read(path: &Path) -> Result<Vec<u8>> {
-    let lock = FileLock::new(path)
-        .map_err(BifrostError::IoError)?;
-
-    lock.lock_shared()?;
+    // Lock separate .lock file for consistency
+    let lock_path = path.with_extension("lock");
+    let lock = FileLock::shared(&lock_path)?;
 
     let content = std::fs::read(path)
         .map_err(BifrostError::IoError)?;
 
-    lock.unlock()?;
-
+    // Lock released automatically via Drop
     Ok(content)
 }
 
