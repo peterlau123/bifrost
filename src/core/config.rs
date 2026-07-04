@@ -40,12 +40,12 @@ where
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientConfig {
     /// Shared storage path for task files
-    pub shared_storage: String,
+    pub shared_storage: PathBuf,
 
     /// Optional database file for local state
-    pub database: Option<String>,
+    pub database: Option<PathBuf>,
 
-    /// Poll interval for checking new tasks
+    /// Poll interval for checking new tasks (minimum 100ms)
     #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub poll_interval: Duration,
 
@@ -58,9 +58,9 @@ pub struct ClientConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DaemonConfig {
     /// Shared storage path for task files
-    pub shared_storage: String,
+    pub shared_storage: PathBuf,
 
-    /// Poll interval for checking new tasks
+    /// Poll interval for checking new tasks (minimum 100ms)
     #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub poll_interval: Duration,
 
@@ -68,25 +68,33 @@ pub struct DaemonConfig {
     #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub task_timeout: Duration,
 
-    /// Maximum retry attempts for failed tasks
+    /// Maximum retry attempts for failed tasks (range: 0-10)
     pub max_retries: u8,
 
     /// Heartbeat interval for task monitoring
     #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
     pub heartbeat_interval: Duration,
 
-    /// Maximum concurrent tasks
+    /// Maximum concurrent tasks (range: 1-100)
     pub max_concurrent: usize,
 
     /// Working directory for task execution
-    pub working_dir: String,
+    pub working_dir: PathBuf,
 }
 
 impl ClientConfig {
-    /// Load client config from YAML file
+    /// Load client config from YAML file with validation
     pub fn from_yaml(path: PathBuf) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
         let config: ClientConfig = serde_yaml::from_str(&content)?;
+
+        // Validation: poll_interval minimum 100ms
+        if config.poll_interval < Duration::from_millis(100) {
+            return Err(ConfigError::DurationError(
+                "poll_interval must be at least 100ms".to_string()
+            ));
+        }
+
         Ok(config)
     }
 
@@ -99,10 +107,32 @@ impl ClientConfig {
 }
 
 impl DaemonConfig {
-    /// Load daemon config from YAML file
+    /// Load daemon config from YAML file with validation
     pub fn from_yaml(path: PathBuf) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
         let config: DaemonConfig = serde_yaml::from_str(&content)?;
+
+        // Validation: poll_interval minimum 100ms
+        if config.poll_interval < Duration::from_millis(100) {
+            return Err(ConfigError::DurationError(
+                "poll_interval must be at least 100ms".to_string()
+            ));
+        }
+
+        // Validation: max_retries range 0-10
+        if config.max_retries > 10 {
+            return Err(ConfigError::DurationError(  // Reuse error type
+                "max_retries must be between 0 and 10".to_string()
+            ));
+        }
+
+        // Validation: max_concurrent range 1-100
+        if config.max_concurrent < 1 || config.max_concurrent > 100 {
+            return Err(ConfigError::DurationError(  // Reuse error type
+                "max_concurrent must be between 1 and 100".to_string()
+            ));
+        }
+
         Ok(config)
     }
 
