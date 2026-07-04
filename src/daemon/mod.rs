@@ -2,6 +2,7 @@
 pub mod watcher;
 pub mod executor;
 pub mod logger;
+pub mod heartbeat;
 
 use crate::core::config::DaemonConfig;
 use crate::core::protocol::Protocol;

@@ -1,0 +1,81 @@
+# Pytest command template for bifrost
+# This template defines how pytest commands are constructed and executed
+
+template:
+  name: pytest
+  description: "Execute pytest tests with JSON report output"
+  command_prefix: "pytest"
+
+# Default pytest flags
+default_flags:
+  - "--json-report"
+  - "--json-report-file=report.json"
+  - "-v"
+
+# Output artifacts
+artifacts:
+  - name: report.json
+    description: "JSON test report with detailed results"
+    required: true
+
+  - name: .coverage
+    description: "Coverage data file (if coverage enabled)"
+    required: false
+
+# Environment variables
+env_defaults:
+  PYTEST_JSON_REPORT_FILE: "report.json"
+  PYTEST_ADDOPTS: "-v"
+
+# Success criteria
+success:
+  exit_code: 0
+  report_check:
+    field: "summary.total"
+    condition: "summary.passed == summary.total"
+
+# Timeout defaults
+timeout:
+  default: 300
+  max: 1800
+
+# Retry configuration
+retry:
+  max_count: 3
+  retry_on:
+    - exit_code: 1  # Test failures
+    - timeout: true  # Timeout
+
+# Working directory handling
+working_dir:
+  default: "${PROJECT_ROOT}"
+  resolve_relative: true
+
+# Output parsing
+output_parser:
+  format: "json"
+  file: "report.json"
+  extract_fields:
+    - "summary.passed"
+    - "summary.failed"
+    - "summary.total"
+    - "summary.duration"
+    - "tests"
+
+# Example usage
+examples:
+  - description: "Run all tests in tests/ directory"
+    command: "pytest tests/"
+    expected_output:
+      - "report.json"
+
+  - description: "Run specific test file"
+    command: "pytest tests/unit/test_example.py"
+    expected_output:
+      - "report.json"
+
+  - description: "Run tests with coverage"
+    command: "pytest tests/ --cov=src"
+    expected_output:
+      - "report.json"
+      - ".coverage"

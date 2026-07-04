@@ -58,6 +58,25 @@ enum ClientCommand {
         working_dir: Option<PathBuf>,
     },
 
+    /// Run pytest tests with automatic JSON report
+    Pytest {
+        /// Test path to run
+        #[arg(short, long)]
+        path: String,
+
+        /// Task priority (0-255)
+        #[arg(short = 'p', long, default_value = "5")]
+        priority: u8,
+
+        /// Timeout in seconds
+        #[arg(short, long, default_value = "600")]
+        timeout: u64,
+
+        /// Working directory
+        #[arg(short = 'w', long)]
+        working_dir: Option<PathBuf>,
+    },
+
     /// Check task status
     Status {
         /// Task ID to check
@@ -88,6 +107,14 @@ fn main() {
 
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
+    use bifrost::core::protocol::Protocol;
+    use bifrost::core::models::TaskType;
+    use bifrost::client::{submit, status, results, pytest};
+    use uuid::Uuid;
+
+    // Default shared storage path
+    let shared_storage = PathBuf::from("/tmp/bifrost");
+
     match command {
         ClientCommand::Submit {
             command: cmd,
@@ -96,29 +123,94 @@ fn handle_client_mode(command: ClientCommand) {
             timeout,
             working_dir,
         } => {
-            // Placeholder: Client submit functionality
-            println!("Submitting task:");
-            println!("  Command: {}", cmd);
-            println!("  Type: {}", task_type);
-            println!("  Priority: {}", priority);
-            println!("  Timeout: {}s", timeout);
-            if let Some(wd) = working_dir {
-                println!("  Working dir: {}", wd.display());
+            let protocol = Protocol::new(shared_storage.clone())
+                .expect("Failed to create protocol");
+
+            let parsed_type = match task_type.as_str() {
+                "pytest" => TaskType::Pytest,
+                "shell" => TaskType::Shell,
+                "custom" => TaskType::Custom,
+                _ => TaskType::Shell,
+            };
+
+            match submit::submit_task(&protocol, cmd, parsed_type, priority, timeout, working_dir) {
+                Ok(task_id) => {
+                    println!("Task submitted successfully");
+                    println!("  Task ID: {}", task_id);
+                    println!("  Status: Pending");
+                }
+                Err(e) => {
+                    eprintln!("Failed to submit task: {}", e);
+                }
             }
-            println!("  Status: Not implemented yet (placeholder)");
+        }
+
+        ClientCommand::Pytest {
+            path,
+            priority,
+            timeout,
+            working_dir,
+        } => {
+            let protocol = Protocol::new(shared_storage.clone())
+                .expect("Failed to create protocol");
+
+            match submit::submit_pytest_task(&protocol, path, priority, timeout, working_dir) {
+                Ok(task_id) => {
+                    println!("Pytest task submitted successfully");
+                    println!("  Task ID: {}", task_id);
+                    println!("  Command: {}", pytest::build_pytest_command(&path));
+                    println!("  Artifact: report.json");
+                }
+                Err(e) => {
+                    eprintln!("Failed to submit pytest task: {}", e);
+                }
+            }
         }
 
         ClientCommand::Status { task_id } => {
-            // Placeholder: Client status check
-            println!("Checking status for task: {}", task_id);
-            println!("  Status: Not implemented yet (placeholder)");
+            let protocol = Protocol::new(shared_storage.clone())
+                .expect("Failed to create protocol");
+
+            let parsed_id = Uuid::parse_str(&task_id)
+                .expect("Invalid task ID format");
+
+            match status::query_status(&protocol, parsed_id) {
+                Ok(status_resp) => {
+                    println!("Task status for: {}", task_id);
+                    println!("  Status: {}", status_resp.status);
+                    if let Some(msg) = status_resp.message {
+                        println!("  Message: {}", msg);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to query status: {}", e);
+                }
+            }
         }
 
         ClientCommand::Results { task_id, format } => {
-            // Placeholder: Client results retrieval
-            println!("Retrieving results for task: {}", task_id);
-            println!("  Format: {}", format);
-            println!("  Status: Not implemented yet (placeholder)");
+            let protocol = Protocol::new(shared_storage.clone())
+                .expect("Failed to create protocol");
+
+            let parsed_id = Uuid::parse_str(&task_id)
+                .expect("Invalid task ID format");
+
+            let result_format = match format.as_str() {
+                "json" => results::ResultFormat::Json,
+                "yaml" => results::ResultFormat::Yaml,
+                "text" => results::ResultFormat::Text,
+                _ => results::ResultFormat::Json,
+            };
+
+            match results::get_result_formatted(&protocol, parsed_id, result_format) {
+                Ok(result_text) => {
+                    println!("Results for task: {}", task_id);
+                    println!("{}", result_text);
+                }
+                Err(e) => {
+                    eprintln!("Failed to retrieve results: {}", e);
+                }
+            }
         }
     }
 }
