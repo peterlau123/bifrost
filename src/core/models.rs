@@ -24,7 +24,7 @@ pub enum TaskStatus {
     /// Task is currently being executed
     Running,
     /// Task completed successfully
-    Success,
+    Completed,
     /// Task failed
     Failed,
     /// Task was cancelled
@@ -163,7 +163,7 @@ impl Task {
 impl TaskResult {
     /// Check if the task was successful
     pub fn is_success(&self) -> bool {
-        self.status == TaskStatus::Success
+        self.status == TaskStatus::Completed
     }
 
     /// Get execution duration in seconds
@@ -202,7 +202,7 @@ mod tests {
 
         let result = TaskResult {
             task_id: Uuid::new_v4(),
-            status: TaskStatus::Success,
+            status: TaskStatus::Completed,
             output: TaskOutput {
                 stdout: String::new(),
                 stderr: String::new(),
