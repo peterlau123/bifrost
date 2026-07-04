@@ -1,0 +1,35 @@
+[package]
+name = "bifrost"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+
+# File system
+notify = "5.0"
+fs2 = "0.4"
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Optional SQLite
+rusqlite = { version = "0.28", optional = true }
+
+[features]
+default = ["sqlite"]
+sqlite = ["rusqlite"]
+
+[[bin]]
+name = "bifrost"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.0"

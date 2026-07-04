@@ -1,0 +1,8 @@
+/target/
+/.superpowers/
+*.db
+*.log
+logs/
+commands/
+results/
+status/
