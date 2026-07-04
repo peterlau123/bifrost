@@ -13,7 +13,7 @@ pub struct FileLock {
 }
 
 impl FileLock {
-    /// Create a new file handle for locking
+    /// Create a new file handle for locking (doesn't acquire lock yet)
     pub fn new(path: &Path) -> io::Result<Self> {
         let file = File::options()
             .read(true)
@@ -25,6 +25,24 @@ impl FileLock {
             file,
             path: path.to_path_buf(),
         })
+    }
+
+    /// Factory method: Create file handle and acquire exclusive lock in one step
+    pub fn exclusive(path: &Path) -> Result<Self> {
+        let lock = Self::new(path)
+            .map_err(BifrostError::IoError)?;
+        lock.file.lock_exclusive()
+            .map_err(BifrostError::LockError)?;
+        Ok(lock)
+    }
+
+    /// Factory method: Create file handle and acquire shared lock in one step
+    pub fn shared(path: &Path) -> Result<Self> {
+        let lock = Self::new(path)
+            .map_err(BifrostError::IoError)?;
+        lock.file.lock_shared()
+            .map_err(BifrostError::LockError)?;
+        Ok(lock)
     }
 
     /// Acquire exclusive lock (for writing)
