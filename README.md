@@ -2,6 +2,51 @@
 
 Bifrost is a Rust-based framework for executing commands on offline/air-gapped machines through shared storage communication. It enables networked client machines to submit tasks and offline daemon machines to execute them, with results synchronized via portable storage.
 
+## 目录
+
+- [Overview](#overview)
+  - [Problem Solved](#problem-solved)
+  - [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Workflow](#workflow)
+- [Directory Structure](#directory-structure)
+- [Environment Requirements](#environment-requirements)
+  - [Client Machine (Online)](#client-machine-online)
+  - [Daemon Machine (Offline)](#daemon-machine-offline)
+  - [Container Execution (Optional)](#container-execution-optional)
+- [Installation](#installation)
+  - [Build](#build)
+  - [Deploy Client (Online Machine)](#deploy-client-online-machine)
+  - [Deploy Daemon (Offline Machine)](#deploy-daemon-offline-machine)
+- [Configuration](#configuration)
+  - [Client Configuration](#client-configuration)
+  - [Daemon Configuration](#daemon-configuration)
+- [Usage](#usage)
+  - [Submit Tasks](#submit-tasks)
+  - [Check Status](#check-status)
+  - [Retrieve Results](#retrieve-results)
+  - [Read Artifacts](#read-artifacts)
+  - [Health Check](#health-check)
+  - [Daemon Operations](#daemon-operations)
+- [Pytest Integration](#pytest-integration)
+  - [Basic Usage](#basic-usage)
+  - [Pytest in Container (Offline Machine)](#pytest-in-container-offline-machine)
+  - [Pytest Prerequisites](#pytest-prerequisites-offline-machine)
+- [Task Types](#task-types)
+- [Task Priority](#task-priority)
+- [Security Features](#security-features)
+  - [Command Injection Prevention](#command-injection-prevention)
+  - [Path Traversal Protection](#path-traversal-protection)
+- [Development](#development)
+  - [Running Tests](#running-tests)
+  - [Project Structure](#project-structure)
+- [Documentation](#documentation)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+- [Status](#status)
+
+---
+
 ## Overview
 
 ### Problem Solved
