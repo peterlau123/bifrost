@@ -143,11 +143,21 @@ impl Executor {
         }
     }
 
-    /// Execute the actual command
+    /// Execute the actual command with safe parsing (no shell injection)
     async fn execute_command(&self, task: &Task) -> Result<TaskOutput, String> {
-        // Build command
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(&task.command);
+        // Parse command safely using shell-words to avoid shell injection
+        let args = shell_words::split(&task.command)
+            .map_err(|e| format!("Invalid command syntax: {}", e))?;
+
+        if args.is_empty() {
+            return Err("Empty command".to_string());
+        }
+
+        // Build command without shell interpolation
+        let mut cmd = Command::new(&args[0]);
+        if args.len() > 1 {
+            cmd.args(&args[1..]);
+        }
 
         // Set working directory
         cmd.current_dir(&task.working_dir);

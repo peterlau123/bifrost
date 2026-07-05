@@ -14,22 +14,37 @@ pub struct Protocol {
     shared_storage: PathBuf,
     /// Directory for task commands
     commands_dir: PathBuf,
+    /// Directory for task results
+    results_dir: PathBuf,
+    /// Directory for task status updates
+    status_dir: PathBuf,
+    /// Directory for task artifacts
+    artifacts_dir: PathBuf,
 }
 
 impl Protocol {
     /// Create a new protocol instance with the given shared storage path
+    /// Creates all required directories (commands, results, status, artifacts)
     pub fn new(shared_storage: PathBuf) -> Result<Self> {
         let commands_dir = shared_storage.join("commands");
+        let results_dir = shared_storage.join("results");
+        let status_dir = shared_storage.join("status");
+        let artifacts_dir = shared_storage.join("artifacts");
 
-        // Ensure commands directory exists (propagate error if fails)
-        if !commands_dir.exists() {
-            fs::create_dir_all(&commands_dir)
-                .map_err(|e| BifrostError::IoError(e))?;
+        // Ensure all directories exist
+        for dir in [&commands_dir, &results_dir, &status_dir, &artifacts_dir] {
+            if !dir.exists() {
+                fs::create_dir_all(dir)
+                    .map_err(BifrostError::IoError)?;
+            }
         }
 
         Ok(Self {
             shared_storage,
             commands_dir,
+            results_dir,
+            status_dir,
+            artifacts_dir,
         })
     }
 
@@ -136,6 +151,21 @@ impl Protocol {
     /// Get the commands directory path
     pub fn commands_dir(&self) -> &Path {
         &self.commands_dir
+    }
+
+    /// Get the results directory path
+    pub fn results_dir(&self) -> &Path {
+        &self.results_dir
+    }
+
+    /// Get the status directory path
+    pub fn status_dir(&self) -> &Path {
+        &self.status_dir
+    }
+
+    /// Get the artifacts directory path
+    pub fn artifacts_dir(&self) -> &Path {
+        &self.artifacts_dir
     }
 
     /// Get the shared storage root path

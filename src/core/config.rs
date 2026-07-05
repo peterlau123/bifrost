@@ -54,6 +54,17 @@ pub struct ClientConfig {
     pub heartbeat_timeout: Duration,
 }
 
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            shared_storage: PathBuf::from("/tmp/bifrost"),
+            database: None,
+            poll_interval: Duration::from_secs(2),
+            heartbeat_timeout: Duration::from_secs(180),
+        }
+    }
+}
+
 /// Daemon configuration
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DaemonConfig {
@@ -80,6 +91,20 @@ pub struct DaemonConfig {
 
     /// Working directory for task execution
     pub working_dir: PathBuf,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            shared_storage: PathBuf::from("/tmp/bifrost"),
+            poll_interval: Duration::from_millis(500),
+            task_timeout: Duration::from_secs(300),
+            max_retries: 3,
+            heartbeat_interval: Duration::from_secs(60),
+            max_concurrent: 10,
+            working_dir: PathBuf::from("/tmp/bifrost/work"),
+        }
+    }
 }
 
 impl ClientConfig {

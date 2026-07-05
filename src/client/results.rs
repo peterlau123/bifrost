@@ -97,8 +97,19 @@ fn format_result_text(result: &TaskResult) -> Result<String> {
     Ok(output)
 }
 
-/// Get artifact file path
+/// Get artifact file path (with path traversal protection)
 pub fn get_artifact_path(protocol: &Protocol, task_id: Uuid, artifact_name: &str) -> Result<PathBuf> {
+    // Validate artifact_name doesn't contain path separators, traversal sequences, or null bytes
+    if artifact_name.contains('/')
+        || artifact_name.contains('\\')
+        || artifact_name.contains("..")
+        || artifact_name.contains('\0')
+        || artifact_name.is_empty() {
+        return Err(BifrostError::ConfigInvalid(
+            "Invalid artifact name: contains path separators, traversal sequences, or null bytes".to_string()
+        ));
+    }
+
     let shared_storage = protocol.shared_storage();
     let artifacts_dir = shared_storage.join("artifacts");
 
@@ -109,6 +120,18 @@ pub fn get_artifact_path(protocol: &Protocol, task_id: Uuid, artifact_name: &str
             std::io::ErrorKind::NotFound,
             format!("Artifact not found: {}", artifact_name),
         )));
+    }
+
+    // Effective path traversal check: canonicalize both paths and verify containment
+    let canonical_artifact = artifact_path.canonicalize()
+        .map_err(BifrostError::IoError)?;
+    let canonical_dir = artifacts_dir.canonicalize()
+        .map_err(BifrostError::IoError)?;
+
+    if !canonical_artifact.starts_with(&canonical_dir) {
+        return Err(BifrostError::ConfigInvalid(
+            "Artifact path traversal detected".to_string()
+        ));
     }
 
     Ok(artifact_path)

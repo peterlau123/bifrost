@@ -46,6 +46,10 @@ pub enum BifrostError {
     #[error("YAML parse error: {0}")]
     YamlError(#[from] serde_yaml::Error),
 
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
     /// Queue operation failed
     #[error("Queue operation failed: {0}")]
     QueueError(String),
