@@ -3,6 +3,8 @@ pub mod watcher;
 pub mod executor;
 pub mod logger;
 pub mod heartbeat;
+pub mod gpu_scheduler;
+pub mod gpu_monitor;
 
 use crate::core::config::DaemonConfig;
 use crate::core::protocol::Protocol;
