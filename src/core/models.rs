@@ -172,6 +172,80 @@ impl TaskResult {
     }
 }
 
+/// Task item within a batch manifest
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TaskItem {
+    /// Task name identifier
+    pub task_name: String,
+    /// Task description
+    pub description: String,
+    /// Command to execute
+    pub command: String,
+    /// Type of task
+    pub task_type: TaskType,
+    /// Timeout in seconds
+    pub timeout: u64,
+    /// Priority (0-255, lower is higher priority)
+    pub priority: u8,
+    /// Working directory for command execution
+    pub working_dir: Option<PathBuf>,
+    /// Environment variables for the task
+    pub env_vars: HashMap<String, String>,
+    /// Expected artifact files
+    pub artifacts_expected: Vec<String>,
+    /// Additional metadata
+    pub metadata: HashMap<String, String>,
+}
+
+/// Batch task manifest - defines a batch of tasks to execute
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TaskManifest {
+    /// Batch name identifier
+    pub batch_name: String,
+    /// Batch description
+    pub description: String,
+    /// List of tasks in the batch
+    pub tasks: Vec<TaskItem>,
+}
+
+/// Batch status enumeration
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum BatchStatus {
+    /// Batch is being submitted
+    Submitting,
+    /// Batch is currently running
+    Running,
+    /// Batch completed successfully
+    Completed,
+    /// Batch failed
+    Failed,
+    /// Batch was cancelled
+    Cancelled,
+}
+
+/// Batch progress tracking
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BatchProgress {
+    /// Unique batch identifier
+    pub batch_id: Uuid,
+    /// Path to the manifest file
+    pub manifest_path: PathBuf,
+    /// Total number of tasks in batch
+    pub total_tasks: usize,
+    /// Current task index being processed
+    pub current_index: usize,
+    /// Submitted tasks: (index, task_id, task_name)
+    pub submitted_tasks: Vec<(usize, Uuid, String)>,
+    /// Completed tasks: (task_id, status, task_name)
+    pub completed_tasks: Vec<(Uuid, TaskStatus, String)>,
+    /// Current batch status
+    pub status: BatchStatus,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
