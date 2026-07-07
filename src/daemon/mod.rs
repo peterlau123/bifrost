@@ -5,10 +5,14 @@ pub mod logger;
 pub mod heartbeat;
 pub mod gpu_scheduler;
 pub mod gpu_monitor;
+pub mod gpu_task_processor;
 
 use crate::core::config::DaemonConfig;
 use crate::core::protocol::Protocol;
+use crate::daemon::gpu_task_processor::GpuTaskProcessor;
+use crate::daemon::executor::Executor;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Daemon runtime state
 pub struct Daemon {

@@ -7,6 +7,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 
+// GpuTaskProcessor integration
+use super::gpu_task_processor::GpuTaskProcessor;
+use crate::daemon::executor::Executor;
+
 /// File watcher for detecting new task files
 pub struct FileWatcher {
     watcher: RecommendedWatcher,
@@ -192,6 +196,51 @@ impl AsyncFileWatcher {
 
         rx
     }
+}
+
+/// Integration example: Run watcher with GpuTaskProcessor
+///
+/// This function demonstrates how to wire up the AsyncFileWatcher
+/// with GpuTaskProcessor for GPU-aware task processing.
+///
+/// # Example
+/// ```rust,no_run
+/// use std::path::PathBuf;
+/// use std::time::Duration;
+/// use offline_executor::daemon::watcher::{AsyncFileWatcher, run_with_gpu_processor};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let commands_dir = PathBuf::from("/shared/commands");
+///     let log_dir = PathBuf::from("/shared/logs");
+///     let gpu_pool = vec![0, 1, 2, 3]; // 4 GPUs
+///
+///     run_with_gpu_processor(commands_dir, log_dir, gpu_pool, false).await;
+/// }
+/// ```
+pub async fn run_with_gpu_processor(
+    commands_dir: PathBuf,
+    log_dir: PathBuf,
+    gpu_pool: Vec<u32>,
+    simulate_mode: bool,
+) -> Result<(), String> {
+    // Create async file watcher
+    let watcher = AsyncFileWatcher::new(commands_dir)?;
+    let rx = watcher.watch_async().await;
+
+    // Create executor with 5-minute default timeout
+    let executor = Executor::new(log_dir, Duration::from_secs(300))
+        .map_err(|e| format!("Failed to create executor: {}", e))?;
+
+    // Create GPU task processor
+    let mut processor = GpuTaskProcessor::new(gpu_pool, executor, simulate_mode)
+        .map_err(|e| format!("Failed to create GPU task processor: {}", e))?;
+
+    // Start processing tasks from watcher
+    println!("Starting GPU task processor with watcher...");
+    processor.run(rx).await;
+
+    Ok(())
 }
 
 #[cfg(test)]
