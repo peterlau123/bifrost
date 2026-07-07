@@ -38,16 +38,6 @@ impl GpuMonitor {
         self.check_gpu_utilization(gpu_id)
     }
 
-    /// Get the list of GPUs being monitored
-    pub fn get_gpu_pool(&self) -> &[u32] {
-        &self.gpu_pool
-    }
-
-    /// Check if running in simulation mode
-    pub fn is_simulation_mode(&self) -> bool {
-        self.simulate_mode
-    }
-
     /// Query nvidia-smi to check GPU utilization
     ///
     /// A GPU is considered idle if utilization is below 10%
@@ -75,29 +65,11 @@ impl GpuMonitor {
             }
         }
     }
-
-    /// Get all idle GPUs from the pool
-    pub fn get_idle_gpus(&mut self) -> Vec<u32> {
-        self.gpu_pool
-            .iter()
-            .copied()
-            .filter(|&gpu_id| self.is_gpu_idle(gpu_id))
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_gpu_monitor_new() {
-        let gpu_pool = vec![0, 1, 2];
-        let monitor = GpuMonitor::new(gpu_pool.clone(), true);
-
-        assert_eq!(monitor.get_gpu_pool(), &[0, 1, 2]);
-        assert!(monitor.is_simulation_mode());
-    }
 
     #[test]
     fn test_is_gpu_idle_simulation_mode() {
@@ -117,14 +89,5 @@ mod tests {
 
         // GPU not in pool should not be idle
         assert!(!monitor.is_gpu_idle(99));
-    }
-
-    #[test]
-    fn test_get_idle_gpus_simulation_mode() {
-        let gpu_pool = vec![0, 1, 2];
-        let mut monitor = GpuMonitor::new(gpu_pool.clone(), true);
-
-        let idle_gpus = monitor.get_idle_gpus();
-        assert_eq!(idle_gpus, vec![0, 1, 2]);
     }
 }
