@@ -195,3 +195,20 @@ fn test_executor_log_metadata() {
     assert!(metadata["duration_secs"].is_number());
     assert_eq!(metadata["exit_code"], 0);
 }
+
+#[test]
+fn test_execute_with_gpu_injection() {
+    let rt = Runtime::new().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let log_root = temp_dir.path().join("logs");
+
+    let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
+    let task = create_test_task("echo $CUDA_VISIBLE_DEVICES".to_string());
+
+    let result = rt.block_on(executor.execute_with_gpu(&task, 5));
+    assert!(result.is_ok());
+
+    let result = result.unwrap();
+    assert_eq!(result.status, TaskStatus::Completed);
+    assert!(result.output.stdout.contains("5"));
+}

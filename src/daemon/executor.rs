@@ -218,6 +218,13 @@ impl Executor {
     pub fn log_manager(&self) -> &LogManager {
         &self.log_manager
     }
+
+    /// Execute a task with GPU isolation by injecting CUDA_VISIBLE_DEVICES
+    pub async fn execute_with_gpu(&self, task: &Task, gpu_id: u32) -> Result<TaskResult, String> {
+        let mut task_with_gpu = task.clone();
+        task_with_gpu.env_vars.insert("CUDA_VISIBLE_DEVICES".to_string(), gpu_id.to_string());
+        self.execute(&task_with_gpu).await
+    }
 }
 
 #[cfg(test)]
