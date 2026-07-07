@@ -4,3 +4,5 @@ pub mod error;
 pub mod protocol;
 pub mod lock;
 pub mod config;
+pub mod batch_tracker;
+pub use batch_tracker::BatchTracker;
