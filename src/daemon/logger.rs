@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// Log manager for task execution output
+#[derive(Clone)]
 pub struct LogManager {
     log_root: PathBuf,
 }

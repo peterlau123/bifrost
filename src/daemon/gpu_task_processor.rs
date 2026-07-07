@@ -4,12 +4,53 @@
 use std::fs;
 use std::path::PathBuf;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::core::models::{Task, TaskResult};
 use crate::daemon::executor::Executor;
 use crate::daemon::gpu_scheduler::GpuScheduler;
 use crate::daemon::gpu_monitor::GpuMonitor;
+
+/// RAII guard to ensure GPU release on drop (panic-safe)
+///
+/// This guard guarantees that GPU resources are released even if
+/// task execution panics or async task is cancelled.
+struct GpuGuard<'a> {
+    gpu_scheduler: &'a mut GpuScheduler,
+    gpu_id: u32,
+    task_id: Uuid,
+    released: bool,
+}
+
+impl<'a> Drop for GpuGuard<'a> {
+    fn drop(&mut self) {
+        if !self.released {
+            // Force release on drop (panic-safe)
+            let _ = self.gpu_scheduler.release_gpu(self.gpu_id, self.task_id);
+        }
+    }
+}
+
+impl<'a> GpuGuard<'a> {
+    /// Create a new GPU guard
+    fn new(gpu_scheduler: &'a mut GpuScheduler, gpu_id: u32, task_id: Uuid) -> Self {
+        Self {
+            gpu_scheduler,
+            gpu_id,
+            task_id,
+            released: false,
+        }
+    }
+
+    /// Explicitly release GPU (returns error if fails)
+    fn release(mut self) -> Result<(), String> {
+        self.released = true;
+        self.gpu_scheduler
+            .release_gpu(self.gpu_id, self.task_id)
+            .map_err(|e| format!("Failed to release GPU: {}", e))
+    }
+}
 
 /// GPU task processor that coordinates scheduling and execution
 ///
@@ -47,7 +88,7 @@ impl GpuTaskProcessor {
     /// 1. Enqueue task to scheduler
     /// 2. Wait for GPU allocation
     /// 3. Execute with GPU isolation (CUDA_VISIBLE_DEVICES)
-    /// 4. Release GPU after completion
+    /// 4. Release GPU after completion (guaranteed via RAII guard)
     ///
     /// # Arguments
     /// * `task` - The task to process
@@ -66,13 +107,14 @@ impl GpuTaskProcessor {
             .schedule_next()
             .ok_or("No available GPU for task execution")?;
 
+        // Create RAII guard for guaranteed cleanup (panic-safe)
+        let gpu_guard = GpuGuard::new(&mut self.gpu_scheduler, gpu_id, task_id);
+
         // 3. Execute with GPU isolation
         let result = self.executor.execute_with_gpu(&scheduled_task, gpu_id).await;
 
-        // 4. Release GPU after completion
-        self.gpu_scheduler
-            .release_gpu(gpu_id, task_id)
-            .map_err(|e| format!("Failed to release GPU: {}", e))?;
+        // 4. Explicitly release GPU via guard (guard will also release on drop if this fails)
+        gpu_guard.release()?;
 
         result
     }
@@ -80,6 +122,7 @@ impl GpuTaskProcessor {
     /// Process tasks from watcher channel continuously
     ///
     /// Runs an infinite loop processing tasks from the watcher as they arrive.
+    /// Utilizes multiple GPUs concurrently for parallel task execution.
     /// This is the main entry point for daemon operation.
     ///
     /// # Arguments
@@ -87,20 +130,65 @@ impl GpuTaskProcessor {
     pub async fn run(&mut self, mut watcher_rx: tokio_mpsc::Receiver<PathBuf>) {
         println!("GpuTaskProcessor started, waiting for tasks...");
 
+        // Track active execution tasks for concurrent GPU utilization
+        let mut active_executions = JoinSet::new();
+
         while let Some(task_path) = watcher_rx.recv().await {
             println!("New task file detected: {}", task_path.display());
 
             // Load task from JSON file
             match self.load_task_from_file(&task_path) {
                 Ok(task) => {
-                    // Process task with GPU scheduling
-                    if let Err(e) = self.process_task(task).await {
-                        eprintln!("Task processing failed: {}", e);
+                    // Enqueue task immediately
+                    self.gpu_scheduler.enqueue(task);
+
+                    // Try to schedule tasks to all available GPUs concurrently
+                    while let Some((scheduled_task, gpu_id)) = self.gpu_scheduler.schedule_next() {
+                        let task_id = scheduled_task.task_id;
+                        let executor = self.executor.clone();
+                        let mut gpu_scheduler = self.gpu_scheduler.clone();
+
+                        // Spawn concurrent execution on this GPU
+                        active_executions.spawn(async move {
+                            let result = executor.execute_with_gpu(&scheduled_task, gpu_id).await;
+
+                            // Release GPU after execution (panic-safe via drop)
+                            let _ = gpu_scheduler.release_gpu(gpu_id, task_id);
+
+                            result
+                        });
                     }
                 }
                 Err(e) => {
                     eprintln!("Failed to load task from file: {}", e);
                 }
+            }
+
+            // Clean up completed executions
+            while let Some(result) = active_executions.try_join_next() {
+                match result {
+                    Ok(task_result) => {
+                        match task_result {
+                            Ok(result) => println!("Task completed: {:?}", result.status),
+                            Err(e) => eprintln!("Task execution failed: {}", e),
+                        }
+                    }
+                    Err(e) => eprintln!("Execution panicked: {}", e),
+                }
+            }
+        }
+
+        // Wait for remaining executions to complete before shutdown
+        println!("Waiting for remaining tasks to complete...");
+        while let Some(result) = active_executions.join_next().await {
+            match result {
+                Ok(task_result) => {
+                    match task_result {
+                        Ok(result) => println!("Task completed: {:?}", result.status),
+                        Err(e) => eprintln!("Task execution failed: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("Execution panicked: {}", e),
             }
         }
 

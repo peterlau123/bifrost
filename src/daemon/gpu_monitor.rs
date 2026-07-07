@@ -2,6 +2,7 @@
 use std::process::Command;
 
 /// GPU monitor for checking GPU idle status
+#[derive(Clone)]
 pub struct GpuMonitor {
     gpu_pool: Vec<u32>,
     simulate_mode: bool,

@@ -9,6 +9,7 @@ use super::gpu_monitor::GpuMonitor;
 ///
 /// Maintains a pool of GPUs and schedules tasks to available GPUs.
 /// Uses CUDA_VISIBLE_DEVICES for GPU isolation.
+#[derive(Clone)]
 pub struct GpuScheduler {
     gpu_pool: Vec<u32>,
     /// Maps GPU ID to list of task IDs currently running on that GPU

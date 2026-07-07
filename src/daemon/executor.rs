@@ -11,6 +11,7 @@ use crate::core::models::{Task, TaskResult, TaskStatus, TaskOutput};
 use crate::daemon::logger::LogManager;
 
 /// Command executor for running tasks
+#[derive(Clone)]
 pub struct Executor {
     log_manager: LogManager,
     default_timeout: Duration,
