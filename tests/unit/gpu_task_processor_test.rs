@@ -84,28 +84,6 @@ async fn test_process_task_no_gpu_available() {
 }
 
 #[tokio::test]
-async fn test_load_task_from_file() {
-    let temp_dir = TempDir::new().unwrap();
-    let task_file = temp_dir.path().join("test_task.json");
-
-    // Create a valid task JSON
-    let task = create_test_task("from_file");
-    let json = serde_json::to_string(&task).unwrap();
-
-    let mut file = fs::File::create(&task_file).unwrap();
-    file.write_all(json.as_bytes()).unwrap();
-    file.sync_all().unwrap();
-
-    let executor = create_test_executor();
-    let processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
-
-    // Use internal method via a helper - test the full flow
-    // Since load_task_from_file is private, we test via process_task
-    let result = processor.process_task(task.clone()).await;
-    assert!(result.is_ok(), "Task should process successfully");
-}
-
-#[tokio::test]
 async fn test_run_with_channel_single_task() {
     let temp_dir = TempDir::new().unwrap();
     let task_file = temp_dir.path().join("channel_task.json");

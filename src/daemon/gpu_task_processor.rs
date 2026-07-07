@@ -124,22 +124,6 @@ impl GpuTaskProcessor {
 
         Ok(task)
     }
-
-    /// Get reference to GPU scheduler
-    pub fn gpu_scheduler(&self) -> &GpuScheduler {
-        &self.gpu_scheduler
-    }
-
-    /// Get reference to executor
-    pub fn executor(&self) -> &Executor {
-        &self.executor
-    }
-
-    /// Get the number of pending tasks in queue
-    pub fn pending_count(&self) -> usize {
-        // Access through gpu_scheduler
-        self.gpu_scheduler.gpu_pool.len()
-    }
 }
 
 #[cfg(test)]
