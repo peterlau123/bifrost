@@ -56,16 +56,40 @@ impl GpuScheduler {
         }
 
         for i in 0..pool_size {
-            let idx = (self.last_assigned_index + i + 1) % pool_size;
+            // Start from last_assigned_index, cycle through all GPUs
+            let idx = (self.last_assigned_index + i) % pool_size;
             let gpu_id = self.gpu_pool[idx];
             if let Some(tasks) = self.active_tasks.get(&gpu_id) {
                 if tasks.is_empty() && self.monitor.is_gpu_idle(gpu_id) {
-                    self.last_assigned_index = idx;
+                    // Update last_assigned_index for next iteration
+                    self.last_assigned_index = (idx + 1) % pool_size;
                     return Some(gpu_id);
                 }
             }
         }
         None
+    }
+
+    /// Release a GPU after task completion
+    ///
+    /// # Arguments
+    /// * `gpu_id` - The GPU to release
+    /// * `task_id` - The task that completed on this GPU
+    pub fn release_gpu(&mut self, gpu_id: u32, task_id: Uuid) -> Result<(), String> {
+        if let Some(tasks) = self.active_tasks.get_mut(&gpu_id) {
+            // Remove the completed task
+            tasks.retain(|&id| id != task_id);
+
+            if tasks.is_empty() {
+                // GPU is now fully idle
+                Ok(())
+            } else {
+                // GPU still has other active tasks
+                Ok(())
+            }
+        } else {
+            Err(format!("GPU {} not found in active_tasks", gpu_id))
+        }
     }
 
     /// Schedule the next pending task to an available GPU

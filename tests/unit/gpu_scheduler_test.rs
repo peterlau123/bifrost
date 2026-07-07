@@ -58,7 +58,7 @@ fn test_schedule_next_with_no_available_gpus() {
 #[test]
 fn test_gpu_monitor_is_gpu_idle_in_simulation_mode() {
     let gpu_pool = vec![0, 1, 2];
-    let mut monitor = GpuMonitor::new(gpu_pool.clone(), true);
+    let monitor = GpuMonitor::new(gpu_pool.clone(), true);
 
     // In simulation mode, all GPUs should be idle
     for gpu_id in gpu_pool {
@@ -86,4 +86,32 @@ fn test_schedule_multiple_tasks_across_gpus() {
     assert_eq!(gpu1, 0);
     assert_eq!(gpu2, 1);
     assert_eq!(gpu3, 2);
+}
+
+#[test]
+fn test_release_gpu_after_task_completion() {
+    let gpu_pool = vec![0, 1, 2];
+    let monitor = GpuMonitor::new(gpu_pool.clone(), true);
+    let mut scheduler = GpuScheduler::new(gpu_pool, monitor);
+
+    let task1 = create_test_task("task1");
+    let task2 = create_test_task("task2");
+
+    scheduler.enqueue(task1.clone());
+    scheduler.enqueue(task2.clone());
+
+    // Schedule both tasks
+    let (scheduled1, gpu0) = scheduler.schedule_next().unwrap();
+    let (scheduled2, gpu1) = scheduler.schedule_next().unwrap();
+
+    // Release GPU 0
+    scheduler.release_gpu(gpu0, scheduled1.task_id).unwrap();
+
+    // GPU 0 should now be available for next task
+    let task3 = create_test_task("task3");
+    scheduler.enqueue(task3);
+    let (scheduled3, next_gpu) = scheduler.schedule_next().unwrap();
+
+    // Should get GPU 0 again (round-robin cycles back)
+    assert_eq!(next_gpu, gpu0);
 }
