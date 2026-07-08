@@ -14,7 +14,6 @@ Bifrost is designed for production deployment with:
 ## Quick Start
 
 
-
 ## Prerequisites
 
 - Linux system with systemd (Ubuntu, Debian, CentOS, RHEL, etc.)
@@ -53,17 +52,11 @@ sudo cp target/release/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
 
 # 3. Create directories
-sudo mkdir -p /etc/bifrost
 sudo mkdir -p /var/lib/bifrost/{pending,results,completed,logs}
 
 # 4. Create configuration
 
-shared_storage: "/var/lib/bifrost"
-log_level: "info"
-poll_interval: 5
-max_concurrent_tasks: 4
-default_timeout: 3600
-EOF
+
 
 # 5. Install systemd service
 sudo cp bifrost.service /etc/systemd/system/
@@ -82,21 +75,14 @@ sudo systemctl start bifrost
 Edit `~/.bifrost/settings.json`:
 
 
-```yaml
-# Bifrost daemon configuration
-shared_storage: "/var/lib/bifrost"
-log_level: "info"          # debug, info, warn, error
-poll_interval: 5           # Watcher scan interval (seconds)
-max_concurrent_tasks: 4    # Maximum parallel tasks
-default_timeout: 3600      # Default task timeout (seconds)
-
-# Resource limits
-memory_limit: "2G"
-cpu_limit: "80%"
-
-# Retry behavior
-retry_count: 3
-retry_delay: 10
+```json
+{
+  "shared_storage": "/var/lib/bifrost",
+  "daemon": {
+    "max_concurrent": 4,
+    "task_timeout": "3600s"
+  }
+}
 ```
 
 ### systemd Service Configuration
@@ -202,7 +188,7 @@ Add to cron:
 
 Expose metrics:
 ```yaml
-# Add to daemon.yaml
+# Add to settings.json
 metrics:
   enabled: true
   port: 9090
@@ -317,7 +303,7 @@ sudo aa-genprof /usr/local/bin/bifrost
 
 ```bash
 # Backup config
-sudo tar -czf bifrost-config-backup.tar.gz /etc/bifrost/
+sudo tar -czf bifrost-config-backup.tar.gz ~/.bifrost/
 
 # Backup data
 sudo tar -czf bifrost-data-backup.tar.gz /var/lib/bifrost/
@@ -387,13 +373,12 @@ sudo cp bifrost.service /etc/systemd/system/bifrost-2.service
 sudo mkdir -p /var/lib/bifrost-2
 
 # Configure each
-sudo tee /etc/bifrost/daemon-1.yaml <<EOF
-shared_storage: "/var/lib/bifrost-1"
-EOF
+bifrost daemon --init
+# Edit ~/.bifrost/settings.json to set shared_storage: /var/lib/bifrost-1
 
-sudo tee /etc/bifrost/daemon-2.yaml <<EOF
-shared_storage: "/var/lib/bifrost-2"
-EOF
+# For second daemon:
+bifrost daemon --init
+# Edit ~/.bifrost/settings.json to set shared_storage: /var/lib/bifrost-2
 
 # Start instances
 sudo systemctl start bifrost-1
