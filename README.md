@@ -206,11 +206,11 @@ cargo build --release
 sudo cp target/release/bifrost /usr/local/bin/
 
 # Create configuration
-sudo mkdir -p /etc/bifrost
-sudo cp config/client.yaml /etc/bifrost/
+# Initialize default settings
+bifrost client init
 
-# Edit configuration
-sudo vim /etc/bifrost/client.yaml
+# Edit configuration (optional)
+vim ~/.bifrost/settings.json
 ```
 
 ### Deploy Daemon (Offline Machine)
@@ -223,8 +223,8 @@ cp target/release/bifrost /shared/storage/
 sudo cp /shared/storage/bifrost /usr/local/bin/
 
 # Create configuration
-sudo mkdir -p /etc/bifrost
-sudo cp config/daemon.yaml /etc/bifrost/
+# Initialize default settings
+bifrost daemon --init
 
 # Install systemd service
 sudo ./scripts/systemd-setup.sh
