@@ -15,10 +15,6 @@ Bifrost is designed for production deployment with:
 
 
 
-## Quick Start
-
-
-
 ## Prerequisites
 
 - Linux system with systemd (Ubuntu, Debian, CentOS, RHEL, etc.)
