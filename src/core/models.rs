@@ -4,6 +4,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::fmt;
 
 /// Task type enumeration
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,19 @@ pub enum TaskStatus {
     Timeout,
 }
 
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStatus::Pending => write!(f, "Pending"),
+            TaskStatus::Running => write!(f, "Running"),
+            TaskStatus::Completed => write!(f, "Completed"),
+            TaskStatus::Failed => write!(f, "Failed"),
+            TaskStatus::Cancelled => write!(f, "Cancelled"),
+            TaskStatus::Timeout => write!(f, "Timeout"),
+        }
+    }
+}
+
 /// Task definition - represents a single command execution task
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Task {
@@ -58,6 +72,10 @@ pub struct Task {
     pub artifacts_expected: Vec<String>,
     /// Additional metadata
     pub metadata: HashMap<String, String>,
+    /// Batch ID if this task belongs to a batch
+    pub batch_id: Option<Uuid>,
+    /// Task name (for batch tasks)
+    pub task_name: Option<String>,
 }
 
 /// Task output - captures stdout and stderr
@@ -120,6 +138,8 @@ impl Task {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             artifacts_expected: Vec::new(),
             metadata: HashMap::new(),
+            batch_id: None,
+            task_name: None,
         }
     }
 
@@ -156,6 +176,18 @@ impl Task {
     /// Add expected artifact
     pub fn with_artifact(mut self, artifact: String) -> Self {
         self.artifacts_expected.push(artifact);
+        self
+    }
+
+    /// Set batch ID (for batch tasks)
+    pub fn with_batch_id(mut self, batch_id: Uuid) -> Self {
+        self.batch_id = Some(batch_id);
+        self
+    }
+
+    /// Set task name (for batch tasks)
+    pub fn with_task_name(mut self, task_name: String) -> Self {
+        self.task_name = Some(task_name);
         self
     }
 }
@@ -221,6 +253,18 @@ pub enum BatchStatus {
     Failed,
     /// Batch was cancelled
     Cancelled,
+}
+
+impl fmt::Display for BatchStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BatchStatus::Submitting => write!(f, "Submitting"),
+            BatchStatus::Running => write!(f, "Running"),
+            BatchStatus::Completed => write!(f, "Completed"),
+            BatchStatus::Failed => write!(f, "Failed"),
+            BatchStatus::Cancelled => write!(f, "Cancelled"),
+        }
+    }
 }
 
 /// Batch progress tracking

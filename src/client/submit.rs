@@ -1,9 +1,11 @@
 // Client submit functionality
-use crate::core::models::{Task, TaskType};
+use crate::core::models::{Task, TaskType, TaskManifest, BatchProgress, BatchStatus};
 use crate::core::protocol::Protocol;
-use crate::core::error::Result;
+use crate::core::batch_tracker::BatchTracker;
+use crate::core::error::{BifrostError, Result};
 use std::path::PathBuf;
 use uuid::Uuid;
+use chrono::Utc;
 
 /// Submit a task to the daemon via shared storage
 pub fn submit_task(
@@ -51,6 +53,84 @@ pub fn submit_pytest_task(
     protocol.submit_task(&task)?;
 
     Ok(task_id)
+}
+
+/// Submit a batch manifest and create batch progress tracking
+///
+/// Reads a TaskManifest JSON file, generates UUID for batch, creates
+/// BatchProgress file, and submits all tasks to daemon.
+///
+/// # Arguments
+/// * `protocol` - Protocol instance for task submission
+/// * `batch_tracker` - BatchTracker for progress tracking
+/// * `manifest_path` - Path to TaskManifest JSON file
+///
+/// # Returns
+/// * `Ok(Uuid)` - Batch ID for tracking
+/// * `Err(Error)` - Submission failed
+pub fn submit_batch_manifest(
+    protocol: &Protocol,
+    batch_tracker: &BatchTracker,
+    manifest_path: &PathBuf,
+) -> Result<Uuid> {
+    // Read manifest file
+    let manifest_json = std::fs::read_to_string(manifest_path)
+        .map_err(BifrostError::IoError)?;
+
+    let manifest: TaskManifest = serde_json::from_str(&manifest_json)
+        .map_err(BifrostError::JsonError)?;
+
+    // Generate batch ID
+    let batch_id = Uuid::new_v4();
+    let now = Utc::now();
+
+    // Create initial BatchProgress
+    let mut progress = BatchProgress {
+        batch_id,
+        manifest_path: manifest_path.clone(),
+        total_tasks: manifest.tasks.len(),
+        current_index: 0,
+        submitted_tasks: Vec::new(),
+        completed_tasks: Vec::new(),
+        status: BatchStatus::Submitting,
+        created_at: now,
+        updated_at: now,
+    };
+
+    // Submit each task in the manifest
+    for (index, task_item) in manifest.tasks.iter().enumerate() {
+        // Convert TaskItem to Task
+        let task = Task::new(task_item.command.clone(), task_item.task_type.clone())
+            .with_timeout(task_item.timeout)
+            .with_priority(task_item.priority)
+            .with_working_dir(task_item.working_dir.clone().unwrap_or_else(|| PathBuf::from(".")))
+            .with_batch_id(batch_id)
+            .with_task_name(task_item.task_name.clone());
+
+        // Add environment variables
+        let task = task_item.env_vars.iter().fold(task, |t, (k, v)| {
+            t.with_env_var(k.clone(), v.clone())
+        });
+
+        // Submit task
+        let task_id = task.task_id;
+        protocol.submit_task(&task)?;
+
+        // Track submitted task
+        progress.submitted_tasks.push((index, task_id, task_item.task_name.clone()));
+        progress.current_index = index + 1;
+        progress.updated_at = Utc::now();
+    }
+
+    // Update status to Running after all tasks submitted
+    progress.status = BatchStatus::Running;
+    progress.updated_at = Utc::now();
+
+    // Save initial progress
+    batch_tracker.save_progress(&progress)
+        .map_err(|e| BifrostError::ConfigInvalid(e.to_string()))?;
+
+    Ok(batch_id)
 }
 
 #[cfg(test)]

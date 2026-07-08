@@ -2,14 +2,15 @@
 // Monitors commands/ directory for new task files with 500ms debounce
 
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 
 // GpuTaskProcessor integration
 use super::gpu_task_processor::GpuTaskProcessor;
 use crate::daemon::executor::Executor;
+use crate::core::batch_tracker::BatchTracker;
 
 /// File watcher for detecting new task files
 pub struct FileWatcher {
@@ -41,6 +42,7 @@ impl FileWatcher {
             notify::Config::default(),
         ).map_err(|e| format!("Failed to create watcher: {}", e))?;
 
+        let commands_dir_clone = commands_dir.clone();
         let mut watcher = Self {
             watcher,
             event_receiver: rx,
@@ -50,7 +52,7 @@ impl FileWatcher {
         };
 
         // Start watching the commands directory
-        watcher.watcher.watch(&commands_dir, RecursiveMode::NonRecursive)
+        watcher.watcher.watch(&commands_dir_clone, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to start watching: {}", e))?;
 
         Ok(watcher)
@@ -223,6 +225,7 @@ pub async fn run_with_gpu_processor(
     log_dir: PathBuf,
     gpu_pool: Vec<u32>,
     simulate_mode: bool,
+    batch_tracker: Option<BatchTracker>,
 ) -> Result<(), String> {
     // Create async file watcher
     let watcher = AsyncFileWatcher::new(commands_dir)?;
@@ -233,7 +236,7 @@ pub async fn run_with_gpu_processor(
         .map_err(|e| format!("Failed to create executor: {}", e))?;
 
     // Create GPU task processor
-    let mut processor = GpuTaskProcessor::new(gpu_pool, executor, simulate_mode)
+    let mut processor = GpuTaskProcessor::new(gpu_pool, executor, simulate_mode, batch_tracker)
         .map_err(|e| format!("Failed to create GPU task processor: {}", e))?;
 
     // Start processing tasks from watcher

@@ -74,13 +74,13 @@ fn format_result_text(result: &TaskResult) -> Result<String> {
     if !result.output.stdout.is_empty() {
         output.push_str("\n--- STDOUT ---\n");
         output.push_str(&result.output.stdout);
-        output.push_str("\n");
+        output.push('\n');
     }
 
     if !result.output.stderr.is_empty() {
         output.push_str("\n--- STDERR ---\n");
         output.push_str(&result.output.stderr);
-        output.push_str("\n");
+        output.push('\n');
     }
 
     if !result.artifacts.is_empty() {

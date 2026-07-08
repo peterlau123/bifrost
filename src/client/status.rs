@@ -4,7 +4,6 @@ use crate::core::error::{BifrostError, Result};
 use crate::core::models::{TaskStatus, TaskResult};
 use uuid::Uuid;
 use std::fs;
-use std::path::PathBuf;
 
 /// Status response for task queries
 #[derive(Debug)]
@@ -31,11 +30,13 @@ pub fn query_status(protocol: &Protocol, task_id: Uuid) -> Result<StatusResponse
             .map_err(BifrostError::IoError)?;
 
         let result: TaskResult = serde_json::from_str(&content)?;
+        let status = result.status.clone();
+        let duration = result.duration_secs();
 
         return Ok(StatusResponse {
             task_id,
-            status: result.status,
-            message: Some(format!("Task completed in {}s", result.duration_secs())),
+            status,
+            message: Some(format!("Task completed in {}s", duration)),
         });
     }
 

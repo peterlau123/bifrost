@@ -44,7 +44,7 @@ impl GpuMonitor {
     /// A GPU is considered idle if utilization is below 10%
     fn check_gpu_utilization(&self, gpu_id: u32) -> bool {
         let output = Command::new("nvidia-smi")
-            .args(&[
+            .args([
                 "--query-gpu=utilization.gpu",
                 "--format=csv,noheader,nounits",
                 "-i",

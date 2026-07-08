@@ -1,8 +1,7 @@
 // BatchTracker - Manages batch progress file operations
 use std::fs;
-use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
-use chrono::{DateTime, Utc};
+use std::path::PathBuf;
+use chrono::Utc;
 use uuid::Uuid;
 
 /// Re-export from models for convenience
@@ -117,7 +116,7 @@ impl BatchTracker {
             let path = entry.path();
 
             // Only process .json files
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let json = fs::read_to_string(&path)?;
                 if let Ok(progress) = serde_json::from_str::<BatchProgress>(&json) {
                     // Only include non-completed batches
@@ -154,7 +153,7 @@ impl BatchTracker {
             let path = entry.path();
 
             // Only process .json files
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 if let Ok(json) = fs::read_to_string(&path) {
                     if let Ok(progress) = serde_json::from_str::<BatchProgress>(&json) {
                         if progress.updated_at < cutoff_time {

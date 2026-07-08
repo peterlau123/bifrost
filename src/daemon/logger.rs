@@ -142,7 +142,7 @@ mod tests {
         assert!(task_log_dir.is_ok());
         let dir = task_log_dir.unwrap();
         assert!(dir.exists());
-        assert_eq!(dir.file_name().unwrap(), task_id.to_string());
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), task_id.to_string());
     }
 
     #[test]

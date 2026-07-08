@@ -32,7 +32,7 @@ impl FileLock {
         let lock = Self::new(path)
             .map_err(BifrostError::IoError)?;
         lock.file.lock_exclusive()
-            .map_err(BifrostError::LockError)?;
+            .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(lock)
     }
 
@@ -41,28 +41,28 @@ impl FileLock {
         let lock = Self::new(path)
             .map_err(BifrostError::IoError)?;
         lock.file.lock_shared()
-            .map_err(BifrostError::LockError)?;
+            .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(lock)
     }
 
     /// Acquire exclusive lock (for writing) - instance method
     pub fn lock_exclusive(&self) -> Result<()> {
         self.file.lock_exclusive()
-            .map_err(BifrostError::LockError)?;
+            .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
 
     /// Acquire shared lock (for reading) - instance method
     pub fn lock_shared(&self) -> Result<()> {
         self.file.lock_shared()
-            .map_err(BifrostError::LockError)?;
+            .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
 
     /// Release the lock
     pub fn unlock(&self) -> Result<()> {
         self.file.unlock()
-            .map_err(BifrostError::LockError)?;
+            .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
 
@@ -81,7 +81,7 @@ impl Drop for FileLock {
     fn drop(&mut self) {
         // Lock is automatically released when file is closed
         // But we explicitly unlock for clarity
-        if let Err(_) = self.file.unlock() {
+        if self.file.unlock().is_err() {
             // Ignore unlock errors during drop
         }
     }
@@ -92,7 +92,7 @@ impl Drop for FileLock {
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     // Lock a separate .lock file (not the target file) to avoid inode race
     let lock_path = path.with_extension("lock");
-    let lock = FileLock::exclusive(&lock_path)?;
+    let _lock = FileLock::exclusive(&lock_path)?;
 
     // Use unique temp file to avoid collisions
     let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -120,7 +120,7 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 pub fn atomic_read(path: &Path) -> Result<Vec<u8>> {
     // Lock separate .lock file for consistency
     let lock_path = path.with_extension("lock");
-    let lock = FileLock::shared(&lock_path)?;
+    let _lock = FileLock::shared(&lock_path)?;
 
     let content = std::fs::read(path)
         .map_err(BifrostError::IoError)?;

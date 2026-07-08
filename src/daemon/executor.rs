@@ -4,8 +4,7 @@
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 use std::process::Stdio;
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::core::models::{Task, TaskResult, TaskStatus, TaskOutput};
 use crate::daemon::logger::LogManager;

@@ -108,7 +108,7 @@ impl GpuScheduler {
         // Add task to active tasks for this GPU
         self.active_tasks
             .entry(gpu_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(task.task_id);
 
         Some((task, gpu_id))

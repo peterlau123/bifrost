@@ -1,7 +1,6 @@
 // File communication protocol for task submission and retrieval
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::io;
 
 use crate::core::models::Task;
 use crate::core::lock::atomic_write;
@@ -194,6 +193,8 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             artifacts_expected: vec![],
             metadata: HashMap::new(),
+            batch_id: None,
+            task_name: None,
         }
     }
 

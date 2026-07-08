@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::JoinSet;
 use uuid::Uuid;
+use chrono::Utc;
 
-use crate::core::models::{Task, TaskResult};
+use crate::core::models::{Task, TaskResult, TaskStatus};
+use crate::core::batch_tracker::{BatchTracker, BatchStatus};
 use crate::daemon::executor::Executor;
 use crate::daemon::gpu_scheduler::GpuScheduler;
 use crate::daemon::gpu_monitor::GpuMonitor;
@@ -56,9 +58,11 @@ impl<'a> GpuGuard<'a> {
 ///
 /// Integrates GpuScheduler with Executor to provide GPU-aware task processing.
 /// Handles the complete workflow from task enqueue to GPU release.
+/// Also tracks batch progress for batch task execution.
 pub struct GpuTaskProcessor {
     gpu_scheduler: GpuScheduler,
     executor: Executor,
+    batch_tracker: Option<BatchTracker>,
 }
 
 impl GpuTaskProcessor {
@@ -68,10 +72,12 @@ impl GpuTaskProcessor {
     /// * `gpu_pool` - List of GPU IDs available for scheduling
     /// * `executor` - Executor instance for running tasks
     /// * `simulate_mode` - If true, GPU monitoring operates in simulation mode
+    /// * `batch_tracker` - Optional BatchTracker for batch progress tracking
     pub fn new(
         gpu_pool: Vec<u32>,
         executor: Executor,
         simulate_mode: bool,
+        batch_tracker: Option<BatchTracker>,
     ) -> Result<Self, String> {
         let monitor = GpuMonitor::new(gpu_pool.clone(), simulate_mode);
         let scheduler = GpuScheduler::new(gpu_pool, monitor);
@@ -79,6 +85,7 @@ impl GpuTaskProcessor {
         Ok(Self {
             gpu_scheduler: scheduler,
             executor,
+            batch_tracker,
         })
     }
 
@@ -114,9 +121,60 @@ impl GpuTaskProcessor {
         let result = self.executor.execute_with_gpu(&scheduled_task, gpu_id).await;
 
         // 4. Explicitly release GPU via guard (guard will also release on drop if this fails)
-        gpu_guard.release()?;
+        let release_result = gpu_guard.release();
+        release_result?;
 
         result
+    }
+
+    /// Update batch progress when a task completes
+    ///
+    /// Called automatically for tasks that have batch_id set.
+    /// Updates the BatchProgress file to reflect task completion.
+    ///
+    /// # Arguments
+    /// * `task` - The completed task
+    /// * `result` - The task execution result
+    fn update_batch_progress(&mut self, task: &Task, result: &TaskResult) {
+        if let Some(batch_id) = task.batch_id {
+            if let Some(tracker) = &self.batch_tracker {
+                // Load current batch progress
+                if let Ok(mut progress) = tracker.load_progress(batch_id) {
+                    // Add completed task
+                    let task_name = task.task_name.clone().unwrap_or_else(|| "unnamed".to_string());
+                    progress.completed_tasks.push((
+                        result.task_id,
+                        result.status.clone(),
+                        task_name,
+                    ));
+
+                    // Update timestamp
+                    progress.updated_at = Utc::now();
+
+                    // Check if batch is complete
+                    if progress.completed_tasks.len() == progress.total_tasks {
+                        // Determine batch status based on task results
+                        let all_success = progress.completed_tasks.iter().all(|(_, status, _)| {
+                            *status == TaskStatus::Completed
+                        });
+
+                        progress.status = if all_success {
+                            BatchStatus::Completed
+                        } else {
+                            BatchStatus::Failed
+                        };
+                    }
+
+                    // Save updated progress
+                    if let Err(e) = tracker.save_progress(&progress) {
+                        eprintln!("Failed to update batch progress: {}", e);
+                    } else {
+                        println!("Updated batch {} progress: {} of {} tasks completed",
+                            batch_id, progress.completed_tasks.len(), progress.total_tasks);
+                    }
+                }
+            }
+        }
     }
 
     /// Process tasks from watcher channel continuously
@@ -147,15 +205,19 @@ impl GpuTaskProcessor {
                         let task_id = scheduled_task.task_id;
                         let executor = self.executor.clone();
                         let mut gpu_scheduler = self.gpu_scheduler.clone();
+                        let task_for_execution = scheduled_task.clone();
 
                         // Spawn concurrent execution on this GPU
                         active_executions.spawn(async move {
-                            let result = executor.execute_with_gpu(&scheduled_task, gpu_id).await;
+                            let result = executor.execute_with_gpu(&task_for_execution, gpu_id).await;
 
                             // Release GPU after execution (panic-safe via drop)
-                            let _ = gpu_scheduler.release_gpu(gpu_id, task_id);
+                            if let Err(e) = gpu_scheduler.release_gpu(gpu_id, task_id) {
+                                eprintln!("Warning: Failed to release GPU {}: {}", gpu_id, e);
+                            }
 
-                            result
+                            // Return both task and result for batch tracking
+                            (task_for_execution, result)
                         });
                     }
                 }
@@ -164,12 +226,16 @@ impl GpuTaskProcessor {
                 }
             }
 
-            // Clean up completed executions
+            // Clean up completed executions and update batch progress
             while let Some(result) = active_executions.try_join_next() {
                 match result {
-                    Ok(task_result) => {
+                    Ok((task, task_result)) => {
                         match task_result {
-                            Ok(result) => println!("Task completed: {:?}", result.status),
+                            Ok(result) => {
+                                println!("Task completed: {:?}", result.status);
+                                // Update batch progress if task belongs to a batch
+                                self.update_batch_progress(&task, &result);
+                            }
                             Err(e) => eprintln!("Task execution failed: {}", e),
                         }
                     }
@@ -182,9 +248,13 @@ impl GpuTaskProcessor {
         println!("Waiting for remaining tasks to complete...");
         while let Some(result) = active_executions.join_next().await {
             match result {
-                Ok(task_result) => {
+                Ok((task, task_result)) => {
                     match task_result {
-                        Ok(result) => println!("Task completed: {:?}", result.status),
+                        Ok(result) => {
+                            println!("Task completed: {:?}", result.status);
+                            // Update batch progress if task belongs to a batch
+                            self.update_batch_progress(&task, &result);
+                        }
                         Err(e) => eprintln!("Task execution failed: {}", e),
                     }
                 }
@@ -236,14 +306,14 @@ mod tests {
     #[test]
     fn test_gpu_task_processor_new() {
         let executor = create_test_executor();
-        let processor = GpuTaskProcessor::new(vec![0, 1], executor, true);
+        let processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None);
         assert!(processor.is_ok());
     }
 
     #[tokio::test]
     async fn test_process_task_success() {
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
 
         let task = create_test_task("hello");
         let result = processor.process_task(task).await;
@@ -258,7 +328,7 @@ mod tests {
     async fn test_process_task_no_gpu_available() {
         // Create processor with empty GPU pool - should fail
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![], executor, true).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![], executor, true, None).unwrap();
 
         let task = create_test_task("test");
         let result = processor.process_task(task).await;
@@ -284,7 +354,7 @@ mod tests {
         file.sync_all().unwrap();
 
         let executor = create_test_executor();
-        let processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+        let processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
 
         let loaded_task = processor.load_task_from_file(&task_file);
         assert!(loaded_task.is_ok());
@@ -310,7 +380,7 @@ mod tests {
         file.sync_all().unwrap();
 
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
 
         // Create channel and send task path
         let (tx, rx) = mpsc::channel::<PathBuf>(1);

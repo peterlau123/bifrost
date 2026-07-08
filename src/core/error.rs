@@ -12,7 +12,7 @@ pub enum BifrostError {
 
     /// File lock operation failed
     #[error("File lock failed: {0}")]
-    LockError(#[from] fs2::LockError),
+    LockError(String),
 
     /// JSON parsing/serialization error
     #[error("JSON parse error: {0}")]

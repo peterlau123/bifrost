@@ -94,6 +94,48 @@ enum ClientCommand {
         #[arg(short = 'f', long, default_value = "json")]
         format: String,
     },
+
+    /// Batch operations
+    Batch {
+        #[command(subcommand)]
+        command: BatchCommand,
+    },
+}
+
+/// Batch commands
+#[derive(Subcommand, Debug)]
+enum BatchCommand {
+    /// Submit a batch manifest for execution
+    SubmitManifest {
+        /// Path to manifest JSON file
+        #[arg(short, long)]
+        manifest: PathBuf,
+
+        /// Batch progress directory
+        #[arg(short = 'b', long)]
+        batch_dir: Option<PathBuf>,
+    },
+
+    /// Check batch execution status
+    BatchStatus {
+        /// Batch ID to check
+        #[arg(short, long)]
+        batch_id: String,
+    },
+
+    /// Cancel a running batch
+    CancelBatch {
+        /// Batch ID to cancel
+        #[arg(short, long)]
+        batch_id: String,
+    },
+
+    /// List all active batches
+    ListBatches {
+        /// Batch progress directory
+        #[arg(short = 'b', long)]
+        batch_dir: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -154,7 +196,7 @@ fn handle_client_mode(command: ClientCommand) {
             let protocol = Protocol::new(shared_storage.clone())
                 .expect("Failed to create protocol");
 
-            match submit::submit_pytest_task(&protocol, path, priority, timeout, working_dir) {
+            match submit::submit_pytest_task(&protocol, path.clone(), priority, timeout, working_dir) {
                 Ok(task_id) => {
                     println!("Pytest task submitted successfully");
                     println!("  Task ID: {}", task_id);
@@ -209,6 +251,84 @@ fn handle_client_mode(command: ClientCommand) {
                 }
                 Err(e) => {
                     eprintln!("Failed to retrieve results: {}", e);
+                }
+            }
+        }
+
+        ClientCommand::Batch { command } => {
+            use bifrost::core::batch_tracker::BatchTracker;
+
+            // Default batch progress directory
+            let batch_dir = PathBuf::from("/tmp/bifrost/batch_progress");
+
+            match command {
+                BatchCommand::SubmitManifest { manifest, batch_dir: custom_batch_dir } => {
+                    let protocol = Protocol::new(shared_storage.clone())
+                        .expect("Failed to create protocol");
+
+                    let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
+
+                    match submit::submit_batch_manifest(&protocol, &tracker, &manifest) {
+                        Ok(batch_id) => {
+                            println!("Batch manifest submitted successfully");
+                            println!("  Batch ID: {}", batch_id);
+                            println!("  Manifest: {}", manifest.display());
+                            println!("  Status: Submitting");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to submit batch manifest: {}", e);
+                        }
+                    }
+                }
+
+                BatchCommand::BatchStatus { batch_id } => {
+                    let tracker = BatchTracker::new(batch_dir);
+
+                    let parsed_id = Uuid::parse_str(&batch_id)
+                        .expect("Invalid batch ID format");
+
+                    match tracker.load_progress(parsed_id) {
+                        Ok(progress) => {
+                            println!("Batch status for: {}", batch_id);
+                            println!("  Status: {}", progress.status);
+                            println!("  Total tasks: {}", progress.total_tasks);
+                            println!("  Completed: {}", progress.completed_tasks.len());
+                            println!("  Created: {}", progress.created_at);
+                            println!("  Updated: {}", progress.updated_at);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load batch progress: {}", e);
+                        }
+                    }
+                }
+
+                BatchCommand::CancelBatch { batch_id } => {
+                    println!("Cancel batch: {}", batch_id);
+                    println!("  Note: Batch cancellation not yet implemented");
+                    println!("  Requires daemon to support cancel signal");
+                }
+
+                BatchCommand::ListBatches { batch_dir: custom_batch_dir } => {
+                    let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
+
+                    match tracker.list_active_batches() {
+                        Ok(batches) => {
+                            println!("Active batches:");
+                            if batches.is_empty() {
+                                println!("  No active batches found");
+                            } else {
+                                for batch in batches {
+                                    println!("  - Batch ID: {}", batch.batch_id);
+                                    println!("    Status: {}", batch.status);
+                                    println!("    Tasks: {} of {} completed",
+                                        batch.completed_tasks.len(), batch.total_tasks);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to list batches: {}", e);
+                        }
+                    }
                 }
             }
         }
