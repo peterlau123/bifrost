@@ -35,6 +35,9 @@ enum Mode {
 /// Client commands
 #[derive(Subcommand, Debug)]
 enum ClientCommand {
+    /// Initialize ~/.bifrost/ with default settings
+    Init,
+
     /// Submit a new task for execution
     Submit {
         /// Command to execute
@@ -180,14 +183,22 @@ fn handle_client_mode(command: ClientCommand) {
     use bifrost::core::db::Database;
     use bifrost::core::models::{TaskStatus, TaskType};
     use bifrost::core::protocol::Protocol;
+    use bifrost::core::settings;
     use uuid::Uuid;
 
-    // Default shared storage path
-    let shared_storage = PathBuf::from("/tmp/bifrost");
-    let db_path = shared_storage.join("bifrost.db");
+    let settings = settings::load();
+    let shared_storage = settings.shared_storage;
+    let db_path = settings.db_path();
     let db = Database::open(db_path, Some(shared_storage.clone())).ok();
 
     match command {
+        ClientCommand::Init => {
+            match settings::init() {
+                Ok(path) => println!("Settings saved to {}", path.display()),
+                Err(e) => eprintln!("{}", e),
+            }
+        }
+
         ClientCommand::Submit {
             command: cmd,
             task_type,

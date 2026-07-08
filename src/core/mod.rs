@@ -7,3 +7,4 @@ pub mod models;
 pub mod protocol;
 pub use batch_tracker::BatchTracker;
 pub mod db;
+pub mod settings;
