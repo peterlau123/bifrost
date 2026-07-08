@@ -180,10 +180,10 @@ env_vars:
 
 ### Global Adapter Configuration
 
-Store adapters in `/etc/bifrost/adapters/`:
+Store adapters in `~/.bifrost/adapters/`:
 
 ```
-/etc/bifrost/adapters/
+~/.bifrost/adapters/
 ├── pytest.yaml
 ├── shell.yaml
 ├── docker.yaml
@@ -208,7 +208,7 @@ project/
 Bifrost loads adapters in order:
 1. Built-in adapters (shell, pytest)
 2. Project adapters (`./adapters/`)
-3. Global adapters (`/etc/bifrost/adapters/`)
+3. Global adapters (`~/.bifrost/adapters/`)
 4. Custom adapters specified in task
 
 ## Best Practices
