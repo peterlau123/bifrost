@@ -47,12 +47,12 @@ echo -e "${YELLOW}[3/6] Creating configuration directory...${NC}"
 mkdir -p "$CONFIG_DIR"
 
 # Copy default config if exists
-if [ -f "config/daemon.yaml" ]; then
-    cp config/daemon.yaml "${CONFIG_DIR}/daemon.yaml"
+if [ -f "config" ]; then
+    cp config "${CONFIG_DIR}/settings.json"
     echo -e "${GREEN}✓ Configuration installed${NC}"
 else
     echo -e "${YELLOW}⚠ No default config found, creating minimal config${NC}"
-    cat > "${CONFIG_DIR}/daemon.yaml" <<EOF
+    cat > "${CONFIG_DIR}/settings.json" <<EOF
 # Bifrost daemon configuration
 shared_storage: "${DATA_DIR}"
 log_level: "info"
@@ -108,7 +108,7 @@ echo -e "${GREEN}Deployment Complete!${NC}"
 echo ""
 echo "Installation Summary:"
 echo "  Binary:    ${INSTALL_DIR}/${BINARY_NAME}"
-echo "  Config:    ${CONFIG_DIR}/daemon.yaml"
+echo "  Config:    ${CONFIG_DIR}/settings.json"
 echo "  Data:      ${DATA_DIR}"
 echo "  Service:   ${SERVICE_NAME}"
 echo ""
@@ -119,6 +119,6 @@ echo "  Restart:   systemctl restart bifrost"
 echo "  Logs:      journalctl -u bifrost -f"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Edit ${CONFIG_DIR}/daemon.yaml to customize configuration"
+echo "  1. Edit ${CONFIG_DIR}/settings.json to customize configuration"
 echo "  2. Run 'bifrost client submit --command <cmd>' to submit tasks"
 echo "  3. Check logs with 'journalctl -u bifrost'"
