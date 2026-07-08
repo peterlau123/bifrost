@@ -169,12 +169,20 @@ impl Database {
     // ─── Write operations ─────────────────────────────────────────
 
     /// Insert a new pending task record
-    pub fn insert_task(&self, task: &Task) -> SqlResult<()> {
+    ///
+    /// # Arguments
+    /// * `task` - The task to insert
+    /// * `meta` - Optional extra tracking metadata (task_group, git_commit, etc.)
+    pub fn insert_task(&self, task: &Task, meta: Option<&TaskMeta>) -> SqlResult<()> {
+        let default_meta = TaskMeta::default();
+        let meta = meta.unwrap_or(&default_meta);
+
         self.conn.execute(
             "INSERT INTO tasks (task_id, created_at, command, task_type, priority,
                                 timeout_secs, status, working_dir, batch_id, task_name,
-                                metadata_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                metadata_json, log_path, task_group, git_commit,
+                                environment, trigger)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 task.task_id.to_string(),
                 Self::ts_to_int(&task.timestamp),
@@ -187,6 +195,11 @@ impl Database {
                 task.batch_id.map(|id| id.to_string()),
                 task.task_name,
                 serde_json::to_string(&task.metadata).unwrap_or_default(),
+                None::<String>,  // log_path (set later via set_log_path)
+                meta.task_group,
+                meta.git_commit,
+                meta.environment,
+                meta.trigger,
             ],
         )?;
 
@@ -198,6 +211,15 @@ impl Database {
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Set log_path after the log directory is created
+    pub fn set_log_path(&self, task_id: Uuid, log_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE tasks SET log_path = ?1 WHERE task_id = ?2",
+            params![log_path, task_id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -588,6 +610,19 @@ impl Database {
     }
 }
 
+/// Extra metadata for SQLite-only tracking fields that don't exist on the Task model.
+///
+/// These are database-layer concerns (grouping, environment, provenance)
+/// rather than command-layer concerns, so they live here, not in models::Task.
+#[derive(Default)]
+pub struct TaskMeta {
+    pub task_group: Option<String>,
+    pub git_commit: Option<String>,
+    pub environment: Option<String>,
+    pub trigger: Option<String>,
+}
+
+
 /// Which output column to read from task_outputs
 enum OutputColumn {
     Stdout,
@@ -838,7 +873,7 @@ mod tests {
             .with_task_name("test_task".to_string())
             .with_env_var("PATH".to_string(), "/usr/bin".to_string());
 
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
 
         let records = db.query_tasks(None, None, 10, 0).unwrap();
         assert_eq!(records.len(), 1);
@@ -857,7 +892,7 @@ mod tests {
         let task = Task::new("sleep 1".to_string(), TaskType::Shell);
         let task_id = task.task_id;
 
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
         db.mark_running(task_id).unwrap();
 
         // Verify running
@@ -905,7 +940,7 @@ mod tests {
         let task = Task::new("pytest tests/".to_string(), TaskType::Pytest);
         let task_id = task.task_id;
 
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
 
         db.upsert_pytest_result(
             task_id,
@@ -938,7 +973,7 @@ mod tests {
         let task = Task::new("make".to_string(), TaskType::Shell);
         let task_id = task.task_id;
 
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
         db.insert_artifacts(
             task_id,
             &["output.log".to_string(), "report.xml".to_string()],
@@ -957,7 +992,7 @@ mod tests {
             .with_env_var("KEY2".to_string(), "val2".to_string());
         let task_id = task.task_id;
 
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
 
         let detail = db.get_task_by_id(task_id).unwrap().unwrap();
         assert_eq!(detail.env_vars.len(), 2);
@@ -970,14 +1005,14 @@ mod tests {
         let db = setup_db();
 
         let t1 = Task::new("cmd1".to_string(), TaskType::Shell);
-        db.insert_task(&t1).unwrap();
+        db.insert_task(&t1, None).unwrap();
 
         let t2 = Task::new("cmd2".to_string(), TaskType::Shell);
-        db.insert_task(&t2).unwrap();
+        db.insert_task(&t2, None).unwrap();
         db.mark_running(t2.task_id).unwrap();
 
         let t3 = Task::new("pytest x".to_string(), TaskType::Pytest);
-        db.insert_task(&t3).unwrap();
+        db.insert_task(&t3, None).unwrap();
 
         let stats = db.get_summary_stats().unwrap();
         assert_eq!(stats.total, 3);
@@ -995,10 +1030,10 @@ mod tests {
     fn test_insert_duplicate_task_id() {
         let db = setup_db();
         let task = Task::new("cmd".to_string(), TaskType::Shell);
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
 
         // Duplicate INSERT should fail due to PRIMARY KEY
-        let result = db.insert_task(&task);
+        let result = db.insert_task(&task, None);
         assert!(result.is_err(), "Duplicate task_id should be rejected");
 
         // upsert_result on same task_id should succeed (UPDATE + INSERT fallback)
@@ -1029,7 +1064,7 @@ mod tests {
         let now_ts = now.timestamp();
 
         let task = Task::new("ts-test".to_string(), TaskType::Shell);
-        db.insert_task(&task).unwrap();
+        db.insert_task(&task, None).unwrap();
 
         // Verify the stored created_at is an integer
         let stored: i64 = db
@@ -1045,5 +1080,51 @@ mod tests {
             (stored - now_ts).abs() < 5,
             "created_at should be an INTEGER unix timestamp"
         );
+    }
+
+    #[test]
+    fn test_task_meta_fields() {
+        let db = setup_db();
+        let task = Task::new("vllm test".to_string(), TaskType::Pytest);
+
+        let meta = TaskMeta {
+            task_group: Some("vllm-daily-regression".to_string()),
+            git_commit: Some("a1b2c3d".to_string()),
+            environment: Some(r#"{"gpu":"A100-80G","cuda":"12.4"}"#.to_string()),
+            trigger: Some("cli".to_string()),
+        };
+
+        db.insert_task(&task, Some(&meta)).unwrap();
+
+        let detail = db.get_task_by_id(task.task_id).unwrap().unwrap();
+
+        // Verify the fields via SQLite directly
+        let (task_group, git_commit, environment, trigger): (Option<String>, Option<String>, Option<String>, Option<String>) = db.conn.query_row(
+            "SELECT task_group, git_commit, environment, trigger FROM tasks WHERE task_id = ?1",
+            params![task.task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+
+        assert_eq!(task_group, Some("vllm-daily-regression".to_string()));
+        assert_eq!(git_commit, Some("a1b2c3d".to_string()));
+        assert_eq!(environment, Some(r#"{"gpu":"A100-80G","cuda":"12.4"}"#.to_string()));
+        assert_eq!(trigger, Some("cli".to_string()));
+    }
+
+    #[test]
+    fn test_set_log_path() {
+        let db = setup_db();
+        let task = Task::new("log-test".to_string(), TaskType::Shell);
+        db.insert_task(&task, None).unwrap();
+
+        db.set_log_path(task.task_id, "logs/abc123/").unwrap();
+
+        let log_path: Option<String> = db.conn.query_row(
+            "SELECT log_path FROM tasks WHERE task_id = ?1",
+            params![task.task_id.to_string()],
+            |row| row.get(0),
+        ).unwrap();
+
+        assert_eq!(log_path, Some("logs/abc123/".to_string()));
     }
 }
