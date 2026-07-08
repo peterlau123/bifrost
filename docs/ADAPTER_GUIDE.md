@@ -200,7 +200,7 @@ project/
 │   ├── unit_test.yaml
 │   └── integration_test.yaml
 └── config/
-    └── daemon.yaml
+    └── settings.json
 ```
 
 ### Loading Priority
