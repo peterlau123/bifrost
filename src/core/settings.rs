@@ -65,7 +65,7 @@ impl BifrostSettings {
 
 pub fn load() -> BifrostSettings {
     match std::fs::read_to_string(BifrostSettings::path()) {
-        Ok(c) => match serde_json::from_str(&c) {
+        Ok(c) => match serde_json::from_str::<BifrostSettings>(&c) {
             Ok(s) => { if let Err(e) = s.validate() { eprintln!("Warning: invalid settings ({})", e); return BifrostSettings::defaults(); } s }
             Err(e) => { eprintln!("Warning: invalid settings.json ({})", e); BifrostSettings::defaults() }
         },
