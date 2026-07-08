@@ -12,10 +12,10 @@
 //   - status and task_type have CHECK constraints
 //   - Foreign keys enforced via PRAGMA
 
-use rusqlite::{Connection, params, Result as SqlResult};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::PathBuf;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 use crate::core::models::{Task, TaskResult, TaskStatus, TaskType};
 
@@ -35,7 +35,10 @@ impl Database {
         }
 
         let conn = Connection::open(&path)?;
-        let db = Self { conn, path: path.clone() };
+        let db = Self {
+            conn,
+            path: path.clone(),
+        };
         db.initialize()?;
         Ok(db)
     }
@@ -43,7 +46,10 @@ impl Database {
     /// Open an in-memory database (for testing)
     pub fn open_in_memory() -> SqlResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn, path: PathBuf::from(":memory:") };
+        let db = Self {
+            conn,
+            path: PathBuf::from(":memory:"),
+        };
         db.initialize()?;
         Ok(db)
     }
@@ -126,18 +132,18 @@ impl Database {
 
     fn status_to_str(s: &TaskStatus) -> &'static str {
         match s {
-            TaskStatus::Pending   => "Pending",
-            TaskStatus::Running   => "Running",
+            TaskStatus::Pending => "Pending",
+            TaskStatus::Running => "Running",
             TaskStatus::Completed => "Completed",
-            TaskStatus::Failed    => "Failed",
+            TaskStatus::Failed => "Failed",
             TaskStatus::Cancelled => "Cancelled",
-            TaskStatus::Timeout   => "Timeout",
+            TaskStatus::Timeout => "Timeout",
         }
     }
 
     fn task_type_str(t: &TaskType) -> &'static str {
         match t {
-            TaskType::Shell  => "Shell",
+            TaskType::Shell => "Shell",
             TaskType::Pytest => "Pytest",
             TaskType::Custom => "Custom",
         }
@@ -271,7 +277,8 @@ impl Database {
     pub fn insert_artifacts(&self, task_id: Uuid, artifacts: &[String]) -> SqlResult<()> {
         for artifact in artifacts {
             let path = PathBuf::from(artifact);
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| artifact.clone());
             let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
@@ -319,9 +326,15 @@ impl Database {
                  report_json  = excluded.report_json",
             params![
                 task_id.to_string(),
-                passed, failed, skipped, total,
-                duration_ms, collected, warnings,
-                environment, report_json,
+                passed,
+                failed,
+                skipped,
+                total,
+                duration_ms,
+                collected,
+                warnings,
+                environment,
+                report_json,
             ],
         )?;
         Ok(())
@@ -341,7 +354,7 @@ impl Database {
             "SELECT task_id, created_at, command, task_type, status, exit_code,
                     error_message, started_at, completed_at,
                     duration_ms, retries_used, batch_id, task_name
-             FROM tasks WHERE 1=1"
+             FROM tasks WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
@@ -365,9 +378,8 @@ impl Database {
         sql.push_str(&format!(" OFFSET ?{}", param_idx));
         param_values.push(Box::new(offset));
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter()
-            .map(|p| p.as_ref())
-            .collect();
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
 
         let mut stmt = self.conn.prepare(&sql)?;
         let records = stmt.query_map(params_ref.as_slice(), |row| {
@@ -406,7 +418,7 @@ impl Database {
                     timeout_secs, status, exit_code, error_message, working_dir,
                     batch_id, task_name, retries_used, started_at, completed_at,
                     duration_ms, metadata_json
-             FROM tasks WHERE task_id = ?1"
+             FROM tasks WHERE task_id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![tid], |row| {
@@ -440,8 +452,8 @@ impl Database {
         match rows.next() {
             Some(Ok(mut record)) => {
                 // Fetch from related tables
-                record.stdout = self.get_output(tid.as_str(), "stdout")?;
-                record.stderr = self.get_output(tid.as_str(), "stderr")?;
+                record.stdout = self.get_output(tid.as_str(), OutputColumn::Stdout)?;
+                record.stderr = self.get_output(tid.as_str(), OutputColumn::Stderr)?;
                 record.env_vars = self.get_env_vars(tid.as_str())?;
                 record.artifacts = self.get_artifacts_for_task(tid.as_str())?;
                 record.pytest_result = self.get_pytest_result_for_task(tid.as_str())?;
@@ -452,17 +464,18 @@ impl Database {
     }
 
     /// Read a single output column from task_outputs
-    fn get_output(&self, task_id: &str, column: &str) -> SqlResult<Option<String>> {
-        let sql = format!("SELECT {} FROM task_outputs WHERE task_id = ?1", column);
-        self.conn.query_row(&sql, params![task_id], |row| row.get(0))
+    fn get_output(&self, task_id: &str, column: OutputColumn) -> SqlResult<Option<String>> {
+        let sql = format!("SELECT {} FROM task_outputs WHERE task_id = ?1", column.name());
+        self.conn
+            .query_row(&sql, params![task_id], |row| row.get(0))
             .optional()
     }
 
     /// Read env vars for a task
     fn get_env_vars(&self, task_id: &str) -> SqlResult<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value FROM task_env_vars WHERE task_id = ?1 ORDER BY key"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM task_env_vars WHERE task_id = ?1 ORDER BY key")?;
         let rows = stmt.query_map(params![task_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -475,9 +488,9 @@ impl Database {
 
     /// Get artifacts for a task
     fn get_artifacts_for_task(&self, task_id: &str) -> SqlResult<Vec<ArtifactRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, path, size_bytes FROM artifacts WHERE task_id = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, path, size_bytes FROM artifacts WHERE task_id = ?1")?;
         let rows = stmt.query_map(params![task_id], |row| {
             Ok(ArtifactRecord {
                 name: row.get(0)?,
@@ -497,7 +510,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT passed, failed, skipped, total, duration_ms,
                     collected, warnings, environment, report_json
-             FROM pytest_results WHERE task_id = ?1"
+             FROM pytest_results WHERE task_id = ?1",
         )?;
         let mut rows = stmt.query_map(params![task_id], |row| {
             Ok(PytestResultRecord {
@@ -533,17 +546,14 @@ impl Database {
 
     /// Get summary statistics
     pub fn get_summary_stats(&self) -> SqlResult<TaskSummaryStats> {
-        let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks", [], |row| row.get(0)
-        )?;
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
 
-        let by_status = self.collect_pairs(
-            "SELECT status, COUNT(*) FROM tasks GROUP BY status"
-        )?;
+        let by_status = self.collect_pairs("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
 
-        let by_type = self.collect_pairs(
-            "SELECT task_type, COUNT(*) FROM tasks GROUP BY task_type"
-        )?;
+        let by_type =
+            self.collect_pairs("SELECT task_type, COUNT(*) FROM tasks GROUP BY task_type")?;
 
         let last_24h: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM tasks WHERE created_at > strftime('%s', 'now', '-1 day')",
@@ -567,6 +577,18 @@ impl Database {
     }
 }
 
+/// Which output column to read from task_outputs
+enum OutputColumn { Stdout, Stderr }
+
+impl OutputColumn {
+    fn name(&self) -> &'static str {
+        match self {
+            OutputColumn::Stdout => "stdout",
+            OutputColumn::Stderr => "stderr",
+        }
+    }
+}
+
 /// Helper: Optional row helper
 trait OptionalRow {
     fn optional(self) -> SqlResult<Option<String>>;
@@ -582,10 +604,20 @@ impl OptionalRow for Result<String, rusqlite::Error> {
     }
 }
 
-/// Truncate string to max_chars, appending "..." if truncated
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.len() > max_chars {
-        format!("{}...", &s[..max_chars])
+/// Truncate string to max_bytes, appending "..." if truncated.
+///
+/// Uses char_indices to find a safe UTF-8 boundary so multi-byte
+/// characters are never split.
+fn truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() > max_bytes {
+        let safe_boundary = s.char_indices()
+            .take_while(|(i, _)| *i < max_bytes)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        let mut result = s[..safe_boundary].to_string();
+        result.push_str("...");
+        result
     } else {
         s.to_string()
     }
@@ -675,7 +707,7 @@ pub struct TaskSummaryStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{Task, TaskResult, TaskOutput, TaskStatus, TaskType};
+    use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus, TaskType};
     use chrono::Utc;
 
     fn setup_db() -> Database {
@@ -685,7 +717,8 @@ mod tests {
     #[test]
     fn test_create_tables() {
         let db = setup_db();
-        let tables: Vec<String> = db.conn
+        let tables: Vec<String> = db
+            .conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -694,18 +727,31 @@ mod tests {
             .collect();
 
         assert!(tables.contains(&"tasks".to_string()), "tasks table missing");
-        assert!(tables.contains(&"task_outputs".to_string()), "task_outputs table missing");
-        assert!(tables.contains(&"task_env_vars".to_string()), "task_env_vars table missing");
-        assert!(tables.contains(&"artifacts".to_string()), "artifacts table missing");
-        assert!(tables.contains(&"pytest_results".to_string()), "pytest_results table missing");
+        assert!(
+            tables.contains(&"task_outputs".to_string()),
+            "task_outputs table missing"
+        );
+        assert!(
+            tables.contains(&"task_env_vars".to_string()),
+            "task_env_vars table missing"
+        );
+        assert!(
+            tables.contains(&"artifacts".to_string()),
+            "artifacts table missing"
+        );
+        assert!(
+            tables.contains(&"pytest_results".to_string()),
+            "pytest_results table missing"
+        );
     }
 
     #[test]
     fn test_foreign_keys_enabled() {
         let db = setup_db();
-        let enabled: bool = db.conn.query_row(
-            "PRAGMA foreign_keys", [], |row| row.get(0)
-        ).unwrap();
+        let enabled: bool = db
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
         assert!(enabled, "foreign_keys PRAGMA must be ON");
     }
 
@@ -717,7 +763,10 @@ mod tests {
              VALUES ('bad-status', 0, 'x', 'Shell', 'InvalidStatus')",
             [],
         );
-        assert!(result.is_err(), "CHECK constraint should reject invalid status");
+        assert!(
+            result.is_err(),
+            "CHECK constraint should reject invalid status"
+        );
     }
 
     #[test]
@@ -728,28 +777,40 @@ mod tests {
              VALUES ('bad-type', 0, 'x', 'Unknown', 'Pending')",
             [],
         );
-        assert!(result.is_err(), "CHECK constraint should reject invalid task_type");
+        assert!(
+            result.is_err(),
+            "CHECK constraint should reject invalid task_type"
+        );
     }
 
     #[test]
     fn test_foreign_key_cascade() {
         let db = setup_db();
         // Insert a valid task
-        db.conn.execute(
-            "INSERT INTO tasks (task_id, created_at, command, task_type, status)
+        db.conn
+            .execute(
+                "INSERT INTO tasks (task_id, created_at, command, task_type, status)
              VALUES ('fk-test', 1000, 'echo', 'Shell', 'Completed')",
-            [],
-        ).unwrap();
+                [],
+            )
+            .unwrap();
         // Insert an artifact referencing it
         db.conn.execute(
             "INSERT INTO artifacts (task_id, name, path) VALUES ('fk-test', 'out.log', '/tmp/out.log')",
             [],
         ).unwrap();
         // Delete the task — cascade should remove the artifact
-        db.conn.execute("DELETE FROM tasks WHERE task_id = 'fk-test'", []).unwrap();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM artifacts WHERE task_id = 'fk-test'", [], |row| row.get(0)
-        ).unwrap();
+        db.conn
+            .execute("DELETE FROM tasks WHERE task_id = 'fk-test'", [])
+            .unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE task_id = 'fk-test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "ON DELETE CASCADE should remove child rows");
     }
 
@@ -769,7 +830,10 @@ mod tests {
         assert_eq!(records[0].command, "echo hello");
         assert_eq!(records[0].task_name, Some("test_task".to_string()));
         assert_eq!(records[0].status, "Pending");
-        assert!(records[0].created_at.is_some(), "created_at should be present");
+        assert!(
+            records[0].created_at.is_some(),
+            "created_at should be present"
+        );
     }
 
     #[test]
@@ -782,7 +846,9 @@ mod tests {
         db.mark_running(task_id).unwrap();
 
         // Verify running
-        let records = db.query_tasks(Some(TaskStatus::Running), None, 10, 0).unwrap();
+        let records = db
+            .query_tasks(Some(TaskStatus::Running), None, 10, 0)
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert!(records[0].started_at.is_some());
 
@@ -805,7 +871,9 @@ mod tests {
         db.upsert_result(&result).unwrap();
 
         // Verify completed via query
-        let records = db.query_tasks(Some(TaskStatus::Completed), None, 10, 0).unwrap();
+        let records = db
+            .query_tasks(Some(TaskStatus::Completed), None, 10, 0)
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].exit_code, Some(0));
         assert!(records[0].duration_ms.is_some());
@@ -826,19 +894,22 @@ mod tests {
 
         db.upsert_pytest_result(
             task_id,
-            10,     // passed
-            2,      // failed
-            1,      // skipped
-            13,     // total
+            10,         // passed
+            2,          // failed
+            1,          // skipped
+            13,         // total
             Some(5500), // duration_ms
             Some(13),   // collected
             Some(0),    // warnings
             Some("Linux"),
             Some(r#"{"summary":{"passed":10,"failed":2,"total":13}}"#),
-        ).unwrap();
+        )
+        .unwrap();
 
         let detail = db.get_task_by_id(task_id).unwrap().unwrap();
-        let pytest = detail.pytest_result.expect("pytest_result should be present");
+        let pytest = detail
+            .pytest_result
+            .expect("pytest_result should be present");
         assert_eq!(pytest.passed, 10);
         assert_eq!(pytest.failed, 2);
         assert_eq!(pytest.total, 13);
@@ -853,7 +924,11 @@ mod tests {
         let task_id = task.task_id;
 
         db.insert_task(&task).unwrap();
-        db.insert_artifacts(task_id, &["output.log".to_string(), "report.xml".to_string()]).unwrap();
+        db.insert_artifacts(
+            task_id,
+            &["output.log".to_string(), "report.xml".to_string()],
+        )
+        .unwrap();
 
         let detail = db.get_task_by_id(task_id).unwrap().unwrap();
         assert_eq!(detail.artifacts.len(), 2);
@@ -892,7 +967,9 @@ mod tests {
         let stats = db.get_summary_stats().unwrap();
         assert_eq!(stats.total, 3);
 
-        let running_count = stats.by_status.iter()
+        let running_count = stats
+            .by_status
+            .iter()
             .find(|(s, _)| s == "Running")
             .map(|(_, c)| *c)
             .unwrap_or(0);
@@ -924,7 +1001,10 @@ mod tests {
             artifacts: vec![],
             error_message: None,
         };
-        assert!(db.upsert_result(&tr).is_ok(), "upsert_result on existing task_id should work");
+        assert!(
+            db.upsert_result(&tr).is_ok(),
+            "upsert_result on existing task_id should work"
+        );
     }
 
     #[test]
@@ -937,12 +1017,18 @@ mod tests {
         db.insert_task(&task).unwrap();
 
         // Verify the stored created_at is an integer
-        let stored: i64 = db.conn.query_row(
-            "SELECT created_at FROM tasks WHERE task_id = ?1",
-            params![task.task_id.to_string()],
-            |row| row.get(0),
-        ).unwrap();
+        let stored: i64 = db
+            .conn
+            .query_row(
+                "SELECT created_at FROM tasks WHERE task_id = ?1",
+                params![task.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         // Should be close to `now_ts` (within a few seconds)
-        assert!((stored - now_ts).abs() < 5, "created_at should be an INTEGER unix timestamp");
+        assert!(
+            (stored - now_ts).abs() < 5,
+            "created_at should be an INTEGER unix timestamp"
+        );
     }
 }
