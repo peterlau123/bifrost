@@ -149,9 +149,9 @@ fn main() {
 
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
-    use bifrost::core::protocol::Protocol;
+    use bifrost::client::{pytest, results, status, submit};
     use bifrost::core::models::TaskType;
-    use bifrost::client::{submit, status, results, pytest};
+    use bifrost::core::protocol::Protocol;
     use uuid::Uuid;
 
     // Default shared storage path
@@ -165,8 +165,8 @@ fn handle_client_mode(command: ClientCommand) {
             timeout,
             working_dir,
         } => {
-            let protocol = Protocol::new(shared_storage.clone())
-                .expect("Failed to create protocol");
+            let protocol =
+                Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
             let parsed_type = match task_type.as_str() {
                 "pytest" => TaskType::Pytest,
@@ -175,7 +175,15 @@ fn handle_client_mode(command: ClientCommand) {
                 _ => TaskType::Shell,
             };
 
-            match submit::submit_task(&protocol, None, cmd, parsed_type, priority, timeout, working_dir) {
+            match submit::submit_task(
+                &protocol,
+                None,
+                cmd,
+                parsed_type,
+                priority,
+                timeout,
+                working_dir,
+            ) {
                 Ok(task_id) => {
                     println!("Task submitted successfully");
                     println!("  Task ID: {}", task_id);
@@ -193,10 +201,17 @@ fn handle_client_mode(command: ClientCommand) {
             timeout,
             working_dir,
         } => {
-            let protocol = Protocol::new(shared_storage.clone())
-                .expect("Failed to create protocol");
+            let protocol =
+                Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
-            match submit::submit_pytest_task(&protocol, None, path.clone(), priority, timeout, working_dir) {
+            match submit::submit_pytest_task(
+                &protocol,
+                None,
+                path.clone(),
+                priority,
+                timeout,
+                working_dir,
+            ) {
                 Ok(task_id) => {
                     println!("Pytest task submitted successfully");
                     println!("  Task ID: {}", task_id);
@@ -210,11 +225,10 @@ fn handle_client_mode(command: ClientCommand) {
         }
 
         ClientCommand::Status { task_id } => {
-            let protocol = Protocol::new(shared_storage.clone())
-                .expect("Failed to create protocol");
+            let protocol =
+                Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
-            let parsed_id = Uuid::parse_str(&task_id)
-                .expect("Invalid task ID format");
+            let parsed_id = Uuid::parse_str(&task_id).expect("Invalid task ID format");
 
             match status::query_status(&protocol, parsed_id) {
                 Ok(status_resp) => {
@@ -231,11 +245,10 @@ fn handle_client_mode(command: ClientCommand) {
         }
 
         ClientCommand::Results { task_id, format } => {
-            let protocol = Protocol::new(shared_storage.clone())
-                .expect("Failed to create protocol");
+            let protocol =
+                Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
-            let parsed_id = Uuid::parse_str(&task_id)
-                .expect("Invalid task ID format");
+            let parsed_id = Uuid::parse_str(&task_id).expect("Invalid task ID format");
 
             let result_format = match format.as_str() {
                 "json" => results::ResultFormat::Json,
@@ -262,9 +275,12 @@ fn handle_client_mode(command: ClientCommand) {
             let batch_dir = PathBuf::from("/tmp/bifrost/batch_progress");
 
             match command {
-                BatchCommand::SubmitManifest { manifest, batch_dir: custom_batch_dir } => {
-                    let protocol = Protocol::new(shared_storage.clone())
-                        .expect("Failed to create protocol");
+                BatchCommand::SubmitManifest {
+                    manifest,
+                    batch_dir: custom_batch_dir,
+                } => {
+                    let protocol =
+                        Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
                     let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
 
@@ -284,8 +300,7 @@ fn handle_client_mode(command: ClientCommand) {
                 BatchCommand::BatchStatus { batch_id } => {
                     let tracker = BatchTracker::new(batch_dir);
 
-                    let parsed_id = Uuid::parse_str(&batch_id)
-                        .expect("Invalid batch ID format");
+                    let parsed_id = Uuid::parse_str(&batch_id).expect("Invalid batch ID format");
 
                     match tracker.load_progress(parsed_id) {
                         Ok(progress) => {
@@ -308,7 +323,9 @@ fn handle_client_mode(command: ClientCommand) {
                     println!("  Requires daemon to support cancel signal");
                 }
 
-                BatchCommand::ListBatches { batch_dir: custom_batch_dir } => {
+                BatchCommand::ListBatches {
+                    batch_dir: custom_batch_dir,
+                } => {
                     let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
 
                     match tracker.list_active_batches() {
@@ -320,8 +337,11 @@ fn handle_client_mode(command: ClientCommand) {
                                 for batch in batches {
                                     println!("  - Batch ID: {}", batch.batch_id);
                                     println!("    Status: {}", batch.status);
-                                    println!("    Tasks: {} of {} completed",
-                                        batch.completed_tasks.len(), batch.total_tasks);
+                                    println!(
+                                        "    Tasks: {} of {} completed",
+                                        batch.completed_tasks.len(),
+                                        batch.total_tasks
+                                    );
                                 }
                             }
                         }
@@ -362,57 +382,52 @@ mod tests {
             "bifrost",
             "client",
             "submit",
-            "--command", "pytest tests/",
-            "--task-type", "pytest",
-            "--priority", "10",
-            "--timeout", "600",
+            "--command",
+            "pytest tests/",
+            "--task-type",
+            "pytest",
+            "--priority",
+            "10",
+            "--timeout",
+            "600",
         ]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Client { command } => {
-                match command {
-                    ClientCommand::Submit {
-                        command: cmd,
-                        task_type,
-                        priority,
-                        timeout,
-                        working_dir,
-                    } => {
-                        assert_eq!(cmd, "pytest tests/");
-                        assert_eq!(task_type, "pytest");
-                        assert_eq!(priority, 10);
-                        assert_eq!(timeout, 600);
-                        assert!(working_dir.is_none());
-                    }
-                    _ => panic!("Expected Submit command"),
+            Mode::Client { command } => match command {
+                ClientCommand::Submit {
+                    command: cmd,
+                    task_type,
+                    priority,
+                    timeout,
+                    working_dir,
+                } => {
+                    assert_eq!(cmd, "pytest tests/");
+                    assert_eq!(task_type, "pytest");
+                    assert_eq!(priority, 10);
+                    assert_eq!(timeout, 600);
+                    assert!(working_dir.is_none());
                 }
-            }
+                _ => panic!("Expected Submit command"),
+            },
             _ => panic!("Expected Client mode"),
         }
     }
 
     #[test]
     fn test_cli_parse_client_status() {
-        let cli = Cli::try_parse_from([
-            "bifrost",
-            "client",
-            "status",
-            "--task-id", "12345",
-        ]);
+        let cli = Cli::try_parse_from(["bifrost", "client", "status", "--task-id", "12345"]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Client { command } => {
-                match command {
-                    ClientCommand::Status { task_id } => {
-                        assert_eq!(task_id, "12345");
-                    }
-                    _ => panic!("Expected Status command"),
+            Mode::Client { command } => match command {
+                ClientCommand::Status { task_id } => {
+                    assert_eq!(task_id, "12345");
                 }
-            }
+                _ => panic!("Expected Status command"),
+            },
             _ => panic!("Expected Client mode"),
         }
     }
@@ -422,7 +437,8 @@ mod tests {
         let cli = Cli::try_parse_from([
             "bifrost",
             "daemon",
-            "--config", "/etc/bifrost/daemon.yaml",
+            "--config",
+            "/etc/bifrost/daemon.yaml",
             "--systemd",
         ]);
 
@@ -439,10 +455,7 @@ mod tests {
 
     #[test]
     fn test_cli_parse_daemon_default() {
-        let cli = Cli::try_parse_from([
-            "bifrost",
-            "daemon",
-        ]);
+        let cli = Cli::try_parse_from(["bifrost", "daemon"]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();

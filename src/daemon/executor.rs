@@ -3,10 +3,12 @@
 
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
+use std::path::PathBuf;
 use std::process::Stdio;
 use chrono::Utc;
 
 use crate::core::models::{Task, TaskResult, TaskStatus, TaskOutput};
+use crate::core::db::Database;
 use crate::daemon::logger::LogManager;
 
 /// Command executor for running tasks
@@ -27,8 +29,17 @@ impl Executor {
         })
     }
 
-    /// Execute a task and return the result
-    pub async fn execute(&self, task: &Task) -> Result<TaskResult, String> {
+    /// Execute a task and return the result.
+    ///
+    /// If `db_path` is `Some`, the task execution is recorded in SQLite for
+    /// history tracking (status → Running at start, final result at end).
+    /// A fresh connection is opened from the path to avoid `!Sync` threading
+    /// issues with spawned tasks. SQLite errors are non-fatal.
+    pub async fn execute(&self, task: &Task, db_path: Option<PathBuf>) -> Result<TaskResult, String> {
+        // Open a fresh DB connection if a path is provided
+        let db = db_path.as_ref()
+            .and_then(|p| Database::open(p.clone(), None).ok());
+
         let start_time = Utc::now();
 
         // Determine timeout
@@ -39,6 +50,13 @@ impl Executor {
             task_timeout
         };
 
+        // Mark task as Running in SQLite (best-effort)
+        if let Some(ref db) = db {
+            if let Err(e) = db.mark_running(task.task_id) {
+                eprintln!("Warning: failed to mark task running in DB: {}", e);
+            }
+        }
+
         // Execute command with timeout
         let execution_result = timeout(
             effective_timeout,
@@ -47,27 +65,20 @@ impl Executor {
 
         let end_time = Utc::now();
 
-        // Process execution result
-        match execution_result {
+        // Build result from execution outcome
+        let result = match execution_result {
             Ok(Ok(output)) => {
-                // Write logs
                 self.log_manager.write_stdout(task.task_id, &output.stdout)?;
                 self.log_manager.write_stderr(task.task_id, &output.stderr)?;
-                self.log_manager.write_metadata(
-                    task.task_id,
-                    start_time,
-                    end_time,
-                    output.exit_code,
-                )?;
+                self.log_manager.write_metadata(task.task_id, start_time, end_time, output.exit_code)?;
 
-                // Determine status
                 let status = if output.exit_code == Some(0) {
                     TaskStatus::Completed
                 } else {
                     TaskStatus::Failed
                 };
 
-                Ok(TaskResult {
+                TaskResult {
                     task_id: task.task_id,
                     status,
                     output,
@@ -76,29 +87,19 @@ impl Executor {
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: None,
-                })
+                }
             }
-
             Ok(Err(e)) => {
-                // Execution error
                 let error_msg = format!("Execution error: {}", e);
-
                 let output = TaskOutput {
                     stdout: String::new(),
                     stderr: error_msg.clone(),
                     exit_code: None,
                 };
-
-                // Write error to stderr log
                 self.log_manager.write_stderr(task.task_id, &error_msg)?;
-                self.log_manager.write_metadata(
-                    task.task_id,
-                    start_time,
-                    end_time,
-                    None,
-                )?;
+                self.log_manager.write_metadata(task.task_id, start_time, end_time, None)?;
 
-                Ok(TaskResult {
+                TaskResult {
                     task_id: task.task_id,
                     status: TaskStatus::Failed,
                     output,
@@ -107,29 +108,19 @@ impl Executor {
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: Some(error_msg),
-                })
+                }
             }
-
             Err(_) => {
-                // Timeout
                 let error_msg = format!("Task timed out after {} seconds", effective_timeout.as_secs());
-
                 let output = TaskOutput {
                     stdout: String::new(),
                     stderr: error_msg.clone(),
                     exit_code: None,
                 };
-
-                // Write timeout to stderr log
                 self.log_manager.write_stderr(task.task_id, &error_msg)?;
-                self.log_manager.write_metadata(
-                    task.task_id,
-                    start_time,
-                    end_time,
-                    None,
-                )?;
+                self.log_manager.write_metadata(task.task_id, start_time, end_time, None)?;
 
-                Ok(TaskResult {
+                TaskResult {
                     task_id: task.task_id,
                     status: TaskStatus::Timeout,
                     output,
@@ -138,9 +129,18 @@ impl Executor {
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: Some(error_msg),
-                })
+                }
+            }
+        };
+
+        // Record result in SQLite (best-effort)
+        if let Some(ref db) = db {
+            if let Err(e) = db.upsert_result(&result) {
+                eprintln!("Warning: failed to record task result in DB: {}", e);
             }
         }
+
+        Ok(result)
     }
 
     /// Execute the actual command with safe parsing (no shell injection)
@@ -220,10 +220,10 @@ impl Executor {
     }
 
     /// Execute a task with GPU isolation by injecting CUDA_VISIBLE_DEVICES
-    pub async fn execute_with_gpu(&self, task: &Task, gpu_id: u32) -> Result<TaskResult, String> {
+    pub async fn execute_with_gpu(&self, task: &Task, gpu_id: u32, db_path: Option<PathBuf>) -> Result<TaskResult, String> {
         let mut task_with_gpu = task.clone();
         task_with_gpu.env_vars.insert("CUDA_VISIBLE_DEVICES".to_string(), gpu_id.to_string());
-        self.execute(&task_with_gpu).await
+        self.execute(&task_with_gpu, db_path).await
     }
 }
 
@@ -248,7 +248,7 @@ mod tests {
         let executor = Executor::new(log_root.clone(), Duration::from_secs(30)).unwrap();
         let task = create_test_task();
 
-        let result = executor.execute(&task).await;
+        let result = executor.execute(&task, None).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -274,7 +274,7 @@ mod tests {
         let task = Task::new("exit 1".to_string(), crate::core::models::TaskType::Shell)
             .with_timeout(5);
 
-        let result = executor.execute(&task).await;
+        let result = executor.execute(&task, None).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -295,7 +295,7 @@ mod tests {
         let task = Task::new("sleep 10".to_string(), crate::core::models::TaskType::Shell)
             .with_timeout(2);
 
-        let result = executor.execute(&task).await;
+        let result = executor.execute(&task, None).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -317,7 +317,7 @@ mod tests {
             crate::core::models::TaskType::Shell,
         ).with_timeout(5);
 
-        let result = executor.execute(&task).await;
+        let result = executor.execute(&task, None).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -341,7 +341,7 @@ mod tests {
         .with_timeout(5)
         .with_env_var("TEST_VAR".to_string(), "test_value".to_string());
 
-        let result = executor.execute(&task).await;
+        let result = executor.execute(&task, None).await;
 
         assert!(result.is_ok());
         let result = result.unwrap();

@@ -1,13 +1,13 @@
 // Integration test: Batch GPU scheduling workflow
 // Test batch manifest submission -> GPU scheduling -> batch progress tracking
 
-use bifrost::core::protocol::Protocol;
-use bifrost::core::models::{TaskManifest, TaskItem, TaskType, TaskStatus};
-use bifrost::core::batch_tracker::{BatchTracker, BatchStatus};
 use bifrost::client::submit;
-use tempfile::TempDir;
-use std::path::PathBuf;
+use bifrost::core::batch_tracker::{BatchStatus, BatchTracker};
+use bifrost::core::models::{TaskItem, TaskManifest, TaskStatus, TaskType};
+use bifrost::core::protocol::Protocol;
 use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
 use uuid::Uuid;
 
 #[test]
@@ -17,8 +17,7 @@ fn test_batch_manifest_submission() {
     let batch_progress_dir = temp_dir.path().join("batch_progress");
 
     // Setup: Create protocol and batch tracker
-    let protocol = Protocol::new(shared_storage.clone())
-        .expect("Failed to create protocol");
+    let protocol = Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
 
     let batch_tracker = BatchTracker::new(batch_progress_dir.clone());
 
@@ -78,7 +77,8 @@ fn test_batch_manifest_submission() {
     assert_eq!(command_files.len(), 2, "Should have 2 task files submitted");
 
     // Verify batch progress file created
-    let progress = batch_tracker.load_progress(batch_id)
+    let progress = batch_tracker
+        .load_progress(batch_id)
         .expect("Failed to load batch progress");
 
     assert_eq!(progress.batch_id, batch_id);
@@ -88,7 +88,8 @@ fn test_batch_manifest_submission() {
 
     // Verify each submitted task has batch_id set
     for (_, task_id, task_name) in &progress.submitted_tasks {
-        let task = protocol.read_task(&task_id)
+        let task = protocol
+            .read_task(&task_id)
             .expect("Failed to read submitted task");
 
         assert_eq!(task.batch_id, Some(batch_id));
@@ -116,20 +117,20 @@ fn test_batch_progress_tracking() {
             (0, Uuid::new_v4(), "task_0".to_string()),
             (1, Uuid::new_v4(), "task_1".to_string()),
         ],
-        completed_tasks: vec![
-            (Uuid::new_v4(), TaskStatus::Completed, "task_0".to_string()),
-        ],
+        completed_tasks: vec![(Uuid::new_v4(), TaskStatus::Completed, "task_0".to_string())],
         status: BatchStatus::Running,
         created_at: now,
         updated_at: now,
     };
 
     // Save progress
-    batch_tracker.save_progress(&progress)
+    batch_tracker
+        .save_progress(&progress)
         .expect("Failed to save batch progress");
 
     // Load progress
-    let loaded = batch_tracker.load_progress(batch_id)
+    let loaded = batch_tracker
+        .load_progress(batch_id)
         .expect("Failed to load batch progress");
 
     assert_eq!(loaded.batch_id, batch_id);
@@ -139,18 +140,18 @@ fn test_batch_progress_tracking() {
 
     // Update progress with task completion
     let mut updated = loaded.clone();
-    updated.completed_tasks.push((
-        Uuid::new_v4(),
-        TaskStatus::Completed,
-        "task_1".to_string(),
-    ));
+    updated
+        .completed_tasks
+        .push((Uuid::new_v4(), TaskStatus::Completed, "task_1".to_string()));
     updated.updated_at = chrono::Utc::now();
 
-    batch_tracker.save_progress(&updated)
+    batch_tracker
+        .save_progress(&updated)
         .expect("Failed to save updated progress");
 
     // Load again to verify update
-    let reloaded = batch_tracker.load_progress(batch_id)
+    let reloaded = batch_tracker
+        .load_progress(batch_id)
         .expect("Failed to reload batch progress");
 
     assert_eq!(reloaded.completed_tasks.len(), 2);
@@ -206,7 +207,8 @@ fn test_list_active_batches() {
     batch_tracker.save_progress(&completed_progress).unwrap();
 
     // List active batches (should only return Running batch)
-    let active_batches = batch_tracker.list_active_batches()
+    let active_batches = batch_tracker
+        .list_active_batches()
         .expect("Failed to list active batches");
 
     assert_eq!(active_batches.len(), 1, "Should only list active batches");
@@ -214,7 +216,9 @@ fn test_list_active_batches() {
     assert_eq!(active_batches[0].status, BatchStatus::Running);
 
     // Completed batch should not be in active list
-    assert!(!active_batches.iter().any(|b| b.batch_id == completed_batch_id));
+    assert!(!active_batches
+        .iter()
+        .any(|b| b.batch_id == completed_batch_id));
 }
 
 #[test]
@@ -262,12 +266,19 @@ fn test_batch_cleanup_old_batches() {
     batch_tracker.save_progress(&recent_progress).unwrap();
 
     // Cleanup batches older than 7 days
-    let removed_count = batch_tracker.cleanup_old_batches(7)
+    let removed_count = batch_tracker
+        .cleanup_old_batches(7)
         .expect("Failed to cleanup old batches");
 
     assert_eq!(removed_count, 1, "Should remove 1 old batch");
 
     // Verify old batch removed, recent batch still exists
-    assert!(batch_tracker.load_progress(old_batch_id).is_err(), "Old batch should be removed");
-    assert!(batch_tracker.load_progress(recent_batch_id).is_ok(), "Recent batch should still exist");
+    assert!(
+        batch_tracker.load_progress(old_batch_id).is_err(),
+        "Old batch should be removed"
+    );
+    assert!(
+        batch_tracker.load_progress(recent_batch_id).is_ok(),
+        "Recent batch should still exist"
+    );
 }

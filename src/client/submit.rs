@@ -1,12 +1,12 @@
 // Client submit functionality
-use crate::core::models::{Task, TaskType, TaskManifest, BatchProgress, BatchStatus};
-use crate::core::protocol::Protocol;
 use crate::core::batch_tracker::BatchTracker;
 use crate::core::db::{Database, TaskMeta};
 use crate::core::error::{BifrostError, Result};
+use crate::core::models::{BatchProgress, BatchStatus, Task, TaskManifest, TaskType};
+use crate::core::protocol::Protocol;
+use chrono::Utc;
 use std::path::PathBuf;
 use uuid::Uuid;
-use chrono::Utc;
 
 /// Submit a task to the daemon via shared storage
 ///
@@ -82,11 +82,10 @@ pub fn submit_batch_manifest(
     manifest_path: &PathBuf,
 ) -> Result<Uuid> {
     // Read manifest file
-    let manifest_json = std::fs::read_to_string(manifest_path)
-        .map_err(BifrostError::IoError)?;
+    let manifest_json = std::fs::read_to_string(manifest_path).map_err(BifrostError::IoError)?;
 
-    let manifest: TaskManifest = serde_json::from_str(&manifest_json)
-        .map_err(BifrostError::JsonError)?;
+    let manifest: TaskManifest =
+        serde_json::from_str(&manifest_json).map_err(BifrostError::JsonError)?;
 
     // Generate batch ID
     let batch_id = Uuid::new_v4();
@@ -123,14 +122,20 @@ pub fn submit_batch_manifest(
         let task = Task::new(task_item.command.clone(), task_item.task_type.clone())
             .with_timeout(task_item.timeout)
             .with_priority(task_item.priority)
-            .with_working_dir(task_item.working_dir.clone().unwrap_or_else(|| PathBuf::from(".")))
+            .with_working_dir(
+                task_item
+                    .working_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(".")),
+            )
             .with_batch_id(batch_id)
             .with_task_name(task_item.task_name.clone());
 
         // Add environment variables
-        let task = task_item.env_vars.iter().fold(task, |t, (k, v)| {
-            t.with_env_var(k.clone(), v.clone())
-        });
+        let task = task_item
+            .env_vars
+            .iter()
+            .fold(task, |t, (k, v)| t.with_env_var(k.clone(), v.clone()));
 
         let task_id = task.task_id;
 
@@ -144,7 +149,9 @@ pub fn submit_batch_manifest(
         }
 
         // Track submitted task
-        progress.submitted_tasks.push((index, task_id, task_item.task_name.clone()));
+        progress
+            .submitted_tasks
+            .push((index, task_id, task_item.task_name.clone()));
         progress.current_index = index + 1;
         progress.updated_at = Utc::now();
     }
@@ -154,7 +161,8 @@ pub fn submit_batch_manifest(
     progress.updated_at = Utc::now();
 
     // Save initial progress
-    batch_tracker.save_progress(&progress)
+    batch_tracker
+        .save_progress(&progress)
         .map_err(|e| BifrostError::ConfigInvalid(e.to_string()))?;
 
     Ok(batch_id)
@@ -178,7 +186,8 @@ mod tests {
             10,
             300,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify task was created
         assert!(!task_id.is_nil());
@@ -191,7 +200,10 @@ mod tests {
             .collect();
 
         assert_eq!(files.len(), 1);
-        assert!(files[0].file_name().to_string_lossy().contains(&task_id.to_string()));
+        assert!(files[0]
+            .file_name()
+            .to_string_lossy()
+            .contains(&task_id.to_string()));
     }
 
     #[test]
@@ -207,7 +219,8 @@ mod tests {
             5,
             600,
             Some(PathBuf::from("/workspace")),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Read back the task to verify working_dir was set
         let task = protocol.read_task(&task_id).unwrap();
@@ -219,14 +232,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
-        let task_id = submit_pytest_task(
-            &protocol,
-            None,
-            "tests/unit/".to_string(),
-            10,
-            300,
-            None,
-        ).unwrap();
+        let task_id =
+            submit_pytest_task(&protocol, None, "tests/unit/".to_string(), 10, 300, None).unwrap();
 
         // Read back the task
         let task = protocol.read_task(&task_id).unwrap();

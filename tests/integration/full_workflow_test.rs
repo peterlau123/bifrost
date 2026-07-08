@@ -1,16 +1,16 @@
 // Integration test: End-to-end workflow test
 // Test full workflow: Client submit -> Watcher detect -> Executor execute -> Results write -> Client retrieve
 
-use bifrost::core::protocol::Protocol;
-use bifrost::core::models::{Task, TaskType, TaskStatus, TaskResult, TaskOutput};
-use bifrost::client::submit;
 use bifrost::client::results;
+use bifrost::client::submit;
+use bifrost::core::models::{Task, TaskOutput, TaskResult, TaskStatus, TaskType};
+use bifrost::core::protocol::Protocol;
 use bifrost::daemon::executor::Executor;
-use tempfile::TempDir;
-use std::time::Duration;
-use tokio::runtime::Runtime;
-use std::path::PathBuf;
 use chrono::Utc;
+use std::path::PathBuf;
+use std::time::Duration;
+use tempfile::TempDir;
+use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 #[test]
@@ -32,7 +32,8 @@ fn test_full_workflow_shell_command() {
         0,
         10,
         None,
-    ).expect("Failed to submit task");
+    )
+    .expect("Failed to submit task");
 
     // Verify task was written to commands directory
     let tasks = protocol.list_tasks().unwrap();
@@ -44,10 +45,10 @@ fn test_full_workflow_shell_command() {
 
     // Step 3: Executor executes task (simulate daemon execution)
     let log_root = shared_storage.join("logs");
-    let executor = Executor::new(log_root, Duration::from_secs(30))
-        .expect("Failed to create executor");
+    let executor =
+        Executor::new(log_root, Duration::from_secs(30)).expect("Failed to create executor");
 
-    let execution_result = rt.block_on(executor.execute(&task));
+    let execution_result = rt.block_on(executor.execute(&task, None));
     assert!(execution_result.is_ok());
     let result = execution_result.unwrap();
 
@@ -60,11 +61,17 @@ fn test_full_workflow_shell_command() {
     protocol.remove_task(&task_id).unwrap();
 
     // Step 4: Client retrieves results
-    let retrieved_result = results::get_result(&protocol, task_id)
-        .expect("Failed to retrieve results");
+    let retrieved_result =
+        results::get_result(&protocol, task_id).expect("Failed to retrieve results");
 
     assert_eq!(retrieved_result.status, TaskStatus::Completed);
-    assert!(retrieved_result.output.stdout.contains("Integration test successful") || result.is_success());
+    assert!(
+        retrieved_result
+            .output
+            .stdout
+            .contains("Integration test successful")
+            || result.is_success()
+    );
     assert_eq!(retrieved_result.output.exit_code, Some(0));
 }
 
@@ -76,10 +83,14 @@ fn test_full_workflow_pytest_command() {
 
     // Create a simple test file
     let test_file = temp_dir.path().join("test_example.py");
-    std::fs::write(&test_file, "
+    std::fs::write(
+        &test_file,
+        "
 def test_simple():
     assert True
-").expect("Failed to write test file");
+",
+    )
+    .expect("Failed to write test file");
 
     // Setup protocol
     let protocol = Protocol::new(shared_storage.clone()).expect("Failed to create protocol");
@@ -94,15 +105,18 @@ def test_simple():
         5,
         60,
         Some(temp_dir.path().to_path_buf()),
-    ).expect("Failed to submit pytest task");
+    )
+    .expect("Failed to submit pytest task");
 
     // Execute
     let log_root = shared_storage.join("logs");
-    let executor = Executor::new(log_root, Duration::from_secs(120))
-        .expect("Failed to create executor");
+    let executor =
+        Executor::new(log_root, Duration::from_secs(120)).expect("Failed to create executor");
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
-    let result = rt.block_on(executor.execute(&task)).expect("Failed to execute");
+    let result = rt
+        .block_on(executor.execute(&task, None))
+        .expect("Failed to execute");
 
     // Write result
     let results_dir = shared_storage.join("results");
@@ -112,11 +126,14 @@ def test_simple():
     protocol.remove_task(&task_id).unwrap();
 
     // Retrieve results
-    let retrieved_result = results::get_result(&protocol, task_id)
-        .expect("Failed to retrieve results");
+    let retrieved_result =
+        results::get_result(&protocol, task_id).expect("Failed to retrieve results");
 
     // Check status - may be Completed or Failed depending on pytest availability
-    assert!(retrieved_result.status == TaskStatus::Completed || retrieved_result.status == TaskStatus::Failed);
+    assert!(
+        retrieved_result.status == TaskStatus::Completed
+            || retrieved_result.status == TaskStatus::Failed
+    );
 }
 
 #[test]
@@ -136,15 +153,18 @@ fn test_workflow_with_timeout() {
         0,
         2, // 2 second timeout
         None,
-    ).expect("Failed to submit task");
+    )
+    .expect("Failed to submit task");
 
     // Execute
     let log_root = shared_storage.join("logs");
-    let executor = Executor::new(log_root, Duration::from_secs(30))
-        .expect("Failed to create executor");
+    let executor =
+        Executor::new(log_root, Duration::from_secs(30)).expect("Failed to create executor");
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
-    let result = rt.block_on(executor.execute(&task)).expect("Failed to execute");
+    let result = rt
+        .block_on(executor.execute(&task, None))
+        .expect("Failed to execute");
 
     // Write result
     let results_dir = shared_storage.join("results");
@@ -154,11 +174,14 @@ fn test_workflow_with_timeout() {
     protocol.remove_task(&task_id).unwrap();
 
     // Verify timeout
-    let retrieved_result = results::get_result(&protocol, task_id)
-        .expect("Failed to retrieve results");
+    let retrieved_result =
+        results::get_result(&protocol, task_id).expect("Failed to retrieve results");
 
     assert_eq!(retrieved_result.status, TaskStatus::Timeout);
-    assert!(retrieved_result.error_message.unwrap().contains("timed out"));
+    assert!(retrieved_result
+        .error_message
+        .unwrap()
+        .contains("timed out"));
 }
 
 #[test]
@@ -178,15 +201,18 @@ fn test_workflow_with_failure() {
         0,
         10,
         None,
-    ).expect("Failed to submit task");
+    )
+    .expect("Failed to submit task");
 
     // Execute
     let log_root = shared_storage.join("logs");
-    let executor = Executor::new(log_root, Duration::from_secs(30))
-        .expect("Failed to create executor");
+    let executor =
+        Executor::new(log_root, Duration::from_secs(30)).expect("Failed to create executor");
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
-    let result = rt.block_on(executor.execute(&task)).expect("Failed to execute");
+    let result = rt
+        .block_on(executor.execute(&task, None))
+        .expect("Failed to execute");
 
     // Write result
     let results_dir = shared_storage.join("results");
@@ -196,8 +222,8 @@ fn test_workflow_with_failure() {
     protocol.remove_task(&task_id).unwrap();
 
     // Verify failure
-    let retrieved_result = results::get_result(&protocol, task_id)
-        .expect("Failed to retrieve results");
+    let retrieved_result =
+        results::get_result(&protocol, task_id).expect("Failed to retrieve results");
 
     assert_eq!(retrieved_result.status, TaskStatus::Failed);
     assert_eq!(retrieved_result.output.exit_code, Some(42));
@@ -222,7 +248,8 @@ fn test_concurrent_task_submissions() {
             i,
             10,
             None,
-        ).expect("Failed to submit task");
+        )
+        .expect("Failed to submit task");
 
         task_ids.push(task_id);
     }
@@ -253,16 +280,19 @@ fn test_result_formatting() {
         0,
         10,
         None,
-    ).expect("Failed to submit task");
+    )
+    .expect("Failed to submit task");
 
     // Execute
     let rt = Runtime::new().unwrap();
     let log_root = shared_storage.join("logs");
-    let executor = Executor::new(log_root, Duration::from_secs(30))
-        .expect("Failed to create executor");
+    let executor =
+        Executor::new(log_root, Duration::from_secs(30)).expect("Failed to create executor");
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
-    let result = rt.block_on(executor.execute(&task)).expect("Failed to execute");
+    let result = rt
+        .block_on(executor.execute(&task, None))
+        .expect("Failed to execute");
 
     // Write result
     let results_dir = shared_storage.join("results");
@@ -272,20 +302,16 @@ fn test_result_formatting() {
     protocol.remove_task(&task_id).unwrap();
 
     // Test different format outputs
-    let json_result = results::get_result_formatted(
-        &protocol,
-        task_id,
-        results::ResultFormat::Json,
-    ).expect("Failed to get JSON result");
+    let json_result =
+        results::get_result_formatted(&protocol, task_id, results::ResultFormat::Json)
+            .expect("Failed to get JSON result");
 
     assert!(json_result.contains("task_id"));
     assert!(json_result.contains("status"));
 
-    let text_result = results::get_result_formatted(
-        &protocol,
-        task_id,
-        results::ResultFormat::Text,
-    ).expect("Failed to get text result");
+    let text_result =
+        results::get_result_formatted(&protocol, task_id, results::ResultFormat::Text)
+            .expect("Failed to get text result");
 
     assert!(text_result.contains("Task ID:"));
     assert!(text_result.contains("Status:"));

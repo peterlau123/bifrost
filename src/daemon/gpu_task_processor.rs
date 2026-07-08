@@ -9,6 +9,7 @@ use uuid::Uuid;
 use chrono::Utc;
 
 use crate::core::models::{Task, TaskResult, TaskStatus};
+use crate::core::db::Database;
 use crate::core::batch_tracker::{BatchTracker, BatchStatus};
 use crate::daemon::executor::Executor;
 use crate::daemon::gpu_scheduler::GpuScheduler;
@@ -63,6 +64,8 @@ pub struct GpuTaskProcessor {
     gpu_scheduler: GpuScheduler,
     executor: Executor,
     batch_tracker: Option<BatchTracker>,
+    /// Optional SQLite database for task history
+    db: Option<Database>,
 }
 
 impl GpuTaskProcessor {
@@ -78,6 +81,7 @@ impl GpuTaskProcessor {
         executor: Executor,
         simulate_mode: bool,
         batch_tracker: Option<BatchTracker>,
+        db: Option<Database>,
     ) -> Result<Self, String> {
         let monitor = GpuMonitor::new(gpu_pool.clone(), simulate_mode);
         let scheduler = GpuScheduler::new(gpu_pool, monitor);
@@ -86,6 +90,7 @@ impl GpuTaskProcessor {
             gpu_scheduler: scheduler,
             executor,
             batch_tracker,
+            db,
         })
     }
 
@@ -118,7 +123,7 @@ impl GpuTaskProcessor {
         let gpu_guard = GpuGuard::new(&mut self.gpu_scheduler, gpu_id, task_id);
 
         // 3. Execute with GPU isolation
-        let result = self.executor.execute_with_gpu(&scheduled_task, gpu_id).await;
+        let result = self.executor.execute_with_gpu(&scheduled_task, gpu_id, self.db.as_ref().map(|db| db.path.clone())).await;
 
         // 4. Explicitly release GPU via guard (guard will also release on drop if this fails)
         let release_result = gpu_guard.release();
@@ -206,10 +211,12 @@ impl GpuTaskProcessor {
                         let executor = self.executor.clone();
                         let mut gpu_scheduler = self.gpu_scheduler.clone();
                         let task_for_execution = scheduled_task.clone();
+                        // For spawned tasks, open a fresh DB connection from the path
+                        let db_path = self.db.as_ref().map(|db| db.path.clone());
 
                         // Spawn concurrent execution on this GPU
                         active_executions.spawn(async move {
-                            let result = executor.execute_with_gpu(&task_for_execution, gpu_id).await;
+                            let result = executor.execute_with_gpu(&task_for_execution, gpu_id, db_path).await;
 
                             // Release GPU after execution (panic-safe via drop)
                             if let Err(e) = gpu_scheduler.release_gpu(gpu_id, task_id) {
@@ -306,14 +313,14 @@ mod tests {
     #[test]
     fn test_gpu_task_processor_new() {
         let executor = create_test_executor();
-        let processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None);
+        let processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None, None);
         assert!(processor.is_ok());
     }
 
     #[tokio::test]
     async fn test_process_task_success() {
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
         let task = create_test_task("hello");
         let result = processor.process_task(task).await;
@@ -328,7 +335,7 @@ mod tests {
     async fn test_process_task_no_gpu_available() {
         // Create processor with empty GPU pool - should fail
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![], executor, true, None).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![], executor, true, None, None).unwrap();
 
         let task = create_test_task("test");
         let result = processor.process_task(task).await;
@@ -354,7 +361,7 @@ mod tests {
         file.sync_all().unwrap();
 
         let executor = create_test_executor();
-        let processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
+        let processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
         let loaded_task = processor.load_task_from_file(&task_file);
         assert!(loaded_task.is_ok());
@@ -380,7 +387,7 @@ mod tests {
         file.sync_all().unwrap();
 
         let executor = create_test_executor();
-        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None).unwrap();
+        let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
         // Create channel and send task path
         let (tx, rx) = mpsc::channel::<PathBuf>(1);

@@ -399,7 +399,7 @@ fn test_executor_zero_timeout() {
     let task = Task::new("echo test".to_string(), TaskType::Shell)
         .with_timeout(0);
 
-    let result = rt.block_on(executor.execute(&task)).unwrap();
+    let result = rt.block_on(executor.execute(&task, None)).unwrap();
 
     // Zero timeout should trigger timeout error
     assert_eq!(result.status, TaskStatus::Timeout);
@@ -418,7 +418,7 @@ fn test_executor_invalid_working_dir() {
         .with_timeout(5)
         .with_working_dir(PathBuf::from("/nonexistent/path"));
 
-    let result = rt.block_on(executor.execute(&task)).unwrap();
+    let result = rt.block_on(executor.execute(&task, None)).unwrap();
 
     // Should fail due to invalid working directory
     assert_eq!(result.status, TaskStatus::Failed);
@@ -439,7 +439,7 @@ fn test_executor_large_stderr() {
         TaskType::Shell,
     ).with_timeout(10);
 
-    let result = rt.block_on(executor.execute(&task)).unwrap();
+    let result = rt.block_on(executor.execute(&task, None)).unwrap();
 
     // stderr is NOT truncated (only stdout is truncated)
     assert!(result.output.stderr.len() > 1000 || result.status == TaskStatus::Failed);

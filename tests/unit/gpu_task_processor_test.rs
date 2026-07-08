@@ -29,21 +29,21 @@ fn create_test_executor() -> Executor {
 #[test]
 fn test_gpu_task_processor_creation() {
     let executor = create_test_executor();
-    let processor = GpuTaskProcessor::new(vec![0, 1], executor, true);
+    let processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None, None);
     assert!(processor.is_ok(), "GpuTaskProcessor should be created successfully");
 }
 
 #[test]
 fn test_gpu_task_processor_empty_gpu_pool() {
     let executor = create_test_executor();
-    let processor = GpuTaskProcessor::new(vec![], executor, true);
+    let processor = GpuTaskProcessor::new(vec![], executor, true, None, None);
     assert!(processor.is_ok(), "GpuTaskProcessor should handle empty GPU pool");
 }
 
 #[tokio::test]
 async fn test_process_task_success() {
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     let task = create_test_task("hello_world");
     let result = processor.process_task(task).await;
@@ -57,7 +57,7 @@ async fn test_process_task_success() {
 #[tokio::test]
 async fn test_process_task_multiple_gpus() {
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0, 1, 2, 3], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0, 1, 2, 3], executor, true, None, None).unwrap();
 
     // Process multiple tasks
     for i in 0..4 {
@@ -73,7 +73,7 @@ async fn test_process_task_multiple_gpus() {
 async fn test_process_task_no_gpu_available() {
     // Create processor with empty GPU pool - should fail
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![], executor, true, None, None).unwrap();
 
     let task = create_test_task("test");
     let result = processor.process_task(task).await;
@@ -97,7 +97,7 @@ async fn test_run_with_channel_single_task() {
     file.sync_all().unwrap();
 
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     // Create channel and send task path
     let (tx, rx) = mpsc::channel::<PathBuf>(1);
@@ -124,7 +124,7 @@ async fn test_run_with_channel_single_task() {
 async fn test_run_with_channel_multiple_tasks() {
     let temp_dir = TempDir::new().unwrap();
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0, 1], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None, None).unwrap();
 
     // Create multiple task files
     let mut task_files = Vec::new();
@@ -166,7 +166,7 @@ async fn test_run_with_channel_multiple_tasks() {
 async fn test_run_with_channel_invalid_file() {
     let temp_dir = TempDir::new().unwrap();
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     // Create an invalid JSON file
     let invalid_file = temp_dir.path().join("invalid.json");
@@ -200,7 +200,7 @@ async fn test_run_with_channel_invalid_file() {
 async fn test_gpu_isolation_via_cuda_visible_devices() {
     let temp_dir = TempDir::new().unwrap();
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![2], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![2], executor, true, None, None).unwrap();
 
     // Task that echoes CUDA_VISIBLE_DEVICES
     let task = Task::new("echo $CUDA_VISIBLE_DEVICES".to_string(), TaskType::Shell)
@@ -219,7 +219,7 @@ async fn test_gpu_isolation_via_cuda_visible_devices() {
 #[tokio::test]
 async fn test_failed_task_handling() {
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     // Task that will fail
     let task = Task::new("exit 42".to_string(), TaskType::Shell)
@@ -237,7 +237,7 @@ async fn test_failed_task_handling() {
 #[tokio::test]
 async fn test_timeout_task_handling() {
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     // Task that will timeout (sleeps longer than timeout)
     let task = Task::new("sleep 10".to_string(), TaskType::Shell)
@@ -254,7 +254,7 @@ async fn test_timeout_task_handling() {
 #[tokio::test]
 async fn test_gpu_release_after_completion() {
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0], executor, true, None, None).unwrap();
 
     // Process first task
     let task1 = create_test_task("task1");
@@ -275,7 +275,7 @@ async fn test_gpu_release_after_completion() {
 async fn test_round_robin_gpu_assignment() {
     // Create processor with 2 GPUs
     let executor = create_test_executor();
-    let mut processor = GpuTaskProcessor::new(vec![0, 1], executor, true).unwrap();
+    let mut processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None, None).unwrap();
 
     // Process tasks - should alternate between GPUs
     let mut results = Vec::new();
