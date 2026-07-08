@@ -511,17 +511,19 @@ cargo tarpaulin --out Html
 ```
 bifrost/
 ├── src/
-│   ├── core/           # Core models and protocol
+│   ├── core/           # Core models, protocol, and services
 │   │   ├── models.rs   # Task, TaskResult, TaskStatus
 │   │   ├── protocol.rs # File communication
-│   │   ├── config.rs   # YAML configuration
+│   │   ├── settings.rs # ~/.bifrost/settings.json
+│   │   ├── db.rs       # SQLite history (tasks, artifacts, pytest)
 │   │   ├── error.rs    # Error types
-│   │   └── lock.rs     # File locking
+│   │   ├── lock.rs     # File locking
+│   │   └── batch_tracker.rs
 │   ├── client/         # Client submission and query
-│   │   ├── submit.rs   # Task submission
+│   │   ├── submit.rs   # Task submission (file + SQLite)
 │   │   ├── status.rs   # Status query
 │   │   ├── results.rs  # Result retrieval
-│   │   └── pytest.rs   # Pytest integration
+│   │   └── pytest.rs   # Pytest builder
 │   ├── daemon/         # Daemon executor and watcher
 │   │   ├── watcher.rs  # File event monitoring
 │   │   ├── executor.rs # Command execution
