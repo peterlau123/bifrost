@@ -365,6 +365,25 @@ Pending Tasks: 5
 Completed Today: 15
 ```
 
+### Query Task History
+
+```bash
+# List recent tasks
+bifrost client history
+
+# Filter by status
+bifrost client history --status failed
+
+# Filter by type
+bifrost client history --type pytest
+
+# Task detail
+bifrost client history --task-id TASK_ID
+
+# JSON output
+bifrost client history --limit 50 --format json
+```
+
 ### Daemon Operations
 
 ```bash
