@@ -95,9 +95,9 @@ impl Database {
                 trigger         TEXT
             );
 
-            -- Composite index for the most common query pattern
+            -- Index for task_group trend queries (e.g. \'vllm-daily-regression\')
             CREATE INDEX IF NOT EXISTS idx_tasks_task_group   ON tasks(task_group);
-            -- Composite index for the most common query pattern
+            -- Composite index for the most common query pattern: filter by status then sort by time
             CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_tasks_task_type      ON tasks(task_type);
             CREATE INDEX IF NOT EXISTS idx_tasks_batch_id       ON tasks(batch_id);
@@ -600,12 +600,10 @@ impl Database {
         let report: Value = serde_json::from_str(report_content)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        let summary = report.get("summary")
-            .ok_or_else(|| {
-                let e: Box<dyn std::error::Error + Send + Sync> =
-                    "No summary in pytest report".into();
-                rusqlite::Error::ToSqlConversionFailure(e)
-            })?;
+        let summary = report.get("summary").ok_or_else(|| {
+            let e: Box<dyn std::error::Error + Send + Sync> = "No summary in pytest report".into();
+            rusqlite::Error::ToSqlConversionFailure(e)
+        })?;
 
         let passed = summary.get("passed").and_then(|v| v.as_i64()).unwrap_or(0);
         let failed = summary.get("failed").and_then(|v| v.as_i64()).unwrap_or(0);

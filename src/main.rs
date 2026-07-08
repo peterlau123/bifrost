@@ -329,8 +329,10 @@ fn handle_client_mode(command: ClientCommand) {
                                     println!("  Batch ID:   {}", grp);
                                 }
                                 if let Some(ref p) = detail.pytest_result {
-                                    println!("  Pytest:     {}/{}/{} (p/f/s)",
-                                        p.passed, p.failed, p.skipped);
+                                    println!(
+                                        "  Pytest:     {}/{}/{} (p/f/s)",
+                                        p.passed, p.failed, p.skipped
+                                    );
                                     if let Some(d) = p.duration_ms {
                                         println!("  PyDur:      {}ms", d);
                                     }
@@ -342,25 +344,27 @@ fn handle_client_mode(command: ClientCommand) {
                         Err(e) => eprintln!("Invalid task ID format: {}", e),
                     }
                 } else {
-                    let status_filter = status.as_ref().and_then(|s| {
-                        match s.to_lowercase().as_str() {
-                            "pending" => Some(TaskStatus::Pending),
-                            "running" => Some(TaskStatus::Running),
-                            "completed" => Some(TaskStatus::Completed),
-                            "failed" => Some(TaskStatus::Failed),
-                            "cancelled" => Some(TaskStatus::Cancelled),
-                            "timeout" => Some(TaskStatus::Timeout),
-                            _ => None,
-                        }
-                    });
-                    let type_filter = task_type.as_ref().and_then(|s| {
-                        match s.to_lowercase().as_str() {
-                            "shell" => Some(TaskType::Shell),
-                            "pytest" => Some(TaskType::Pytest),
-                            "custom" => Some(TaskType::Custom),
-                            _ => None,
-                        }
-                    });
+                    let status_filter =
+                        status
+                            .as_ref()
+                            .and_then(|s| match s.to_lowercase().as_str() {
+                                "pending" => Some(TaskStatus::Pending),
+                                "running" => Some(TaskStatus::Running),
+                                "completed" => Some(TaskStatus::Completed),
+                                "failed" => Some(TaskStatus::Failed),
+                                "cancelled" => Some(TaskStatus::Cancelled),
+                                "timeout" => Some(TaskStatus::Timeout),
+                                _ => None,
+                            });
+                    let type_filter =
+                        task_type
+                            .as_ref()
+                            .and_then(|s| match s.to_lowercase().as_str() {
+                                "shell" => Some(TaskType::Shell),
+                                "pytest" => Some(TaskType::Pytest),
+                                "custom" => Some(TaskType::Custom),
+                                _ => None,
+                            });
 
                     match db.query_tasks(status_filter, type_filter, limit, offset) {
                         Ok(records) => {
@@ -372,11 +376,13 @@ fn handle_client_mode(command: ClientCommand) {
                                     println!("{}", serde_json::to_string_pretty(&records).unwrap());
                                 } else {
                                     for r in &records {
-                                        println!("{}  {:<10}  {}  {}",
+                                        println!(
+                                            "{}  {:<10}  {}  {}",
                                             &r.task_id[..8],
                                             r.status,
                                             r.task_type,
-                                            r.command);
+                                            r.command
+                                        );
                                     }
                                     println!("---");
                                     println!("{} task(s) shown", records.len());
@@ -407,7 +413,8 @@ fn handle_client_mode(command: ClientCommand) {
 
                     let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
 
-                    match submit::submit_batch_manifest(&protocol, db.as_ref(), &tracker, &manifest) {
+                    match submit::submit_batch_manifest(&protocol, db.as_ref(), &tracker, &manifest)
+                    {
                         Ok(batch_id) => {
                             println!("Batch manifest submitted successfully");
                             println!("  Batch ID: {}", batch_id);

@@ -41,22 +41,18 @@ pub fn parse_pytest_summary(report_content: &str) -> Result<String, String> {
     let report: Value = serde_json::from_str(report_content)
         .map_err(|e| format!("Failed to parse JSON report: {}", e))?;
 
-    let summary = report.get("summary")
+    let summary = report
+        .get("summary")
         .ok_or_else(|| "No summary field in report".to_string())?;
 
-    let passed = summary.get("passed")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let passed = summary.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let failed = summary.get("failed")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let failed = summary.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let total = summary.get("total")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let total = summary.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let duration = summary.get("duration")
+    let duration = summary
+        .get("duration")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
@@ -92,12 +88,7 @@ mod tests {
 
     #[test]
     fn test_create_pytest_task_with_working_dir() {
-        let task = create_pytest_task(
-            "tests/",
-            5,
-            300,
-            Some(PathBuf::from("/workspace/project")),
-        );
+        let task = create_pytest_task("tests/", 5, 300, Some(PathBuf::from("/workspace/project")));
 
         assert_eq!(task.working_dir, PathBuf::from("/workspace/project"));
     }
