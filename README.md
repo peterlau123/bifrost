@@ -60,6 +60,9 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 
 ### Key Features
 
+- **Task history with SQLite** - All tasks recorded for query
+- **Structured pytest reports** - Store pytest JSON results
+- **Unified settings** - ~/.bifrost/settings.json, init via CLI
 - **Air-gapped operation** - Complete separation between client and daemon
 - **Security hardened** - Command injection prevention, path traversal protection
 - **High performance** - notify-based file watching (500ms latency), tokio async execution
