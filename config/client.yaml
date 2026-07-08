@@ -1,4 +1,8 @@
-shared_storage: "/shared/storage"
-database: "tasks.db"
-poll_interval: 2s
-heartbeat_timeout: 180s
+{
+  "shared_storage": "/shared/storage",
+  "database": "bifrost.db",
+  "client": {
+    "poll_interval": "2s",
+    "heartbeat_timeout": "180s"
+  }
+}
