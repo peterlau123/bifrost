@@ -388,7 +388,7 @@ bifrost client history --limit 50 --format json
 
 ```bash
 # Start daemon manually
-bifrost daemon --config /etc/bifrost/daemon.yaml
+bifrost daemon
 
 # Check systemd service
 sudo systemctl status bifrost
