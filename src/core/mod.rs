@@ -1,6 +1,5 @@
 // Core module - data models and error types
 pub mod batch_tracker;
-pub mod config;
 pub mod error;
 pub mod lock;
 pub mod models;
