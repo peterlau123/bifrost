@@ -22,6 +22,10 @@ enum Mode {
 
     /// Daemon mode - execute tasks from shared storage
     Daemon {
+        /// Initialize settings then exit
+        #[arg(long)]
+        init: bool,
+
         /// Configuration file path
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
@@ -173,7 +177,16 @@ fn main() {
 
     match cli.mode {
         Mode::Client { command } => handle_client_mode(command),
-        Mode::Daemon { config, systemd } => handle_daemon_mode(config, systemd),
+        Mode::Daemon { init, config, systemd } => {
+            if init {
+                match bifrost::core::settings::init() {
+                    Ok(p) => println!("Settings saved to {}", p.display()),
+                    Err(e) => eprintln!("{}", e),
+                }
+                return;
+            }
+            handle_daemon_mode(config, systemd);
+        }
     }
 }
 
