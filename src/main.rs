@@ -586,7 +586,7 @@ mod tests {
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Daemon { config, systemd } => {
+            Mode::Daemon { init: _, config, systemd } => {
                 assert_eq!(config.unwrap(), PathBuf::from("/etc/bifrost/daemon.yaml"));
                 assert!(systemd);
             }
@@ -601,7 +601,7 @@ mod tests {
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Daemon { config, systemd } => {
+            Mode::Daemon { init: _, config, systemd } => {
                 assert!(config.is_none());
                 assert!(!systemd);
             }
