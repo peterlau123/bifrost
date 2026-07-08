@@ -187,7 +187,7 @@ fn handle_client_mode(command: ClientCommand) {
     use uuid::Uuid;
 
     let settings = settings::load();
-    let shared_storage = settings.shared_storage;
+    let shared_storage = settings.shared_storage.clone();
     let db_path = settings.db_path();
     let db = Database::open(db_path, Some(shared_storage.clone())).ok();
 
