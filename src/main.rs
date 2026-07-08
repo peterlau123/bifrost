@@ -425,7 +425,7 @@ fn handle_client_mode(command: ClientCommand) {
             use bifrost::core::batch_tracker::BatchTracker;
 
             // Default batch progress directory
-            let batch_dir = PathBuf::from("/tmp/bifrost/batch_progress");
+            let batch_dir = shared_storage.join("batch_progress");
 
             match command {
                 BatchCommand::SubmitManifest {

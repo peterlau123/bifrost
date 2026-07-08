@@ -33,20 +33,22 @@ pub struct DaemonSection {
 impl BifrostSettings {
     pub fn defaults() -> Self { Self { shared_storage: PathBuf::from("/tmp/bifrost"), database: None, client: ClientSection::default(), daemon: DaemonSection::default() } }
     pub fn path() -> PathBuf { dirs().join("settings.json") }
-    pub fn db_path(&self) -> PathBuf { self.database.clone().unwrap_or_else(|| self.shared_storage.join("bifrost.db")) }
+    pub fn db_path(&self) -> PathBuf { self.database.as_ref().map(|p| p.clone()).unwrap_or_else(|| self.shared_storage.join("bifrost.db")) }
 }
 pub fn load() -> BifrostSettings {
     match std::fs::read_to_string(BifrostSettings::path()) {
-        Ok(c) => serde_json::from_str(&c).unwrap_or_else(|_| BifrostSettings::defaults()),
+        Ok(c) => serde_json::from_str(&c).unwrap_or_else(|e| { eprintln!("Warning: invalid settings.json ({})", e); BifrostSettings::defaults() }),
         Err(_) => BifrostSettings::defaults(),
     }
 }
 pub fn init() -> Result<PathBuf, String> {
     let d = dirs(); let p = BifrostSettings::path();
-    if p.exists() { return Err(format!("Already exists: {}", p.display())); }
     std::fs::create_dir_all(&d).map_err(|e| format!("{}", e))?;
     let j = serde_json::to_string_pretty(&BifrostSettings::defaults()).map_err(|e| format!("{}", e))?;
-    std::fs::write(&p, j).map_err(|e| format!("{}", e))?; Ok(p)
+    let tmp = p.with_extension("tmp");
+    std::fs::write(&tmp, &j).map_err(|e| format!("{}", e))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("{}", e))?;
+    Ok(p)
 }
 fn dirs() -> PathBuf { std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(PathBuf::from).unwrap_or_default().join(".bifrost") }
 #[cfg(test)] mod tests { use super::*;
