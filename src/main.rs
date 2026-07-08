@@ -50,7 +50,7 @@ enum ClientCommand {
         priority: u8,
 
         /// Timeout in seconds
-        #[arg(short, long, default_value = "300")]
+        #[arg(long, default_value = "300")]
         timeout: u64,
 
         /// Working directory
@@ -69,7 +69,7 @@ enum ClientCommand {
         priority: u8,
 
         /// Timeout in seconds
-        #[arg(short, long, default_value = "600")]
+        #[arg(long, default_value = "600")]
         timeout: u64,
 
         /// Working directory
@@ -92,6 +92,33 @@ enum ClientCommand {
 
         /// Output format (json, yaml, text)
         #[arg(short = 'f', long, default_value = "json")]
+        format: String,
+    },
+
+    /// Query task history from SQLite
+    History {
+        /// Filter by status (Pending, Running, Completed, Failed, Cancelled, Timeout)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Filter by task type (shell, pytest, custom)
+        #[arg(long)]
+        task_type: Option<String>,
+
+        /// Maximum results (default 20)
+        #[arg(long, default_value = "20")]
+        limit: i64,
+
+        /// Result offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: i64,
+
+        /// Show detail for a specific task ID
+        #[arg(long)]
+        task_id: Option<String>,
+
+        /// Output format (json or text)
+        #[arg(long, default_value = "text")]
         format: String,
     },
 
@@ -150,12 +177,15 @@ fn main() {
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
     use bifrost::client::{pytest, results, status, submit};
-    use bifrost::core::models::TaskType;
+    use bifrost::core::db::Database;
+    use bifrost::core::models::{TaskStatus, TaskType};
     use bifrost::core::protocol::Protocol;
     use uuid::Uuid;
 
     // Default shared storage path
     let shared_storage = PathBuf::from("/tmp/bifrost");
+    let db_path = shared_storage.join("bifrost.db");
+    let db = Database::open(db_path, Some(shared_storage.clone())).ok();
 
     match command {
         ClientCommand::Submit {
@@ -177,7 +207,7 @@ fn handle_client_mode(command: ClientCommand) {
 
             match submit::submit_task(
                 &protocol,
-                None,
+                db.as_ref(),
                 cmd,
                 parsed_type,
                 priority,
@@ -206,7 +236,7 @@ fn handle_client_mode(command: ClientCommand) {
 
             match submit::submit_pytest_task(
                 &protocol,
-                None,
+                db.as_ref(),
                 path.clone(),
                 priority,
                 timeout,
@@ -268,6 +298,99 @@ fn handle_client_mode(command: ClientCommand) {
             }
         }
 
+        ClientCommand::History {
+            status,
+            task_type,
+            limit,
+            offset,
+            task_id,
+            format,
+        } => {
+            // Use the existing db (may be None if SQLite open failed)
+            if let Some(ref db) = db {
+                if let Some(tid) = task_id {
+                    match Uuid::parse_str(&tid) {
+                        Ok(id) => match db.get_task_by_id(id) {
+                            Ok(Some(detail)) => {
+                                println!("Task: {}", detail.task_id);
+                                println!("  Command:    {}", detail.command);
+                                println!("  Type:       {}", detail.task_type);
+                                println!("  Status:     {}", detail.status);
+                                if let Some(ec) = detail.exit_code {
+                                    println!("  Exit Code:  {}", ec);
+                                }
+                                if let Some(msg) = detail.error_message {
+                                    println!("  Error:      {}", msg);
+                                }
+                                if let Some(dur) = detail.duration_ms {
+                                    println!("  Duration:   {}ms", dur);
+                                }
+                                if let Some(grp) = detail.batch_id {
+                                    println!("  Batch ID:   {}", grp);
+                                }
+                                if let Some(ref p) = detail.pytest_result {
+                                    println!("  Pytest:     {}/{}/{} (p/f/s)",
+                                        p.passed, p.failed, p.skipped);
+                                    if let Some(d) = p.duration_ms {
+                                        println!("  PyDur:      {}ms", d);
+                                    }
+                                }
+                            }
+                            Ok(None) => eprintln!("Task not found: {}", tid),
+                            Err(e) => eprintln!("Failed to query task: {}", e),
+                        },
+                        Err(e) => eprintln!("Invalid task ID format: {}", e),
+                    }
+                } else {
+                    let status_filter = status.as_ref().and_then(|s| {
+                        match s.to_lowercase().as_str() {
+                            "pending" => Some(TaskStatus::Pending),
+                            "running" => Some(TaskStatus::Running),
+                            "completed" => Some(TaskStatus::Completed),
+                            "failed" => Some(TaskStatus::Failed),
+                            "cancelled" => Some(TaskStatus::Cancelled),
+                            "timeout" => Some(TaskStatus::Timeout),
+                            _ => None,
+                        }
+                    });
+                    let type_filter = task_type.as_ref().and_then(|s| {
+                        match s.to_lowercase().as_str() {
+                            "shell" => Some(TaskType::Shell),
+                            "pytest" => Some(TaskType::Pytest),
+                            "custom" => Some(TaskType::Custom),
+                            _ => None,
+                        }
+                    });
+
+                    match db.query_tasks(status_filter, type_filter, limit, offset) {
+                        Ok(records) => {
+                            if records.is_empty() {
+                                println!("No tasks found");
+                            } else {
+                                let is_json = format == "json";
+                                if is_json {
+                                    println!("{}", serde_json::to_string_pretty(&records).unwrap());
+                                } else {
+                                    for r in &records {
+                                        println!("{}  {:<10}  {}  {}",
+                                            &r.task_id[..8],
+                                            r.status,
+                                            r.task_type,
+                                            r.command);
+                                    }
+                                    println!("---");
+                                    println!("{} task(s) shown", records.len());
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to query history: {}", e),
+                    }
+                }
+            } else {
+                eprintln!("History unavailable: database not configured");
+            }
+        }
+
         ClientCommand::Batch { command } => {
             use bifrost::core::batch_tracker::BatchTracker;
 
@@ -284,7 +407,7 @@ fn handle_client_mode(command: ClientCommand) {
 
                     let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
 
-                    match submit::submit_batch_manifest(&protocol, None, &tracker, &manifest) {
+                    match submit::submit_batch_manifest(&protocol, db.as_ref(), &tracker, &manifest) {
                         Ok(batch_id) => {
                             println!("Batch manifest submitted successfully");
                             println!("  Batch ID: {}", batch_id);
