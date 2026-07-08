@@ -1,10 +1,10 @@
 // Unit tests for command executor
 
+use bifrost::core::models::{Task, TaskStatus, TaskType};
 use bifrost::daemon::executor::Executor;
-use bifrost::core::models::{Task, TaskType, TaskStatus};
-use tempfile::TempDir;
 use std::path::PathBuf;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 fn create_test_task(command: String) -> Task {
@@ -43,7 +43,10 @@ fn test_execute_shell_command() {
 
     // Verify logs
     assert!(log_root.join(task.task_id.to_string()).exists());
-    assert!(log_root.join(task.task_id.to_string()).join("stdout.log").exists());
+    assert!(log_root
+        .join(task.task_id.to_string())
+        .join("stdout.log")
+        .exists());
 }
 
 #[test]
@@ -73,8 +76,7 @@ fn test_execute_timeout() {
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
 
     // Sleep command with 2 second timeout
-    let task = create_test_task("sleep 5".to_string())
-        .with_timeout(2);
+    let task = create_test_task("sleep 5".to_string()).with_timeout(2);
 
     let result = rt.block_on(executor.execute(&task, None));
     assert!(result.is_ok());
@@ -93,9 +95,7 @@ fn test_stdout_truncation() {
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
 
     // Python script to generate large output
-    let task = create_test_task(
-        "python -c \"print('X' * 2000)\"".to_string()
-    );
+    let task = create_test_task("python -c \"print('X' * 2000)\"".to_string());
 
     let result = rt.block_on(executor.execute(&task, None));
     assert!(result.is_ok());
@@ -160,7 +160,8 @@ fn test_execute_python_command() {
     let task = Task::new(
         "python -c \"import sys; print('Python version:', sys.version)\"".to_string(),
         TaskType::Pytest,
-    ).with_timeout(10);
+    )
+    .with_timeout(10);
 
     let result = rt.block_on(executor.execute(&task, None));
     assert!(result.is_ok());
@@ -183,7 +184,9 @@ fn test_executor_log_metadata() {
     assert!(result.is_ok());
 
     // Check metadata file
-    let metadata_path = log_root.join(task.task_id.to_string()).join("metadata.json");
+    let metadata_path = log_root
+        .join(task.task_id.to_string())
+        .join("metadata.json");
     assert!(metadata_path.exists());
 
     let metadata_content = std::fs::read_to_string(metadata_path).unwrap();

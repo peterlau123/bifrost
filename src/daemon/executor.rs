@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use chrono::Utc;
 
-use crate::core::models::{Task, TaskResult, TaskStatus, TaskOutput};
+use crate::core::models::{Task, TaskResult, TaskStatus, TaskType, TaskOutput};
 use crate::core::db::Database;
 use crate::daemon::logger::LogManager;
 
@@ -137,6 +137,16 @@ impl Executor {
         if let Some(ref db) = db {
             if let Err(e) = db.upsert_result(&result) {
                 eprintln!("Warning: failed to record task result in DB: {}", e);
+            }
+
+            // For pytest tasks, try to read and record the JSON report
+            if task.task_type == TaskType::Pytest {
+                let report_path = task.working_dir.join("report.json");
+                if let Ok(content) = std::fs::read_to_string(&report_path) {
+                    if let Err(e) = db.record_pytest_report(task.task_id, &content) {
+                        eprintln!("Warning: failed to record pytest report: {}", e);
+                    }
+                }
             }
         }
 

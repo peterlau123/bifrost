@@ -589,6 +589,49 @@ impl Database {
             .map(|root| root.join("logs").join(task_id.to_string()))
     }
 
+    /// Parse a pytest JSON report string and record structured results.
+    ///
+    /// Extracts `passed`, `failed`, `skipped`, `total`, `duration`,
+    /// `collected`, `warnings`, and `environment` from the report summary
+    /// and writes them to the `pytest_results` table.
+    pub fn record_pytest_report(&self, task_id: Uuid, report_content: &str) -> SqlResult<()> {
+        use serde_json::Value;
+
+        let report: Value = serde_json::from_str(report_content)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let summary = report.get("summary")
+            .ok_or_else(|| {
+                let e: Box<dyn std::error::Error + Send + Sync> =
+                    "No summary in pytest report".into();
+                rusqlite::Error::ToSqlConversionFailure(e)
+            })?;
+
+        let passed = summary.get("passed").and_then(|v| v.as_i64()).unwrap_or(0);
+        let failed = summary.get("failed").and_then(|v| v.as_i64()).unwrap_or(0);
+        let skipped = summary.get("skipped").and_then(|v| v.as_i64()).unwrap_or(0);
+        let total = summary.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+        let duration_secs = summary.get("duration").and_then(|v| v.as_f64());
+        let collected = summary.get("collected").and_then(|v| v.as_i64());
+        let warnings = summary.get("warnings").and_then(|v| v.as_i64());
+
+        let environment = report.get("environment").map(|v| v.to_string());
+        let report_json = Some(report_content);
+
+        self.upsert_pytest_result(
+            task_id,
+            passed,
+            failed,
+            skipped,
+            total,
+            duration_secs.map(|d| (d * 1000.0) as i64),
+            collected,
+            warnings,
+            environment.as_deref(),
+            report_json,
+        )
+    }
+
     /// Get summary statistics
     pub fn get_summary_stats(&self) -> SqlResult<TaskSummaryStats> {
         let total: i64 = self

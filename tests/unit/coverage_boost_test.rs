@@ -1,57 +1,50 @@
 // Additional unit tests for coverage improvement
 // Tests edge cases, error handling, and boundary conditions
 
-use bifrost::core::models::{Task, TaskType, TaskStatus, TaskResult, TaskOutput};
 use bifrost::core::config::{ClientConfig, DaemonConfig};
 use bifrost::core::error::BifrostError;
+use bifrost::core::models::{Task, TaskOutput, TaskResult, TaskStatus, TaskType};
 use bifrost::core::protocol::Protocol;
-use bifrost::daemon::watcher::FileWatcher;
 use bifrost::daemon::executor::Executor;
-use tempfile::TempDir;
+use bifrost::daemon::watcher::FileWatcher;
+use chrono::{TimeZone, Utc};
 use std::path::PathBuf;
 use std::time::Duration;
+use tempfile::TempDir;
 use uuid::Uuid;
-use chrono::{Utc, TimeZone};
 
 // ==================== Models Edge Cases ====================
 
 #[test]
 fn test_task_priority_bounds() {
     // Test priority boundaries (0-255)
-    let task_low = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_priority(0);
+    let task_low = Task::new("cmd".to_string(), TaskType::Shell).with_priority(0);
     assert_eq!(task_low.priority, 0);
 
-    let task_high = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_priority(255);
+    let task_high = Task::new("cmd".to_string(), TaskType::Shell).with_priority(255);
     assert_eq!(task_high.priority, 255);
 
-    let task_mid = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_priority(128);
+    let task_mid = Task::new("cmd".to_string(), TaskType::Shell).with_priority(128);
     assert_eq!(task_mid.priority, 128);
 }
 
 #[test]
 fn test_task_timeout_bounds() {
     // Test timeout boundaries
-    let task_min = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_timeout(1);
+    let task_min = Task::new("cmd".to_string(), TaskType::Shell).with_timeout(1);
     assert_eq!(task_min.timeout, 1);
 
-    let task_max = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_timeout(86400); // 24 hours
+    let task_max = Task::new("cmd".to_string(), TaskType::Shell).with_timeout(86400); // 24 hours
     assert_eq!(task_max.timeout, 86400);
 }
 
 #[test]
 fn test_task_retry_bounds() {
     // Test retry boundaries
-    let task_no_retry = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_retry_count(0);
+    let task_no_retry = Task::new("cmd".to_string(), TaskType::Shell).with_retry_count(0);
     assert_eq!(task_no_retry.retry_count, 0);
 
-    let task_many_retry = Task::new("cmd".to_string(), TaskType::Shell)
-        .with_retry_count(10);
+    let task_many_retry = Task::new("cmd".to_string(), TaskType::Shell).with_retry_count(10);
     assert_eq!(task_many_retry.retry_count, 10);
 }
 
@@ -396,8 +389,7 @@ fn test_executor_zero_timeout() {
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
 
     // Task with zero timeout should fail immediately
-    let task = Task::new("echo test".to_string(), TaskType::Shell)
-        .with_timeout(0);
+    let task = Task::new("echo test".to_string(), TaskType::Shell).with_timeout(0);
 
     let result = rt.block_on(executor.execute(&task, None)).unwrap();
 
@@ -435,9 +427,11 @@ fn test_executor_large_stderr() {
 
     // Generate large stderr using python (shell-words compatible)
     let task = Task::new(
-        "python -c \"import sys; [sys.stderr.write(f'Error line {i}\\n') for i in range(100)]\"".to_string(),
+        "python -c \"import sys; [sys.stderr.write(f'Error line {i}\\n') for i in range(100)]\""
+            .to_string(),
         TaskType::Shell,
-    ).with_timeout(10);
+    )
+    .with_timeout(10);
 
     let result = rt.block_on(executor.execute(&task, None)).unwrap();
 
