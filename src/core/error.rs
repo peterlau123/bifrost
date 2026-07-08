@@ -1,7 +1,7 @@
 // Error types for bifrost
+use std::io;
 use thiserror::Error;
 use uuid::Uuid;
-use std::io;
 
 /// Bifrost error types
 #[derive(Debug, Error)]
@@ -72,10 +72,7 @@ pub enum BifrostError {
 
     /// Invalid task status transition
     #[error("Invalid status transition from {from} to {to}")]
-    InvalidStatusTransition {
-        from: String,
-        to: String,
-    },
+    InvalidStatusTransition { from: String, to: String },
 }
 
 /// Result type alias for Bifrost operations

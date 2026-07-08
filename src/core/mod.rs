@@ -1,9 +1,9 @@
 // Core module - data models and error types
-pub mod models;
-pub mod error;
-pub mod protocol;
-pub mod lock;
-pub mod config;
 pub mod batch_tracker;
+pub mod config;
+pub mod error;
+pub mod lock;
+pub mod models;
+pub mod protocol;
 pub use batch_tracker::BatchTracker;
 pub mod db;

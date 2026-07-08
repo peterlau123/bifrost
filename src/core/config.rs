@@ -1,8 +1,8 @@
 // Configuration parsing for bifrost client and daemon
-use serde::{Deserialize, Serialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::fs;
 use thiserror::Error;
 
 /// Configuration errors
@@ -46,11 +46,17 @@ pub struct ClientConfig {
     pub database: Option<PathBuf>,
 
     /// Poll interval for checking new tasks (minimum 100ms)
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub poll_interval: Duration,
 
     /// Heartbeat timeout before considering daemon dead
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub heartbeat_timeout: Duration,
 }
 
@@ -72,18 +78,27 @@ pub struct DaemonConfig {
     pub shared_storage: PathBuf,
 
     /// Poll interval for checking new tasks (minimum 100ms)
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub poll_interval: Duration,
 
     /// Maximum task execution timeout
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub task_timeout: Duration,
 
     /// Maximum retry attempts for failed tasks (range: 0-10)
     pub max_retries: u8,
 
     /// Heartbeat interval for task monitoring
-    #[serde(deserialize_with = "deserialize_duration", serialize_with = "serialize_duration")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
     pub heartbeat_interval: Duration,
 
     /// Maximum concurrent tasks (range: 1-100)
@@ -116,7 +131,7 @@ impl ClientConfig {
         // Validation: poll_interval minimum 100ms
         if config.poll_interval < Duration::from_millis(100) {
             return Err(ConfigError::DurationError(
-                "poll_interval must be at least 100ms".to_string()
+                "poll_interval must be at least 100ms".to_string(),
             ));
         }
 
@@ -140,21 +155,23 @@ impl DaemonConfig {
         // Validation: poll_interval minimum 100ms
         if config.poll_interval < Duration::from_millis(100) {
             return Err(ConfigError::DurationError(
-                "poll_interval must be at least 100ms".to_string()
+                "poll_interval must be at least 100ms".to_string(),
             ));
         }
 
         // Validation: max_retries range 0-10
         if config.max_retries > 10 {
-            return Err(ConfigError::DurationError(  // Reuse error type
-                "max_retries must be between 0 and 10".to_string()
+            return Err(ConfigError::DurationError(
+                // Reuse error type
+                "max_retries must be between 0 and 10".to_string(),
             ));
         }
 
         // Validation: max_concurrent range 1-100
         if config.max_concurrent < 1 || config.max_concurrent > 100 {
-            return Err(ConfigError::DurationError(  // Reuse error type
-                "max_concurrent must be between 1 and 100".to_string()
+            return Err(ConfigError::DurationError(
+                // Reuse error type
+                "max_concurrent must be between 1 and 100".to_string(),
             ));
         }
 

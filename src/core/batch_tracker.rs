@@ -1,7 +1,7 @@
 // BatchTracker - Manages batch progress file operations
+use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
-use chrono::Utc;
 use uuid::Uuid;
 
 /// Re-export from models for convenience
@@ -120,9 +120,10 @@ impl BatchTracker {
                 let json = fs::read_to_string(&path)?;
                 if let Ok(progress) = serde_json::from_str::<BatchProgress>(&json) {
                     // Only include non-completed batches
-                    if progress.status != BatchStatus::Completed &&
-                       progress.status != BatchStatus::Failed &&
-                       progress.status != BatchStatus::Cancelled {
+                    if progress.status != BatchStatus::Completed
+                        && progress.status != BatchStatus::Failed
+                        && progress.status != BatchStatus::Cancelled
+                    {
                         active_batches.push(progress);
                     }
                 }

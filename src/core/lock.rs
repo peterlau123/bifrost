@@ -1,8 +1,8 @@
 // File locking utilities using fs2
 use fs2::FileExt;
 use std::fs::File;
-use std::path::Path;
 use std::io;
+use std::path::Path;
 
 use crate::core::error::{BifrostError, Result};
 
@@ -29,39 +29,42 @@ impl FileLock {
 
     /// Factory method: Create file handle and acquire exclusive lock in one step
     pub fn exclusive(path: &Path) -> Result<Self> {
-        let lock = Self::new(path)
-            .map_err(BifrostError::IoError)?;
-        lock.file.lock_exclusive()
+        let lock = Self::new(path).map_err(BifrostError::IoError)?;
+        lock.file
+            .lock_exclusive()
             .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(lock)
     }
 
     /// Factory method: Create file handle and acquire shared lock in one step
     pub fn shared(path: &Path) -> Result<Self> {
-        let lock = Self::new(path)
-            .map_err(BifrostError::IoError)?;
-        lock.file.lock_shared()
+        let lock = Self::new(path).map_err(BifrostError::IoError)?;
+        lock.file
+            .lock_shared()
             .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(lock)
     }
 
     /// Acquire exclusive lock (for writing) - instance method
     pub fn lock_exclusive(&self) -> Result<()> {
-        self.file.lock_exclusive()
+        self.file
+            .lock_exclusive()
             .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
 
     /// Acquire shared lock (for reading) - instance method
     pub fn lock_shared(&self) -> Result<()> {
-        self.file.lock_shared()
+        self.file
+            .lock_shared()
             .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
 
     /// Release the lock
     pub fn unlock(&self) -> Result<()> {
-        self.file.unlock()
+        self.file
+            .unlock()
             .map_err(|e| BifrostError::LockError(e.to_string()))?;
         Ok(())
     }
@@ -98,15 +101,14 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
 
     // Write to temp file
-    std::fs::write(&temp_path, content)
-        .map_err(BifrostError::IoError)?;
+    std::fs::write(&temp_path, content).map_err(BifrostError::IoError)?;
 
     // Rename is atomic on most filesystems
     let rename_result = std::fs::rename(&temp_path, path);
 
     // Cleanup temp file if rename fails
     if rename_result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);  // Best-effort cleanup
+        let _ = std::fs::remove_file(&temp_path); // Best-effort cleanup
     }
 
     rename_result.map_err(BifrostError::IoError)?;
@@ -122,8 +124,7 @@ pub fn atomic_read(path: &Path) -> Result<Vec<u8>> {
     let lock_path = path.with_extension("lock");
     let _lock = FileLock::shared(&lock_path)?;
 
-    let content = std::fs::read(path)
-        .map_err(BifrostError::IoError)?;
+    let content = std::fs::read(path).map_err(BifrostError::IoError)?;
 
     // Lock released automatically via Drop
     Ok(content)

@@ -1,10 +1,10 @@
 // Core data models for bifrost
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::fmt;
+use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Task type enumeration
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

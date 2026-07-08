@@ -1,22 +1,25 @@
 // SQLite database module for task history tracking
 //
-// Stores task execution results and pytest reports for historical query.
-// Tables:
-//   - tasks:         Core task execution records
-//   - artifacts:     Generated artifact files per task
-//   - pytest_results: Structured pytest test results
+// Schema design:
+//   tasks          - Core task metadata (lightweight, for fast queries)
+//   task_outputs   - stdout/stderr (separated to keep tasks table slim)
+//   task_env_vars  - Environment variables (normalized key-value pairs)
+//   artifacts      - Generated artifact files per task
+//   pytest_results - Structured pytest test reports
+//
+// Constraints:
+//   - All timestamps are INTEGER (unix epoch seconds, UTC)
+//   - status and task_type have CHECK constraints
+//   - Foreign keys enforced via PRAGMA
 
 use rusqlite::{Connection, params, Result as SqlResult};
 use std::path::PathBuf;
 use uuid::Uuid;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::core::models::{Task, TaskResult, TaskStatus, TaskType};
 
 /// Database manager for task history
-///
-/// Holds a persistent SQLite connection. The connection is Send but not Sync,
-/// so use from a single thread or wrap in Arc<Mutex<...>> for sharing.
 pub struct Database {
     conn: Connection,
     /// Path to the SQLite database file
@@ -25,10 +28,7 @@ pub struct Database {
 
 impl Database {
     /// Open or create a database at the given path
-    ///
-    /// Creates the database file and all required tables if they don't exist.
     pub fn open(path: PathBuf) -> SqlResult<Self> {
-        // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -36,109 +36,153 @@ impl Database {
 
         let conn = Connection::open(&path)?;
         let db = Self { conn, path: path.clone() };
-        db.create_tables()?;
+        db.initialize()?;
         Ok(db)
     }
 
     /// Open an in-memory database (for testing)
-    ///
-    /// The database lives only as long as this struct is alive.
     pub fn open_in_memory() -> SqlResult<Self> {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn, path: PathBuf::from(":memory:") };
-        db.create_tables()?;
+        db.initialize()?;
         Ok(db)
     }
 
-    /// Create all required tables if they don't exist
-    fn create_tables(&self) -> SqlResult<()> {
+    /// Enable foreign keys and create tables
+    fn initialize(&self) -> SqlResult<()> {
+        // ── Foreign keys MUST be enabled per-connection ──
+        self.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
         self.conn.execute_batch("
-            -- Core task execution records
+            -- Core task metadata (lightweight, no large text fields)
             CREATE TABLE IF NOT EXISTS tasks (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id         TEXT    NOT NULL UNIQUE,
-                created_at      TEXT    NOT NULL,
+                task_id         TEXT    NOT NULL PRIMARY KEY,
+                created_at      INTEGER NOT NULL,
                 command         TEXT    NOT NULL,
-                task_type       TEXT    NOT NULL,
+                task_type       TEXT    NOT NULL CHECK(task_type IN ('Shell', 'Pytest', 'Custom')),
                 priority        INTEGER NOT NULL DEFAULT 0,
                 timeout_secs    INTEGER NOT NULL DEFAULT 300,
-                status          TEXT    NOT NULL DEFAULT 'Pending',
+                status          TEXT    NOT NULL DEFAULT 'Pending'
+                                    CHECK(status IN ('Pending','Running','Completed','Failed','Cancelled','Timeout')),
                 exit_code       INTEGER,
-                stdout          TEXT,
-                stderr          TEXT,
                 error_message   TEXT,
                 working_dir     TEXT    NOT NULL DEFAULT '.',
                 batch_id        TEXT,
                 task_name       TEXT,
                 retries_used    INTEGER NOT NULL DEFAULT 0,
-                started_at      TEXT,
-                completed_at    TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
                 duration_ms     INTEGER,
-                artifacts_json  TEXT,
-                env_vars_json   TEXT,
-                metadata_json   TEXT,
-                created_at_idx  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                metadata_json   TEXT
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
-            CREATE INDEX IF NOT EXISTS idx_tasks_created    ON tasks(created_at_idx);
-            CREATE INDEX IF NOT EXISTS idx_tasks_task_type  ON tasks(task_type);
-            CREATE INDEX IF NOT EXISTS idx_tasks_batch_id   ON tasks(batch_id);
+            -- Composite index for the most common query pattern: filter by status then sort by time
+            CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_tasks_task_type      ON tasks(task_type);
+            CREATE INDEX IF NOT EXISTS idx_tasks_batch_id       ON tasks(batch_id);
+
+            -- Large I/O content separated from tasks to keep queries fast
+            CREATE TABLE IF NOT EXISTS task_outputs (
+                task_id     TEXT NOT NULL PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+                stdout      TEXT,
+                stderr      TEXT
+            );
+
+            -- Environment variables normalized (key-value pairs)
+            CREATE TABLE IF NOT EXISTS task_env_vars (
+                task_id     TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                PRIMARY KEY (task_id, key)
+            );
 
             -- Artifact file records per task
             CREATE TABLE IF NOT EXISTS artifacts (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id     TEXT    NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                name        TEXT    NOT NULL,
-                path        TEXT    NOT NULL,
+                task_id     TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                path        TEXT NOT NULL,
                 size_bytes  INTEGER,
-                UNIQUE(task_id, name)
+                PRIMARY KEY (task_id, name)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON artifacts(task_id);
-
-            -- Structured pytest results (parsed from --json-report)
+            -- Structured pytest results (duration_ms for consistency with tasks)
             CREATE TABLE IF NOT EXISTS pytest_results (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id         TEXT    NOT NULL UNIQUE REFERENCES tasks(task_id) ON DELETE CASCADE,
-                passed          INTEGER NOT NULL DEFAULT 0,
-                failed          INTEGER NOT NULL DEFAULT 0,
-                skipped         INTEGER NOT NULL DEFAULT 0,
-                total           INTEGER NOT NULL DEFAULT 0,
-                duration_secs   REAL,
-                collected       INTEGER,
-                warnings        INTEGER,
-                environment     TEXT,
-                report_json     TEXT
+                task_id     TEXT NOT NULL PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+                passed      INTEGER NOT NULL DEFAULT 0,
+                failed      INTEGER NOT NULL DEFAULT 0,
+                skipped     INTEGER NOT NULL DEFAULT 0,
+                total       INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER,
+                collected   INTEGER,
+                warnings    INTEGER,
+                environment TEXT,
+                report_json TEXT
             );
-
-            CREATE INDEX IF NOT EXISTS idx_pytest_task_id ON pytest_results(task_id);
         ")?;
         Ok(())
     }
+
+    // ─── Status/task_type helpers ────────────────────────────────
+
+    fn status_to_str(s: &TaskStatus) -> &'static str {
+        match s {
+            TaskStatus::Pending   => "Pending",
+            TaskStatus::Running   => "Running",
+            TaskStatus::Completed => "Completed",
+            TaskStatus::Failed    => "Failed",
+            TaskStatus::Cancelled => "Cancelled",
+            TaskStatus::Timeout   => "Timeout",
+        }
+    }
+
+    fn task_type_str(t: &TaskType) -> &'static str {
+        match t {
+            TaskType::Shell  => "Shell",
+            TaskType::Pytest => "Pytest",
+            TaskType::Custom => "Custom",
+        }
+    }
+
+    fn ts_to_int(dt: &DateTime<Utc>) -> i64 {
+        dt.timestamp()
+    }
+
+    fn int_to_ts_str(ts: Option<i64>) -> Option<String> {
+        ts.and_then(|t| DateTime::from_timestamp(t, 0))
+            .map(|dt| dt.to_rfc3339())
+    }
+
+    // ─── Write operations ─────────────────────────────────────────
 
     /// Insert a new pending task record
     pub fn insert_task(&self, task: &Task) -> SqlResult<()> {
         self.conn.execute(
             "INSERT INTO tasks (task_id, created_at, command, task_type, priority,
                                 timeout_secs, status, working_dir, batch_id, task_name,
-                                env_vars_json, metadata_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                metadata_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 task.task_id.to_string(),
-                task.timestamp.to_rfc3339(),
+                Self::ts_to_int(&task.timestamp),
                 task.command,
-                format!("{:?}", task.task_type),
+                Self::task_type_str(&task.task_type),
                 task.priority,
                 task.timeout,
-                format!("{:?}", TaskStatus::Pending),
+                Self::status_to_str(&TaskStatus::Pending),
                 task.working_dir.to_string_lossy().to_string(),
                 task.batch_id.map(|id| id.to_string()),
                 task.task_name,
-                serde_json::to_string(&task.env_vars).unwrap_or_default(),
                 serde_json::to_string(&task.metadata).unwrap_or_default(),
             ],
         )?;
+
+        // Normalized env vars
+        for (key, value) in &task.env_vars {
+            self.conn.execute(
+                "INSERT INTO task_env_vars (task_id, key, value) VALUES (?1, ?2, ?3)",
+                params![task.task_id.to_string(), key, value],
+            )?;
+        }
 
         Ok(())
     }
@@ -148,73 +192,77 @@ impl Database {
         self.conn.execute(
             "UPDATE tasks SET status = ?1, started_at = ?2 WHERE task_id = ?3",
             params![
-                format!("{:?}", TaskStatus::Running),
-                Utc::now().to_rfc3339(),
+                Self::status_to_str(&TaskStatus::Running),
+                Self::ts_to_int(&Utc::now()),
                 task_id.to_string(),
             ],
         )?;
-
         Ok(())
     }
 
     /// Insert or update a completed task result
     pub fn upsert_result(&self, result: &TaskResult) -> SqlResult<()> {
         let duration_ms = result.duration_secs() * 1000;
-        let artifacts_json = serde_json::to_string(&result.artifacts).unwrap_or_default();
-        let stdout_truncated = truncate(&result.output.stdout, 100_000);
-        let stderr_truncated = truncate(&result.output.stderr, 100_000);
 
+        // Upsert the lightweight metadata
         let updated = self.conn.execute(
             "UPDATE tasks SET
                 status       = ?1,
                 exit_code    = ?2,
-                stdout       = ?3,
-                stderr       = ?4,
-                error_message = ?5,
-                retries_used = ?6,
-                completed_at = ?7,
-                duration_ms  = ?8,
-                artifacts_json = ?9
-             WHERE task_id = ?10",
+                error_message = ?3,
+                retries_used = ?4,
+                completed_at = ?5,
+                duration_ms  = ?6
+             WHERE task_id = ?7",
             params![
-                format!("{:?}", result.status),
+                Self::status_to_str(&result.status),
                 result.output.exit_code,
-                stdout_truncated,
-                stderr_truncated,
                 result.error_message,
                 result.retries_used,
-                result.end_time.to_rfc3339(),
+                Self::ts_to_int(&result.end_time),
                 duration_ms,
-                artifacts_json,
                 result.task_id.to_string(),
             ],
         )?;
 
         if updated == 0 {
-            // Task wasn't inserted yet (e.g., executor path), do a full insert
+            // Fallback: task wasn't inserted yet — do a full insert
             self.conn.execute(
-                "INSERT INTO tasks (
-                    task_id, created_at, command, task_type, priority,
-                    timeout_secs, status, exit_code, stdout, stderr,
-                    error_message, working_dir, retries_used,
-                    started_at, completed_at, duration_ms, artifacts_json
-                ) VALUES (?1, ?2, '', 'Shell', 0, 300, ?3, ?4, ?5, ?6, ?7, '.', ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO tasks (task_id, created_at, command, task_type, priority,
+                                    timeout_secs, status, exit_code, error_message,
+                                    working_dir, retries_used, started_at, completed_at,
+                                    duration_ms)
+                 VALUES (?1, ?2, '', 'Shell', 0, 300, ?3, ?4, ?5, '.', ?6, ?7, ?8, ?9)",
                 params![
                     result.task_id.to_string(),
-                    result.start_time.to_rfc3339(),
-                    format!("{:?}", result.status),
+                    Self::ts_to_int(&result.start_time),
+                    Self::status_to_str(&result.status),
                     result.output.exit_code,
-                    stdout_truncated,
-                    stderr_truncated,
                     result.error_message,
                     result.retries_used,
-                    result.start_time.to_rfc3339(),
-                    result.end_time.to_rfc3339(),
+                    Self::ts_to_int(&result.start_time),
+                    Self::ts_to_int(&result.end_time),
                     duration_ms,
-                    artifacts_json,
                 ],
             )?;
         }
+
+        // Upsert stdout/stderr into the separate outputs table
+        let stdout_truncated = truncate(&result.output.stdout, 100_000);
+        let stderr_truncated = truncate(&result.output.stderr, 100_000);
+
+        self.conn.execute(
+            "INSERT INTO task_outputs (task_id, stdout, stderr)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id) DO UPDATE SET
+                 stdout = excluded.stdout,
+                 stderr = excluded.stderr",
+            params![
+                result.task_id.to_string(),
+                stdout_truncated,
+                stderr_truncated,
+            ],
+        )?;
 
         Ok(())
     }
@@ -231,19 +279,16 @@ impl Database {
             self.conn.execute(
                 "INSERT OR IGNORE INTO artifacts (task_id, name, path, size_bytes)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    task_id.to_string(),
-                    name,
-                    artifact,
-                    size,
-                ],
+                params![task_id.to_string(), name, artifact, size],
             )?;
         }
-
         Ok(())
     }
 
     /// Insert or update pytest results for a task
+    ///
+    /// NOTE: `duration_ms` here is the pytest-reported duration (may differ from
+    /// total wall-clock duration stored in tasks.duration_ms).
     pub fn upsert_pytest_result(
         &self,
         task_id: Uuid,
@@ -251,7 +296,7 @@ impl Database {
         failed: i64,
         skipped: i64,
         total: i64,
-        duration_secs: Option<f64>,
+        duration_ms: Option<i64>,
         collected: Option<i64>,
         warnings: Option<i64>,
         environment: Option<&str>,
@@ -259,7 +304,7 @@ impl Database {
     ) -> SqlResult<()> {
         self.conn.execute(
             "INSERT INTO pytest_results (task_id, passed, failed, skipped, total,
-                                         duration_secs, collected, warnings,
+                                         duration_ms, collected, warnings,
                                          environment, report_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(task_id) DO UPDATE SET
@@ -267,27 +312,22 @@ impl Database {
                  failed       = excluded.failed,
                  skipped      = excluded.skipped,
                  total        = excluded.total,
-                 duration_secs = excluded.duration_secs,
+                 duration_ms  = excluded.duration_ms,
                  collected    = excluded.collected,
                  warnings     = excluded.warnings,
                  environment  = excluded.environment,
                  report_json  = excluded.report_json",
             params![
                 task_id.to_string(),
-                passed,
-                failed,
-                skipped,
-                total,
-                duration_secs,
-                collected,
-                warnings,
-                environment,
-                report_json,
+                passed, failed, skipped, total,
+                duration_ms, collected, warnings,
+                environment, report_json,
             ],
         )?;
-
         Ok(())
     }
+
+    // ─── Query operations ─────────────────────────────────────────
 
     /// Query task history with optional filters
     pub fn query_tasks(
@@ -298,27 +338,31 @@ impl Database {
         offset: i64,
     ) -> SqlResult<Vec<TaskHistoryRecord>> {
         let mut sql = String::from(
-            "SELECT task_id, command, task_type, status, exit_code,
-                    error_message, created_at, started_at, completed_at,
+            "SELECT task_id, created_at, command, task_type, status, exit_code,
+                    error_message, started_at, completed_at,
                     duration_ms, retries_used, batch_id, task_name
              FROM tasks WHERE 1=1"
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
 
         if let Some(ref status) = status_filter {
-            sql.push_str(&format!(" AND status = ?{}", param_values.len() + 1));
-            param_values.push(Box::new(format!("{:?}", status)));
+            sql.push_str(&format!(" AND status = ?{}", param_idx));
+            param_values.push(Box::new(Self::status_to_str(status).to_string()));
+            param_idx += 1;
         }
 
         if let Some(ref task_type) = task_type_filter {
-            sql.push_str(&format!(" AND task_type = ?{}", param_values.len() + 1));
-            param_values.push(Box::new(format!("{:?}", task_type)));
+            sql.push_str(&format!(" AND task_type = ?{}", param_idx));
+            param_values.push(Box::new(Self::task_type_str(task_type).to_string()));
+            param_idx += 1;
         }
 
         sql.push_str(" ORDER BY created_at DESC");
-        sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
+        sql.push_str(&format!(" LIMIT ?{}", param_idx));
         param_values.push(Box::new(limit));
-        sql.push_str(&format!(" OFFSET ?{}", param_values.len() + 1));
+        param_idx += 1;
+        sql.push_str(&format!(" OFFSET ?{}", param_idx));
         param_values.push(Box::new(offset));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter()
@@ -329,14 +373,14 @@ impl Database {
         let records = stmt.query_map(params_ref.as_slice(), |row| {
             Ok(TaskHistoryRecord {
                 task_id: row.get::<_, String>(0)?,
-                command: row.get(1)?,
-                task_type: row.get(2)?,
-                status: row.get(3)?,
-                exit_code: row.get(4)?,
-                error_message: row.get(5)?,
-                created_at: row.get(6)?,
-                started_at: row.get(7)?,
-                completed_at: row.get(8)?,
+                created_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(1)?),
+                command: row.get(2)?,
+                task_type: row.get(3)?,
+                status: row.get(4)?,
+                exit_code: row.get(5)?,
+                error_message: row.get(6)?,
+                started_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(7)?),
+                completed_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(8)?),
                 duration_ms: row.get(9)?,
                 retries_used: row.get(10)?,
                 batch_id: row.get(11)?,
@@ -348,44 +392,46 @@ impl Database {
         for record in records {
             results.push(record?);
         }
-
         Ok(results)
     }
 
     /// Query detailed task result by task_id
+    ///
+    /// Joins with task_outputs, task_env_vars, artifacts, and pytest_results.
     pub fn get_task_by_id(&self, task_id: Uuid) -> SqlResult<Option<TaskDetailRecord>> {
+        let tid = task_id.to_string();
+
         let mut stmt = self.conn.prepare(
             "SELECT task_id, created_at, command, task_type, priority,
-                    timeout_secs, status, exit_code, stdout, stderr,
-                    error_message, working_dir, batch_id, task_name,
-                    retries_used, started_at, completed_at, duration_ms,
-                    artifacts_json, env_vars_json, metadata_json
+                    timeout_secs, status, exit_code, error_message, working_dir,
+                    batch_id, task_name, retries_used, started_at, completed_at,
+                    duration_ms, metadata_json
              FROM tasks WHERE task_id = ?1"
         )?;
 
-        let mut rows = stmt.query_map(params![task_id.to_string()], |row| {
+        let mut rows = stmt.query_map(params![tid], |row| {
             Ok(TaskDetailRecord {
                 task_id: row.get::<_, String>(0)?,
-                created_at: row.get(1)?,
+                created_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(1)?),
                 command: row.get(2)?,
                 task_type: row.get(3)?,
                 priority: row.get(4)?,
                 timeout_secs: row.get(5)?,
                 status: row.get(6)?,
                 exit_code: row.get(7)?,
-                stdout: row.get(8)?,
-                stderr: row.get(9)?,
-                error_message: row.get(10)?,
-                working_dir: row.get(11)?,
-                batch_id: row.get(12)?,
-                task_name: row.get(13)?,
-                retries_used: row.get(14)?,
-                started_at: row.get(15)?,
-                completed_at: row.get(16)?,
-                duration_ms: row.get(17)?,
-                artifacts_json: row.get(18)?,
-                env_vars_json: row.get(19)?,
-                metadata_json: row.get(20)?,
+                error_message: row.get(8)?,
+                working_dir: row.get(9)?,
+                batch_id: row.get(10)?,
+                task_name: row.get(11)?,
+                retries_used: row.get(12)?,
+                started_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(13)?),
+                completed_at: Self::int_to_ts_str(row.get::<_, Option<i64>>(14)?),
+                duration_ms: row.get(15)?,
+                metadata_json: row.get(16)?,
+                // Filled below after the row
+                stdout: None,
+                stderr: None,
+                env_vars: Vec::new(),
                 artifacts: Vec::new(),
                 pytest_result: None,
             })
@@ -393,62 +439,96 @@ impl Database {
 
         match rows.next() {
             Some(Ok(mut record)) => {
-                // Also fetch artifacts and pytest results
-                record.artifacts = self.get_artifacts_for_task(task_id)?;
-                record.pytest_result = self.get_pytest_result_for_task(task_id)?;
+                // Fetch from related tables
+                record.stdout = self.get_output(tid.as_str(), "stdout")?;
+                record.stderr = self.get_output(tid.as_str(), "stderr")?;
+                record.env_vars = self.get_env_vars(tid.as_str())?;
+                record.artifacts = self.get_artifacts_for_task(tid.as_str())?;
+                record.pytest_result = self.get_pytest_result_for_task(tid.as_str())?;
                 Ok(Some(record))
             }
             _ => Ok(None),
         }
     }
 
+    /// Read a single output column from task_outputs
+    fn get_output(&self, task_id: &str, column: &str) -> SqlResult<Option<String>> {
+        let sql = format!("SELECT {} FROM task_outputs WHERE task_id = ?1", column);
+        self.conn.query_row(&sql, params![task_id], |row| row.get(0))
+            .optional()
+    }
+
+    /// Read env vars for a task
+    fn get_env_vars(&self, task_id: &str) -> SqlResult<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value FROM task_env_vars WHERE task_id = ?1 ORDER BY key"
+        )?;
+        let rows = stmt.query_map(params![task_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
+        }
+        Ok(v)
+    }
+
     /// Get artifacts for a task
-    fn get_artifacts_for_task(&self, task_id: Uuid) -> SqlResult<Vec<ArtifactRecord>> {
+    fn get_artifacts_for_task(&self, task_id: &str) -> SqlResult<Vec<ArtifactRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT name, path, size_bytes FROM artifacts WHERE task_id = ?1"
         )?;
-
-        let records = stmt.query_map(params![task_id.to_string()], |row| {
+        let rows = stmt.query_map(params![task_id], |row| {
             Ok(ArtifactRecord {
                 name: row.get(0)?,
                 path: row.get(1)?,
                 size_bytes: row.get(2)?,
             })
         })?;
-
-        let mut results = Vec::new();
-        for record in records {
-            results.push(record?);
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
         }
-        Ok(results)
+        Ok(v)
     }
 
     /// Get pytest result for a task
-    fn get_pytest_result_for_task(&self, task_id: Uuid) -> SqlResult<Option<PytestResultRecord>> {
+    fn get_pytest_result_for_task(&self, task_id: &str) -> SqlResult<Option<PytestResultRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT passed, failed, skipped, total, duration_secs,
+            "SELECT passed, failed, skipped, total, duration_ms,
                     collected, warnings, environment, report_json
              FROM pytest_results WHERE task_id = ?1"
         )?;
-
-        let mut rows = stmt.query_map(params![task_id.to_string()], |row| {
+        let mut rows = stmt.query_map(params![task_id], |row| {
             Ok(PytestResultRecord {
                 passed: row.get(0)?,
                 failed: row.get(1)?,
                 skipped: row.get(2)?,
                 total: row.get(3)?,
-                duration_secs: row.get(4)?,
+                duration_ms: row.get(4)?,
                 collected: row.get(5)?,
                 warnings: row.get(6)?,
                 environment: row.get(7)?,
                 report_json: row.get(8)?,
             })
         })?;
-
         match rows.next() {
-            Some(Ok(record)) => Ok(Some(record)),
+            Some(Ok(r)) => Ok(Some(r)),
             _ => Ok(None),
         }
+    }
+
+    /// Helper: execute a GROUP BY query returning (String, i64) pairs
+    fn collect_pairs(&self, sql: &str) -> SqlResult<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let mut results = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 
     /// Get summary statistics
@@ -457,36 +537,16 @@ impl Database {
             "SELECT COUNT(*) FROM tasks", [], |row| row.get(0)
         )?;
 
-        let by_status: Vec<(String, i64)> = {
-            let mut stmt = self.conn.prepare(
-                "SELECT status, COUNT(*) FROM tasks GROUP BY status"
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r?);
-            }
-            v
-        };
+        let by_status = self.collect_pairs(
+            "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+        )?;
 
-        let by_type: Vec<(String, i64)> = {
-            let mut stmt = self.conn.prepare(
-                "SELECT task_type, COUNT(*) FROM tasks GROUP BY task_type"
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r?);
-            }
-            v
-        };
+        let by_type = self.collect_pairs(
+            "SELECT task_type, COUNT(*) FROM tasks GROUP BY task_type"
+        )?;
 
         let last_24h: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE created_at_idx > strftime('%s', 'now', '-1 day')",
+            "SELECT COUNT(*) FROM tasks WHERE created_at > strftime('%s', 'now', '-1 day')",
             [],
             |row| row.get(0),
         )?;
@@ -507,6 +567,21 @@ impl Database {
     }
 }
 
+/// Helper: Optional row helper
+trait OptionalRow {
+    fn optional(self) -> SqlResult<Option<String>>;
+}
+
+impl OptionalRow for Result<String, rusqlite::Error> {
+    fn optional(self) -> SqlResult<Option<String>> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// Truncate string to max_chars, appending "..." if truncated
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.len() > max_chars {
@@ -518,16 +593,16 @@ fn truncate(s: &str, max_chars: usize) -> String {
 
 // ─── Query result types ───────────────────────────────────────────
 
-/// Summary record for task history listing
+/// Summary record for task history listing (lightweight, no large fields)
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskHistoryRecord {
     pub task_id: String,
+    pub created_at: Option<String>,
     pub command: String,
     pub task_type: String,
     pub status: String,
     pub exit_code: Option<i32>,
     pub error_message: Option<String>,
-    pub created_at: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub duration_ms: Option<i64>,
@@ -536,7 +611,7 @@ pub struct TaskHistoryRecord {
     pub task_name: Option<String>,
 }
 
-/// Full detail record for a single task
+/// Full detail record for a single task (includes large I/O and related rows)
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskDetailRecord {
     pub task_id: String,
@@ -547,8 +622,6 @@ pub struct TaskDetailRecord {
     pub timeout_secs: i64,
     pub status: String,
     pub exit_code: Option<i32>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
     pub error_message: Option<String>,
     pub working_dir: String,
     pub batch_id: Option<String>,
@@ -557,9 +630,12 @@ pub struct TaskDetailRecord {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub duration_ms: Option<i64>,
-    pub artifacts_json: Option<String>,
-    pub env_vars_json: Option<String>,
     pub metadata_json: Option<String>,
+    // Large I/O (separate table, fetched on demand)
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    // Normalized related tables
+    pub env_vars: Vec<(String, String)>,
     pub artifacts: Vec<ArtifactRecord>,
     pub pytest_result: Option<PytestResultRecord>,
 }
@@ -579,7 +655,7 @@ pub struct PytestResultRecord {
     pub failed: i64,
     pub skipped: i64,
     pub total: i64,
-    pub duration_secs: Option<f64>,
+    pub duration_ms: Option<i64>,
     pub collected: Option<i64>,
     pub warnings: Option<i64>,
     pub environment: Option<String>,
@@ -609,7 +685,6 @@ mod tests {
     #[test]
     fn test_create_tables() {
         let db = setup_db();
-        // Verify tables exist by querying sqlite_master
         let tables: Vec<String> = db.conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
@@ -618,9 +693,64 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
 
-        assert!(tables.contains(&"tasks".to_string()));
-        assert!(tables.contains(&"artifacts".to_string()));
-        assert!(tables.contains(&"pytest_results".to_string()));
+        assert!(tables.contains(&"tasks".to_string()), "tasks table missing");
+        assert!(tables.contains(&"task_outputs".to_string()), "task_outputs table missing");
+        assert!(tables.contains(&"task_env_vars".to_string()), "task_env_vars table missing");
+        assert!(tables.contains(&"artifacts".to_string()), "artifacts table missing");
+        assert!(tables.contains(&"pytest_results".to_string()), "pytest_results table missing");
+    }
+
+    #[test]
+    fn test_foreign_keys_enabled() {
+        let db = setup_db();
+        let enabled: bool = db.conn.query_row(
+            "PRAGMA foreign_keys", [], |row| row.get(0)
+        ).unwrap();
+        assert!(enabled, "foreign_keys PRAGMA must be ON");
+    }
+
+    #[test]
+    fn test_check_constraint_status() {
+        let db = setup_db();
+        let result = db.conn.execute(
+            "INSERT INTO tasks (task_id, created_at, command, task_type, status)
+             VALUES ('bad-status', 0, 'x', 'Shell', 'InvalidStatus')",
+            [],
+        );
+        assert!(result.is_err(), "CHECK constraint should reject invalid status");
+    }
+
+    #[test]
+    fn test_check_constraint_task_type() {
+        let db = setup_db();
+        let result = db.conn.execute(
+            "INSERT INTO tasks (task_id, created_at, command, task_type, status)
+             VALUES ('bad-type', 0, 'x', 'Unknown', 'Pending')",
+            [],
+        );
+        assert!(result.is_err(), "CHECK constraint should reject invalid task_type");
+    }
+
+    #[test]
+    fn test_foreign_key_cascade() {
+        let db = setup_db();
+        // Insert a valid task
+        db.conn.execute(
+            "INSERT INTO tasks (task_id, created_at, command, task_type, status)
+             VALUES ('fk-test', 1000, 'echo', 'Shell', 'Completed')",
+            [],
+        ).unwrap();
+        // Insert an artifact referencing it
+        db.conn.execute(
+            "INSERT INTO artifacts (task_id, name, path) VALUES ('fk-test', 'out.log', '/tmp/out.log')",
+            [],
+        ).unwrap();
+        // Delete the task — cascade should remove the artifact
+        db.conn.execute("DELETE FROM tasks WHERE task_id = 'fk-test'", []).unwrap();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE task_id = 'fk-test'", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(count, 0, "ON DELETE CASCADE should remove child rows");
     }
 
     #[test]
@@ -629,7 +759,8 @@ mod tests {
         let task = Task::new("echo hello".to_string(), TaskType::Shell)
             .with_priority(10)
             .with_timeout(300)
-            .with_task_name("test_task".to_string());
+            .with_task_name("test_task".to_string())
+            .with_env_var("PATH".to_string(), "/usr/bin".to_string());
 
         db.insert_task(&task).unwrap();
 
@@ -638,6 +769,7 @@ mod tests {
         assert_eq!(records[0].command, "echo hello");
         assert_eq!(records[0].task_name, Some("test_task".to_string()));
         assert_eq!(records[0].status, "Pending");
+        assert!(records[0].created_at.is_some(), "created_at should be present");
     }
 
     #[test]
@@ -659,7 +791,7 @@ mod tests {
             task_id,
             status: TaskStatus::Completed,
             output: TaskOutput {
-                stdout: "done".to_string(),
+                stdout: "done\nline2".to_string(),
                 stderr: String::new(),
                 exit_code: Some(0),
             },
@@ -672,11 +804,16 @@ mod tests {
 
         db.upsert_result(&result).unwrap();
 
-        // Verify completed
+        // Verify completed via query
         let records = db.query_tasks(Some(TaskStatus::Completed), None, 10, 0).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].exit_code, Some(0));
         assert!(records[0].duration_ms.is_some());
+
+        // Verify stdout/stderr in separate table
+        let detail = db.get_task_by_id(task_id).unwrap().unwrap();
+        assert_eq!(detail.stdout, Some("done\nline2".to_string()));
+        assert_eq!(detail.stderr, Some(String::new()));
     }
 
     #[test]
@@ -687,31 +824,25 @@ mod tests {
 
         db.insert_task(&task).unwrap();
 
-        // Insert pytest result
         db.upsert_pytest_result(
             task_id,
-            10,    // passed
-            2,     // failed
-            1,     // skipped
-            13,    // total
-            Some(5.5),  // duration_secs
+            10,     // passed
+            2,      // failed
+            1,      // skipped
+            13,     // total
+            Some(5500), // duration_ms
             Some(13),   // collected
             Some(0),    // warnings
-            Some("Linux"),  // environment
+            Some("Linux"),
             Some(r#"{"summary":{"passed":10,"failed":2,"total":13}}"#),
         ).unwrap();
 
-        // Query detail
-        let detail = db.get_task_by_id(task_id).unwrap();
-        assert!(detail.is_some());
-        let detail = detail.unwrap();
-
-        let pytest = detail.pytest_result;
-        assert!(pytest.is_some());
-        let pytest = pytest.unwrap();
+        let detail = db.get_task_by_id(task_id).unwrap().unwrap();
+        let pytest = detail.pytest_result.expect("pytest_result should be present");
         assert_eq!(pytest.passed, 10);
         assert_eq!(pytest.failed, 2);
         assert_eq!(pytest.total, 13);
+        assert_eq!(pytest.duration_ms, Some(5500));
         assert!(pytest.report_json.is_some());
     }
 
@@ -729,10 +860,25 @@ mod tests {
     }
 
     #[test]
+    fn test_env_vars() {
+        let db = setup_db();
+        let task = Task::new("cmd".to_string(), TaskType::Shell)
+            .with_env_var("KEY1".to_string(), "val1".to_string())
+            .with_env_var("KEY2".to_string(), "val2".to_string());
+        let task_id = task.task_id;
+
+        db.insert_task(&task).unwrap();
+
+        let detail = db.get_task_by_id(task_id).unwrap().unwrap();
+        assert_eq!(detail.env_vars.len(), 2);
+        assert!(detail.env_vars.contains(&("KEY1".into(), "val1".into())));
+        assert!(detail.env_vars.contains(&("KEY2".into(), "val2".into())));
+    }
+
+    #[test]
     fn test_summary_stats() {
         let db = setup_db();
 
-        // Insert 3 tasks with different statuses
         let t1 = Task::new("cmd1".to_string(), TaskType::Shell);
         db.insert_task(&t1).unwrap();
 
@@ -757,14 +903,13 @@ mod tests {
     fn test_insert_duplicate_task_id() {
         let db = setup_db();
         let task = Task::new("cmd".to_string(), TaskType::Shell);
-
         db.insert_task(&task).unwrap();
 
-        // duplicate INSERT should fail with UNIQUE constraint
+        // Duplicate INSERT should fail due to PRIMARY KEY
         let result = db.insert_task(&task);
-        assert!(result.is_err());
+        assert!(result.is_err(), "Duplicate task_id should be rejected");
 
-        // upsert_result on same task_id should work (UPDATE then INSERT fallback)
+        // upsert_result on same task_id should succeed (UPDATE + INSERT fallback)
         let tr = TaskResult {
             task_id: task.task_id,
             status: TaskStatus::Completed,
@@ -779,6 +924,25 @@ mod tests {
             artifacts: vec![],
             error_message: None,
         };
-        assert!(db.upsert_result(&tr).is_ok());
+        assert!(db.upsert_result(&tr).is_ok(), "upsert_result on existing task_id should work");
+    }
+
+    #[test]
+    fn test_timestamp_integer() {
+        let db = setup_db();
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+
+        let task = Task::new("ts-test".to_string(), TaskType::Shell);
+        db.insert_task(&task).unwrap();
+
+        // Verify the stored created_at is an integer
+        let stored: i64 = db.conn.query_row(
+            "SELECT created_at FROM tasks WHERE task_id = ?1",
+            params![task.task_id.to_string()],
+            |row| row.get(0),
+        ).unwrap();
+        // Should be close to `now_ts` (within a few seconds)
+        assert!((stored - now_ts).abs() < 5, "created_at should be an INTEGER unix timestamp");
     }
 }

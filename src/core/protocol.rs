@@ -1,10 +1,10 @@
 // File communication protocol for task submission and retrieval
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
-use crate::core::models::Task;
-use crate::core::lock::atomic_write;
 use crate::core::error::{BifrostError, Result};
+use crate::core::lock::atomic_write;
+use crate::core::models::Task;
 use uuid::Uuid;
 
 /// File-based communication protocol for task management
@@ -33,8 +33,7 @@ impl Protocol {
         // Ensure all directories exist
         for dir in [&commands_dir, &results_dir, &status_dir, &artifacts_dir] {
             if !dir.exists() {
-                fs::create_dir_all(dir)
-                    .map_err(BifrostError::IoError)?;
+                fs::create_dir_all(dir).map_err(BifrostError::IoError)?;
             }
         }
 
@@ -52,8 +51,7 @@ impl Protocol {
     pub fn submit_task(&self, task: &Task) -> Result<()> {
         // Ensure commands directory exists
         if !self.commands_dir.exists() {
-            fs::create_dir_all(&self.commands_dir)
-                .map_err(BifrostError::IoError)?;
+            fs::create_dir_all(&self.commands_dir).map_err(BifrostError::IoError)?;
         }
 
         // Format filename with timestamp and task_id
@@ -93,8 +91,7 @@ impl Protocol {
 
         // Read the matching file
         let filepath = entries[0].path();
-        let content = fs::read_to_string(&filepath)
-            .map_err(BifrostError::IoError)?;
+        let content = fs::read_to_string(&filepath).map_err(BifrostError::IoError)?;
 
         // Deserialize task
         let task: Task = serde_json::from_str(&content)?;
@@ -141,8 +138,7 @@ impl Protocol {
         }
 
         // Delete the matching file
-        fs::remove_file(entries[0].path())
-            .map_err(BifrostError::IoError)?;
+        fs::remove_file(entries[0].path()).map_err(BifrostError::IoError)?;
 
         Ok(())
     }
@@ -176,9 +172,9 @@ impl Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use chrono::Utc;
     use std::collections::HashMap;
+    use tempfile::TempDir;
 
     fn create_test_task() -> Task {
         Task {
