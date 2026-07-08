@@ -57,7 +57,7 @@ sudo mkdir -p /etc/bifrost
 sudo mkdir -p /var/lib/bifrost/{pending,results,completed,logs}
 
 # 4. Create configuration
-sudo tee /etc/bifrost/daemon.yaml <<EOF
+
 shared_storage: "/var/lib/bifrost"
 log_level: "info"
 poll_interval: 5
@@ -78,7 +78,9 @@ sudo systemctl start bifrost
 
 ### Daemon Configuration
 
-Edit `/etc/bifrost/daemon.yaml`:
+
+Edit `~/.bifrost/settings.json`:
+
 
 ```yaml
 # Bifrost daemon configuration
@@ -108,7 +110,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bifrost daemon --config /etc/bifrost/daemon.yaml
+ExecStart=/usr/local/bin/bifrost daemon
 Restart=on-failure
 RestartSec=10
 
@@ -291,7 +293,7 @@ sudo chown -R root:root /var/lib/bifrost
 sudo chmod -R 750 /var/lib/bifrost
 
 # Configuration
-sudo chmod 640 /etc/bifrost/daemon.yaml
+sudo chmod 640 ~/.bifrost/settings.json
 ```
 
 ### SELinux/AppArmor
@@ -408,7 +410,7 @@ journalctl -u bifrost -n 50
 ```
 
 Common issues:
-- Missing configuration: Create `/etc/bifrost/daemon.yaml`
+- Missing configuration: Create `~/.bifrost/settings.json`
 - Permission denied: Check file permissions
 - Port conflict: No network port needed for bifrost
 - Resource limits: Increase MemoryMax
@@ -438,7 +440,7 @@ ls /var/lib/bifrost/pending/
 journalctl -u bifrost | grep "Watcher"
 
 # Configuration
-cat /etc/bifrost/daemon.yaml
+cat ~/.bifrost/settings.json
 ```
 
 ### Health Check Fails
