@@ -79,10 +79,18 @@ impl Database {
                 started_at      INTEGER,
                 completed_at    INTEGER,
                 duration_ms     INTEGER,
-                metadata_json   TEXT
+                metadata_json   TEXT,
+                log_path        TEXT,
+                task_group      TEXT,
+                run_attempt     INTEGER NOT NULL DEFAULT 1,
+                git_commit      TEXT,
+                environment     TEXT,
+                trigger         TEXT
             );
 
-            -- Composite index for the most common query pattern: filter by status then sort by time
+            -- Composite index for the most common query pattern
+            CREATE INDEX IF NOT EXISTS idx_tasks_task_group   ON tasks(task_group);
+            -- Composite index for the most common query pattern
             CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_tasks_task_type      ON tasks(task_type);
             CREATE INDEX IF NOT EXISTS idx_tasks_batch_id       ON tasks(batch_id);
@@ -465,7 +473,10 @@ impl Database {
 
     /// Read a single output column from task_outputs
     fn get_output(&self, task_id: &str, column: OutputColumn) -> SqlResult<Option<String>> {
-        let sql = format!("SELECT {} FROM task_outputs WHERE task_id = ?1", column.name());
+        let sql = format!(
+            "SELECT {} FROM task_outputs WHERE task_id = ?1",
+            column.name()
+        );
         self.conn
             .query_row(&sql, params![task_id], |row| row.get(0))
             .optional()
@@ -578,7 +589,10 @@ impl Database {
 }
 
 /// Which output column to read from task_outputs
-enum OutputColumn { Stdout, Stderr }
+enum OutputColumn {
+    Stdout,
+    Stderr,
+}
 
 impl OutputColumn {
     fn name(&self) -> &'static str {
@@ -610,7 +624,8 @@ impl OptionalRow for Result<String, rusqlite::Error> {
 /// characters are never split.
 fn truncate(s: &str, max_bytes: usize) -> String {
     if s.len() > max_bytes {
-        let safe_boundary = s.char_indices()
+        let safe_boundary = s
+            .char_indices()
             .take_while(|(i, _)| *i < max_bytes)
             .last()
             .map(|(i, c)| i + c.len_utf8())
