@@ -24,11 +24,17 @@ pub struct Database {
     conn: Connection,
     /// Path to the SQLite database file
     pub path: PathBuf,
+    /// Shared storage root for computing log/artifact paths at runtime
+    shared_storage: Option<PathBuf>,
 }
 
 impl Database {
-    /// Open or create a database at the given path
-    pub fn open(path: PathBuf) -> SqlResult<Self> {
+    /// Open or create a database at the given path with optional shared storage root.
+    ///
+    /// `shared_storage` is used at runtime to compute log directory paths
+    /// (`{shared_storage}/logs/{task_id}/`). Pass it here or set later via
+    /// [`Database::set_shared_storage`].
+    pub fn open(path: PathBuf, shared_storage: Option<PathBuf>) -> SqlResult<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -38,6 +44,7 @@ impl Database {
         let db = Self {
             conn,
             path: path.clone(),
+            shared_storage,
         };
         db.initialize()?;
         Ok(db)
@@ -49,6 +56,7 @@ impl Database {
         let db = Self {
             conn,
             path: PathBuf::from(":memory:"),
+            shared_storage: None,
         };
         db.initialize()?;
         Ok(db)
@@ -80,7 +88,6 @@ impl Database {
                 completed_at    INTEGER,
                 duration_ms     INTEGER,
                 metadata_json   TEXT,
-                log_path        TEXT,
                 task_group      TEXT,
                 run_attempt     INTEGER NOT NULL DEFAULT 1,
                 git_commit      TEXT,
@@ -180,9 +187,9 @@ impl Database {
         self.conn.execute(
             "INSERT INTO tasks (task_id, created_at, command, task_type, priority,
                                 timeout_secs, status, working_dir, batch_id, task_name,
-                                metadata_json, log_path, task_group, git_commit,
+                                metadata_json, task_group, git_commit,
                                 environment, trigger)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 task.task_id.to_string(),
                 Self::ts_to_int(&task.timestamp),
@@ -195,7 +202,6 @@ impl Database {
                 task.batch_id.map(|id| id.to_string()),
                 task.task_name,
                 serde_json::to_string(&task.metadata).unwrap_or_default(),
-                None::<String>,  // log_path (set later via set_log_path)
                 meta.task_group,
                 meta.git_commit,
                 meta.environment,
@@ -214,14 +220,7 @@ impl Database {
         Ok(())
     }
 
-    /// Set log_path after the log directory is created
-    pub fn set_log_path(&self, task_id: Uuid, log_path: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE tasks SET log_path = ?1 WHERE task_id = ?2",
-            params![log_path, task_id.to_string()],
-        )?;
-        Ok(())
-    }
+
 
     /// Update task status to Running
     pub fn mark_running(&self, task_id: Uuid) -> SqlResult<()> {
@@ -577,6 +576,21 @@ impl Database {
         Ok(results)
     }
 
+    /// Set the shared storage root path (used for log/artifact path computation)
+    pub fn set_shared_storage(&mut self, path: PathBuf) {
+        self.shared_storage = Some(path);
+    }
+
+    /// Compute the log directory for a task based on shared storage path.
+    ///
+    /// Returns `{shared_storage}/logs/{task_id}/` if `shared_storage` is configured,
+    /// or `None` if no shared storage path has been set.
+    pub fn get_log_dir(&self, task_id: Uuid) -> Option<PathBuf> {
+        self.shared_storage
+            .as_ref()
+            .map(|root| root.join("logs").join(task_id.to_string()))
+    }
+
     /// Get summary statistics
     pub fn get_summary_stats(&self) -> SqlResult<TaskSummaryStats> {
         let total: i64 = self
@@ -621,7 +635,6 @@ pub struct TaskMeta {
     pub environment: Option<String>,
     pub trigger: Option<String>,
 }
-
 
 /// Which output column to read from task_outputs
 enum OutputColumn {
@@ -1099,32 +1112,42 @@ mod tests {
         let detail = db.get_task_by_id(task.task_id).unwrap().unwrap();
 
         // Verify the fields via SQLite directly
-        let (task_group, git_commit, environment, trigger): (Option<String>, Option<String>, Option<String>, Option<String>) = db.conn.query_row(
-            "SELECT task_group, git_commit, environment, trigger FROM tasks WHERE task_id = ?1",
-            params![task.task_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).unwrap();
+        let (task_group, git_commit, environment, trigger): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = db
+            .conn
+            .query_row(
+                "SELECT task_group, git_commit, environment, trigger FROM tasks WHERE task_id = ?1",
+                params![task.task_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
 
         assert_eq!(task_group, Some("vllm-daily-regression".to_string()));
         assert_eq!(git_commit, Some("a1b2c3d".to_string()));
-        assert_eq!(environment, Some(r#"{"gpu":"A100-80G","cuda":"12.4"}"#.to_string()));
+        assert_eq!(
+            environment,
+            Some(r#"{"gpu":"A100-80G","cuda":"12.4"}"#.to_string())
+        );
         assert_eq!(trigger, Some("cli".to_string()));
     }
 
     #[test]
-    fn test_set_log_path() {
-        let db = setup_db();
-        let task = Task::new("log-test".to_string(), TaskType::Shell);
-        db.insert_task(&task, None).unwrap();
+    fn test_get_log_dir() {
+        let mut db = setup_db();
+        let task_id = Uuid::new_v4();
 
-        db.set_log_path(task.task_id, "logs/abc123/").unwrap();
+        // Before setting shared_storage, get_log_dir returns None
+        assert!(db.get_log_dir(task_id).is_none());
 
-        let log_path: Option<String> = db.conn.query_row(
-            "SELECT log_path FROM tasks WHERE task_id = ?1",
-            params![task.task_id.to_string()],
-            |row| row.get(0),
-        ).unwrap();
+        // After setting, returns the computed path
+        db.set_shared_storage(PathBuf::from("/shared"));
+        let log_dir = db.get_log_dir(task_id).expect("get_log_dir should return Some");
 
-        assert_eq!(log_path, Some("logs/abc123/".to_string()));
+        assert_eq!(log_dir, PathBuf::from("/shared/logs").join(task_id.to_string()));
+        assert!(log_dir.ends_with(task_id.to_string()));
     }
 }
