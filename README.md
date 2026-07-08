@@ -236,46 +236,27 @@ sudo systemctl start bifrost
 
 ## Configuration
 
-### Client Configuration (`/etc/bifrost/client.yaml`)
+### Settings File (`~/.bifrost/settings.json`)
 
-```yaml
-# Shared storage path
-shared_storage: "/shared/storage"
-
-# Optional SQLite database for task history
-database: "tasks.db"
-
-# Poll interval for result checking (minimum 100ms)
-poll_interval: "2s"
-
-# Heartbeat timeout before considering daemon dead
-heartbeat_timeout: "180s"
+```bash
+bifrost client init    # generate default settings
+bifrost daemon --init  # same file
 ```
 
-### Daemon Configuration (`/etc/bifrost/daemon.yaml`)
-
-```yaml
-# Shared storage path
-shared_storage: "/shared/storage"
-
-# Poll interval for file watching (minimum 100ms)
-poll_interval: "500ms"
-
-# Maximum task execution timeout
-task_timeout: "300s"
-
-# Maximum retry attempts (0-10)
-max_retries: 3
-
-# Heartbeat update interval
-heartbeat_interval: "60s"
-
-# Maximum concurrent tasks (1-100)
-max_concurrent: 10
-
-# Working directory for task execution
-working_dir: "/tmp/bifrost/work"
+```json
+{
+  "shared_storage": "/tmp/bifrost",
+  "client": {},
+  "daemon": {}
+}
 ```
+
+| Field | Client | Daemon | Description |
+|-------|--------|--------|-------------|
+| shared_storage | Yes | Yes | Root directory for commands/results/logs |
+| database | Yes | -- | SQLite file for task history (client) |
+| client.* | Yes | -- | Poll interval, heartbeat timeout |
+| daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
 ## Usage
 
