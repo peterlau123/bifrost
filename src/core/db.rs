@@ -1148,8 +1148,6 @@ mod tests {
 
         db.insert_task(&task, Some(&meta)).unwrap();
 
-        let detail = db.get_task_by_id(task.task_id).unwrap().unwrap();
-
         // Verify the fields via SQLite directly
         let (task_group, git_commit, environment, trigger): (
             Option<String>,
