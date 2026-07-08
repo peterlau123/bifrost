@@ -220,8 +220,6 @@ impl Database {
         Ok(())
     }
 
-
-
     /// Update task status to Running
     pub fn mark_running(&self, task_id: Uuid) -> SqlResult<()> {
         self.conn.execute(
@@ -1145,9 +1143,14 @@ mod tests {
 
         // After setting, returns the computed path
         db.set_shared_storage(PathBuf::from("/shared"));
-        let log_dir = db.get_log_dir(task_id).expect("get_log_dir should return Some");
+        let log_dir = db
+            .get_log_dir(task_id)
+            .expect("get_log_dir should return Some");
 
-        assert_eq!(log_dir, PathBuf::from("/shared/logs").join(task_id.to_string()));
+        assert_eq!(
+            log_dir,
+            PathBuf::from("/shared/logs").join(task_id.to_string())
+        );
         assert!(log_dir.ends_with(task_id.to_string()));
     }
 }

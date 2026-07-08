@@ -175,7 +175,7 @@ fn handle_client_mode(command: ClientCommand) {
                 _ => TaskType::Shell,
             };
 
-            match submit::submit_task(&protocol, cmd, parsed_type, priority, timeout, working_dir) {
+            match submit::submit_task(&protocol, None, cmd, parsed_type, priority, timeout, working_dir) {
                 Ok(task_id) => {
                     println!("Task submitted successfully");
                     println!("  Task ID: {}", task_id);
@@ -196,7 +196,7 @@ fn handle_client_mode(command: ClientCommand) {
             let protocol = Protocol::new(shared_storage.clone())
                 .expect("Failed to create protocol");
 
-            match submit::submit_pytest_task(&protocol, path.clone(), priority, timeout, working_dir) {
+            match submit::submit_pytest_task(&protocol, None, path.clone(), priority, timeout, working_dir) {
                 Ok(task_id) => {
                     println!("Pytest task submitted successfully");
                     println!("  Task ID: {}", task_id);
@@ -268,7 +268,7 @@ fn handle_client_mode(command: ClientCommand) {
 
                     let tracker = BatchTracker::new(custom_batch_dir.unwrap_or(batch_dir));
 
-                    match submit::submit_batch_manifest(&protocol, &tracker, &manifest) {
+                    match submit::submit_batch_manifest(&protocol, None, &tracker, &manifest) {
                         Ok(batch_id) => {
                             println!("Batch manifest submitted successfully");
                             println!("  Batch ID: {}", batch_id);

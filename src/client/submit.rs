@@ -2,14 +2,18 @@
 use crate::core::models::{Task, TaskType, TaskManifest, BatchProgress, BatchStatus};
 use crate::core::protocol::Protocol;
 use crate::core::batch_tracker::BatchTracker;
+use crate::core::db::{Database, TaskMeta};
 use crate::core::error::{BifrostError, Result};
 use std::path::PathBuf;
 use uuid::Uuid;
 use chrono::Utc;
 
 /// Submit a task to the daemon via shared storage
+///
+/// If `db` is `Some`, the task is also recorded in SQLite for history tracking.
 pub fn submit_task(
     protocol: &Protocol,
+    db: Option<&Database>,
     command: String,
     task_type: TaskType,
     priority: u8,
@@ -28,11 +32,16 @@ pub fn submit_task(
         task
     };
 
-    // Get task ID before submission
     let task_id = task.task_id;
 
-    // Submit via protocol
+    // Submit via file protocol (always)
     protocol.submit_task(&task)?;
+
+    // Record in SQLite (optional)
+    if let Some(db) = db {
+        db.insert_task(&task, None)
+            .map_err(|e| BifrostError::SerializationError(e.to_string()))?;
+    }
 
     Ok(task_id)
 }
@@ -40,6 +49,7 @@ pub fn submit_task(
 /// Create and submit a pytest task (convenience wrapper)
 pub fn submit_pytest_task(
     protocol: &Protocol,
+    db: Option<&Database>,
     test_path: String,
     priority: u8,
     timeout: u64,
@@ -52,24 +62,22 @@ pub fn submit_pytest_task(
 
     protocol.submit_task(&task)?;
 
+    if let Some(db) = db {
+        db.insert_task(&task, None)
+            .map_err(|e| BifrostError::SerializationError(e.to_string()))?;
+    }
+
     Ok(task_id)
 }
 
 /// Submit a batch manifest and create batch progress tracking
 ///
 /// Reads a TaskManifest JSON file, generates UUID for batch, creates
-/// BatchProgress file, and submits all tasks to daemon.
-///
-/// # Arguments
-/// * `protocol` - Protocol instance for task submission
-/// * `batch_tracker` - BatchTracker for progress tracking
-/// * `manifest_path` - Path to TaskManifest JSON file
-///
-/// # Returns
-/// * `Ok(Uuid)` - Batch ID for tracking
-/// * `Err(Error)` - Submission failed
+/// BatchProgress file, submits all tasks to daemon, and records
+/// each in SQLite if `db` is `Some`.
 pub fn submit_batch_manifest(
     protocol: &Protocol,
+    db: Option<&Database>,
     batch_tracker: &BatchTracker,
     manifest_path: &PathBuf,
 ) -> Result<Uuid> {
@@ -97,6 +105,18 @@ pub fn submit_batch_manifest(
         updated_at: now,
     };
 
+    // Batch-level metadata for SQLite
+    let batch_meta = if db.is_some() {
+        Some(TaskMeta {
+            task_group: Some(manifest.batch_name.clone()),
+            git_commit: None,
+            environment: None,
+            trigger: Some("batch".to_string()),
+        })
+    } else {
+        None
+    };
+
     // Submit each task in the manifest
     for (index, task_item) in manifest.tasks.iter().enumerate() {
         // Convert TaskItem to Task
@@ -112,9 +132,16 @@ pub fn submit_batch_manifest(
             t.with_env_var(k.clone(), v.clone())
         });
 
-        // Submit task
         let task_id = task.task_id;
+
+        // Submit via file protocol
         protocol.submit_task(&task)?;
+
+        // Record in SQLite (optional)
+        if let Some(db) = db {
+            db.insert_task(&task, batch_meta.as_ref())
+                .map_err(|e| BifrostError::SerializationError(e.to_string()))?;
+        }
 
         // Track submitted task
         progress.submitted_tasks.push((index, task_id, task_item.task_name.clone()));
@@ -145,6 +172,7 @@ mod tests {
 
         let task_id = submit_task(
             &protocol,
+            None,
             "echo hello".to_string(),
             TaskType::Shell,
             10,
@@ -173,6 +201,7 @@ mod tests {
 
         let task_id = submit_task(
             &protocol,
+            None,
             "pytest tests/".to_string(),
             TaskType::Pytest,
             5,
@@ -192,6 +221,7 @@ mod tests {
 
         let task_id = submit_pytest_task(
             &protocol,
+            None,
             "tests/unit/".to_string(),
             10,
             300,
