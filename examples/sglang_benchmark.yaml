@@ -1,0 +1,17 @@
+name: sglang_benchmark
+description: SGLang serve + benchmark
+tasks:
+  - name: start_server
+    command: |
+      nohup python -m sglang.launch_server
+        --model-path Qwen/Qwen2.5-7B-Instruct --port 8000
+        > /tmp/sglang.log 2>&1 &
+      echo "PID: $!"
+    timeout: 120
+    env_vars: {CUDA_VISIBLE_DEVICES: "0"}
+    ignore_failure: true
+  - name: online_bench
+    command: python -m sglang.bench_serving --backend sglang --model Qwen/Qwen2.5-7B-Instruct --num-prompts 500 --request-rate 5 --output-file results/sglang_online.json
+    timeout: 600
+    artifacts: [results/sglang_online.json]
+    working_dir: /workspace/sglang

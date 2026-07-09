@@ -1,0 +1,1 @@
+{"shared_storage":"/shared/storage","database":"/shared/storage/bifrost.db","client":{"poll_interval":"2s","heartbeat_timeout":"180s"}}

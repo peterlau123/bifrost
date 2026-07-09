@@ -1,0 +1,17 @@
+name: vllm_benchmark
+description: vLLM serve + benchmark
+tasks:
+  - name: start_server
+    command: |
+      nohup python -m vllm.entrypoints.openai.api_server
+        --model Qwen/Qwen2.5-7B-Instruct --port 8000
+        > /tmp/vllm.log 2>&1 &
+      echo "PID: $!"
+    timeout: 120
+    env_vars: {CUDA_VISIBLE_DEVICES: "0"}
+    ignore_failure: true
+  - name: throughput
+    command: python benchmark/benchmark_throughput.py --backend openai --model Qwen/Qwen2.5-7B-Instruct --api-url http://localhost:8000/v1 --num-prompts 200 --output results/throughput.json
+    timeout: 600
+    artifacts: [results/throughput.json]
+    working_dir: /workspace/vllm
