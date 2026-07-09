@@ -19,7 +19,7 @@ pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let hi = s.daemon.heartbeat_interval.unwrap_or(Duration::from_secs(60));
     let hbs = sd.clone();
     tokio::spawn(async move { loop { if hbs.load(Ordering::Relaxed) { break; }
-        hb.update_timestamp(); hb.update_task_counts(0, 0); let _ = hb.write();
+        hb.update_status(crate::daemon::heartbeat::DaemonStatus::Running); hb.update_task_counts(0, 0); let _ = hb.write_heartbeat();
         tokio::time::sleep(hi).await; } });
     let mut rx = AsyncFileWatcher::new(cd.clone()).map_err(|e| format!("w: {}", e))?.watch_async().await;
     println!("Daemon ready, watching {}", cd.display());
