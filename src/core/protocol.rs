@@ -164,6 +164,29 @@ impl Protocol {
     }
 
     /// Get the shared storage root path
+
+    pub fn write_result(&self, task_id: &Uuid, result: &TaskResult) -> Result<()> {
+        if !self.results_dir.exists() { fs::create_dir_all(&self.results_dir).map_err(BifrostError::IoError)?; }
+        atomic_write(&self.results_dir.join(format!("{}_result.json", task_id)), serde_json::to_string_pretty(result)?.as_bytes())
+    }
+    pub fn write_status(&self, task_id: &Uuid, status: &TaskStatus, message: Option<&str>) -> Result<()> {
+        if !self.status_dir.exists() { fs::create_dir_all(&self.status_dir).map_err(BifrostError::IoError)?; }
+        let filepath = self.status_dir.join(format!("{}.json", task_id));
+        let mut map = serde_json::Map::new();
+        map.insert("task_id".into(), serde_json::json!(task_id.to_string()));
+        map.insert("status".into(), serde_json::json!(format!("{}", status)));
+        if let Some(msg) = message { map.insert("message".into(), serde_json::json!(msg)); }
+        atomic_write(&filepath, serde_json::to_string_pretty(&map)?.as_bytes())
+    }
+    pub fn remove_command_file(&self, task_id: &Uuid) -> Result<()> {
+        if !self.commands_dir.exists() { return Ok(()); }
+        for entry in fs::read_dir(&self.commands_dir).map_err(BifrostError::IoError)? {
+            let entry = entry.map_err(BifrostError::IoError)?;
+            if entry.file_name().to_string_lossy().contains(&task_id.to_string()) { fs::remove_file(entry.path()).map_err(BifrostError::IoError)?; }
+        }
+        Ok(())
+    }
+
     pub fn shared_storage(&self) -> &Path {
         &self.shared_storage
     }
