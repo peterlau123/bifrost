@@ -54,7 +54,7 @@ pub fn launch_job(protocol: &Protocol, db: Option<&Database>, job: JobDefinition
 fn fetch_result(protocol: &Protocol, ti: &crate::core::job::JobTask, tid: Uuid, elapsed: Duration) -> JobTaskResult {
     match crate::client::results::get_result(protocol, tid) {
         Ok(r) => JobTaskResult { name: ti.name.clone(), task_id: tid, exit_code: r.output.exit_code,
-            status: format!("{}", r.status), stdout: r.output.stdout, stderr: r.output.stderr,
+            status: format!("{}", r.status), stdout: r.output.stdout.clone(), stderr: r.output.stderr.clone(),
             duration_secs: r.duration_secs(), error_message: r.error_message, artifacts: r.artifacts },
         Err(_) => JobTaskResult { name: ti.name.clone(), task_id: tid, exit_code: None,
             status: "Completed".into(), stdout: String::new(), stderr: String::new(),
