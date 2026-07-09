@@ -1,0 +1,13 @@
+name: quick_start
+description: Verify bifrost launch works
+tasks:
+  - name: host_info
+    command: uname -a
+    timeout: 30
+  - name: gpu_info
+    command: nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null || echo "no GPU"
+    timeout: 30
+    ignore_failure: true
+  - name: disk_space
+    command: df -h / | tail -1
+    timeout: 30

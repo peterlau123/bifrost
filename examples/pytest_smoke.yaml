@@ -1,0 +1,12 @@
+name: pytest_smoke
+description: Quick smoke tests
+tasks:
+  - name: unit_tests
+    command: pytest tests/unit/ --json-report --json-report-file=report.json -x -v --timeout=60
+    timeout: 300
+    artifacts: [report.json]
+  - name: integration_tests
+    command: pytest tests/integration/ --json-report --json-report-file=report.json -x -v --timeout=120
+    timeout: 600
+    artifacts: [report.json]
+    ignore_failure: true

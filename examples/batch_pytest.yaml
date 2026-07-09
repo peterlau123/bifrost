@@ -1,0 +1,17 @@
+name: batch_pytest
+description: Unit, integration, regression
+tasks:
+  - name: unit
+    command: pytest tests/unit/ --json-report --json-report-file=report_unit.json -v --tb=short -n auto
+    timeout: 300
+    artifacts: [report_unit.json]
+  - name: integration
+    command: pytest tests/integration/ --json-report --json-report-file=report_int.json -v --tb=long -n 4
+    timeout: 600
+    env_vars: {CUDA_VISIBLE_DEVICES: "0"}
+    artifacts: [report_int.json]
+  - name: regression
+    command: pytest tests/regression/ --json-report --json-report-file=report_reg.json -v --tb=line
+    timeout: 1200
+    artifacts: [report_reg.json]
+    ignore_failure: true
