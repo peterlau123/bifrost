@@ -53,7 +53,7 @@ pub struct DaemonSection {
 impl Default for DaemonSection { fn default() -> Self { Self { poll_interval: None, task_timeout: None, max_retries: None, heartbeat_interval: None, max_concurrent: None, working_dir: None } } }
 
 impl BifrostSettings {
-    pub fn defaults() -> Self { Self { shared_storage: PathBuf::from("/tmp/bifrost"), database: None, client: ClientSection::default(), daemon: DaemonSection::default() } }
+    pub fn defaults() -> Self { Self { shared_storage: dirs().join("data"), database: None, client: ClientSection::default(), daemon: DaemonSection::default() } }
     pub fn path() -> PathBuf { dirs().join("settings.json") }
     pub fn db_path(&self) -> PathBuf { self.database.as_ref().cloned().unwrap_or_else(|| self.shared_storage.join("bifrost.db")) }
     pub fn validate(&self) -> Result<(), SettingsError> {
@@ -84,7 +84,7 @@ pub fn init() -> Result<PathBuf, SettingsError> {
 fn dirs() -> PathBuf { std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(PathBuf::from).unwrap_or_default().join(".bifrost") }
 
 #[cfg(test)] mod tests { use super::*;
-    #[test] fn test_defaults() { assert_eq!(BifrostSettings::defaults().shared_storage, PathBuf::from("/tmp/bifrost")); }
+    #[test] fn test_defaults() { assert_eq!(BifrostSettings::defaults().shared_storage, dirs().join("data")); }
     #[test] fn test_db_path() { assert_eq!(BifrostSettings::defaults().db_path(), PathBuf::from("/tmp/bifrost/bifrost.db")); }
     #[test] fn test_parse_duration() { let s: BifrostSettings = serde_json::from_str(r#"{"shared_storage":"/t","client":{"poll_interval":"2s"},"daemon":{}}"#).unwrap(); assert_eq!(s.client.poll_interval, Some(Duration::from_secs(2))); }
     #[test] fn test_invalid_duration() { assert!(serde_json::from_str::<BifrostSettings>(r#"{"shared_storage":"/t","client":{"poll_interval":"blargh"},"daemon":{}}"#).is_err()); }
