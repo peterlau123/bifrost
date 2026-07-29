@@ -81,7 +81,7 @@ flowchart TB
         DB["SQLite Index<br/>(optional)"]
     end
     
-    subgraph Shared["Shared Storage<br/>(GPFS)"]
+    subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
         CMD["commands/<br/>Task JSON files"]
         RES["results/<br/>Result JSON files"]
         STA["status/<br/>Progress updates"]
@@ -156,7 +156,7 @@ sequenceDiagram
 |------|------|------|
 | **Rust** | 1.70+ | 编译环境，只需编译一次 |
 | **SQLite** | 3.x | 可选，任务历史索引 |
-| **共享存储** | - | GPFS 共享目录，与 H20 共用 |
+| **共享存储** | - | GPFS / NFS / Lustre 等 POSIX 共享文件系统，与 H20 共用 |
 
 ### H20（离线机器，Daemon 端）
 
@@ -164,7 +164,7 @@ sequenceDiagram
 |------|------|------|
 | **bifrost 二进制** | - | 单一二进制，零依赖 |
 | **systemd** | - | 可选，推荐生产使用 |
-| **共享存储** | - | GPFS 共享目录，与 Ascend 共用 |
+| **共享存储** | - | 与 Ascend 挂载同一共享目录（GPFS / NFS / Lustre 等） |
 | **Python** | 3.10+ | 可选，执行 pytest 任务时需要 |
 | **pytest** | 7.x | 可选，执行 pytest 任务时需要 |
 | **pytest-json-report** | - | Plugin for structured results |
@@ -253,7 +253,7 @@ bifrost client results --task-id <TASK_ID> --format text
 
 H20 机器网络隔离，通过共享存储接收命令并返回结果。
 
-两台机器挂载同一 GPFS 共享目录，编译好的二进制可以直接被 H20 访问。
+两台机器挂载同一共享目录（当前使用 GPFS，也支持 NFS、Lustre 等 POSIX 文件系统），编译好的二进制可以直接被 H20 访问。
 
 ```bash
 # ---- Ascend 端：编译后写入 GPFS 共享目录 ----
