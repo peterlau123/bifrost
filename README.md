@@ -56,7 +56,7 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 - **Client** (networked machine) writes tasks to `commands/` directory
 - **Daemon** (offline machine) watches for new tasks and executes them
 - **Results** are written back to `results/` directory
-- Synchronization via USB drives, network shares, or rsync
+- Synchronization via GPFS shared storage
 
 ### Key Features
 
@@ -81,7 +81,7 @@ flowchart TB
         DB["SQLite Index<br/>(optional)"]
     end
     
-    subgraph Shared["Shared Storage<br/>(USB/Network Share)"]
+    subgraph Shared["Shared Storage<br/>(GPFS)"]
         CMD["commands/<br/>Task JSON files"]
         RES["results/<br/>Result JSON files"]
         STA["status/<br/>Progress updates"]
@@ -156,7 +156,7 @@ sequenceDiagram
 |------|------|------|
 | **Rust** | 1.70+ | 编译环境，只需编译一次 |
 | **SQLite** | 3.x | 可选，任务历史索引 |
-| **共享存储** | - | NFS / USB / rsync 同步目录，与 H20 共用 |
+| **共享存储** | - | GPFS 共享目录，与 H20 共用 |
 
 ### H20（离线机器，Daemon 端）
 
@@ -164,7 +164,7 @@ sequenceDiagram
 |------|------|------|
 | **bifrost 二进制** | - | 单一二进制，零依赖 |
 | **systemd** | - | 可选，推荐生产使用 |
-| **共享存储** | - | 与 Ascend 挂载同一目录 |
+| **共享存储** | - | GPFS 共享目录，与 Ascend 共用 |
 | **Python** | 3.10+ | 可选，执行 pytest 任务时需要 |
 | **pytest** | 7.x | 可选，执行 pytest 任务时需要 |
 | **pytest-json-report** | - | Plugin for structured results |
@@ -225,8 +225,8 @@ vim ~/.bifrost/settings.json
 
 ```json
 {
-  "shared_storage": "/mnt/nfs/bifrost",
-  "database": "/mnt/nfs/bifrost/bifrost.db",
+  "shared_storage": "/mnt/gpfs/bifrost",
+  "database": "/mnt/gpfs/bifrost/bifrost.db",
   "client": {
     "poll_interval": "2s",
     "heartbeat_timeout": "180s"
@@ -253,37 +253,19 @@ bifrost client results --task-id <TASK_ID> --format text
 
 H20 机器网络隔离，通过共享存储接收命令并返回结果。
 
-#### 方式 A：通过共享存储传递二进制
+两台机器挂载同一 GPFS 共享目录，编译好的二进制可以直接被 H20 访问。
 
 ```bash
-# ---- Ascend 端：编译后写入共享存储 ----
-cp target/release/bifrost /mnt/nfs/bifrost/bin/
+# ---- Ascend 端：编译后写入 GPFS 共享目录 ----
+cp target/release/bifrost /mnt/gpfs/bifrost/bin/
 
 # ---- H20 端：从共享存储安装 ----
-# 挂载共享存储（NFS / USB 自动挂载 / rsync）
-mount -t nfs ascend-ip:/mnt/nfs/bifrost /mnt/shared
-
-# 安装二进制
-sudo cp /mnt/shared/bin/bifrost /usr/local/bin/
+# GPFS 已挂载在 /mnt/gpfs，直接访问
+sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
 
 # 初始化配置
 mkdir -p ~/.bifrost
-bifrost daemon --init
-```
-
-#### 方式 B：USB 离线搬运
-
-```bash
-# ---- 编译端：打包二进制和脚本 ----
-tar czf bifrost-bundle.tar.gz target/release/bifrost scripts/ config/ bifrost.service
-# 拷贝到 USB，物理接入 H20
-
-# ---- H20 端：解压安装 ----
-sudo tar xzf /mnt/usb/bifrost-bundle.tar.gz -C /tmp/bifrost-install/
-sudo cp /tmp/bifrost-install/target/release/bifrost /usr/local/bin/
-sudo chmod +x /usr/local/bin/bifrost
-rm -rf /tmp/bifrost-install
 bifrost daemon --init
 ```
 
@@ -295,7 +277,7 @@ vim ~/.bifrost/settings.json
 
 ```json
 {
-  "shared_storage": "/mnt/shared",
+  "shared_storage": "/mnt/gpfs/bifrost",
   "daemon": {
     "poll_interval": "500ms",
     "task_timeout": "300s",
@@ -335,7 +317,7 @@ bifrost daemon
 bifrost daemon --config ~/.bifrost/settings.json
 
 # 验证心跳文件已生成
-ls -la /mnt/shared/heartbeat.json
+ls -la /mnt/gpfs/bifrost/heartbeat.json
 ```
 
 ---
@@ -344,8 +326,8 @@ ls -la /mnt/shared/heartbeat.json
 
 ```bash
 # H20 端：确认 daemon 运行且心跳正常
-ls -la /mnt/shared/heartbeat.json           # 文件应存在，60s 内更新
-cat /mnt/shared/heartbeat.json | head -5    # 显示 daemon 状态
+ls -la /mnt/gpfs/bifrost/heartbeat.json           # 文件应存在，60s 内更新
+cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # 显示 daemon 状态
 
 # Ascend 端：端到端测试
 bifrost client submit \
