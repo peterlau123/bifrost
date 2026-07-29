@@ -148,29 +148,30 @@ sequenceDiagram
 └── heartbeat.json         # Daemon health status (60s update)
 ```
 
-## Environment Requirements
+## 环境要求
 
-### Client Machine (Online)
+### Ascend（联网机器，Client 端）
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **Rust** | 1.70+ | For building bifrost binary |
-| **SQLite** | 3.x | Optional, for task history indexing |
-| **Shared Storage** | - | USB drive, NFS, or synchronized directory |
+| 需求 | 版本 | 说明 |
+|------|------|------|
+| **Rust** | 1.70+ | 编译环境，只需编译一次 |
+| **SQLite** | 3.x | 可选，任务历史索引 |
+| **共享存储** | - | NFS / USB / rsync 同步目录，与 H20 共用 |
 
-### Daemon Machine (Offline)
+### H20（离线机器，Daemon 端）
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **Rust** | 1.70+ | Only for building, binary runs standalone |
-| **systemd** | - | Optional, for service management |
-| **Python** | 3.10+ | For pytest tasks (optional) |
-| **pytest** | 7.x | For pytest tasks |
+| 需求 | 版本 | 说明 |
+|------|------|------|
+| **bifrost 二进制** | - | 单一二进制，零依赖 |
+| **systemd** | - | 可选，推荐生产使用 |
+| **共享存储** | - | 与 Ascend 挂载同一目录 |
+| **Python** | 3.10+ | 可选，执行 pytest 任务时需要 |
+| **pytest** | 7.x | 可选，执行 pytest 任务时需要 |
 | **pytest-json-report** | - | Plugin for structured results |
 
 ### Container Execution (Optional)
 
-For running pytest in containers on offline machine:
+通过容器在 H20 上执行 pytest：
 
 ```yaml
 # adapters/docker_pytest.yaml
@@ -188,50 +189,173 @@ env_vars:
 
 ### Build
 
+编译环境需要 Rust 1.70+。如果没有 Rust 工具链，可以在任意有 Rust 的机器上编译，然后分发单一二进制文件（静态编译，无运行时依赖）。
+
 ```bash
-# Clone repository
-git clone https://github.com/your-org/bifrost.git
+# 克隆仓库
+git clone http://10.20.30.25:8080/agent/bifrost.git
 cd bifrost
 
-# Build release binary (requires Rust 1.70+)
+# 编译 release 版本（约 8MB 单一二进制）
 cargo build --release
 
-# Binary output: target/release/bifrost (~8MB)
+# 确认编译产物
+ls -lh target/release/bifrost
 ```
 
-### Deploy Client (Online Machine)
+> **交叉编译：** 如果目标架构不同（如 x86_64 编译、aarch64 部署）：
+> `cargo build --release --target aarch64-unknown-linux-gnu`
+
+---
+
+### 部署到 Ascend（联网机器，Client 端）
+
+Ascend 机器负责下发命令和查询结果，只需要 CLI 二进制和配置文件。
 
 ```bash
-# Copy binary
+# 1. 复制二进制
 sudo cp target/release/bifrost /usr/local/bin/
 
-# Create configuration
-# Initialize default settings
+# 2. 初始化配置（生成 ~/.bifrost/settings.json）
 bifrost client init
 
-# Edit configuration (optional)
+# 3. 编辑配置，指定共享存储路径
 vim ~/.bifrost/settings.json
 ```
 
-### Deploy Daemon (Offline Machine)
+```json
+{
+  "shared_storage": "/mnt/nfs/bifrost",
+  "database": "/mnt/nfs/bifrost/bifrost.db",
+  "client": {
+    "poll_interval": "2s",
+    "heartbeat_timeout": "180s"
+  }
+}
+```
+
+**验证 Client：**
 
 ```bash
-# Copy binary to shared storage
-cp target/release/bifrost /shared/storage/
+# 查看帮助
+bifrost client status --help
 
-# On offline machine, install from shared storage
-sudo cp /shared/storage/bifrost /usr/local/bin/
+# 提交一个简单任务验证连通性（需 H20 daemon 已运行）
+bifrost client submit --command "hostname" --task-type shell --timeout 30
+# 记下返回的 TASK_ID
+bifrost client status --task-id <TASK_ID>
+bifrost client results --task-id <TASK_ID> --format text
+```
 
-# Create configuration
-# Initialize default settings
+---
+
+### 部署到 H20（离线机器，Daemon 端）
+
+H20 机器网络隔离，通过共享存储接收命令并返回结果。
+
+#### 方式 A：通过共享存储传递二进制
+
+```bash
+# ---- Ascend 端：编译后写入共享存储 ----
+cp target/release/bifrost /mnt/nfs/bifrost/bin/
+
+# ---- H20 端：从共享存储安装 ----
+# 挂载共享存储（NFS / USB 自动挂载 / rsync）
+mount -t nfs ascend-ip:/mnt/nfs/bifrost /mnt/shared
+
+# 安装二进制
+sudo cp /mnt/shared/bin/bifrost /usr/local/bin/
+sudo chmod +x /usr/local/bin/bifrost
+
+# 初始化配置
+mkdir -p ~/.bifrost
 bifrost daemon --init
+```
 
-# Install systemd service
-sudo ./scripts/systemd-setup.sh
+#### 方式 B：USB 离线搬运
 
-# Start service
+```bash
+# ---- 编译端：打包二进制和脚本 ----
+tar czf bifrost-bundle.tar.gz target/release/bifrost scripts/ config/ bifrost.service
+# 拷贝到 USB，物理接入 H20
+
+# ---- H20 端：解压安装 ----
+sudo tar xzf /mnt/usb/bifrost-bundle.tar.gz -C /tmp/bifrost-install/
+sudo cp /tmp/bifrost-install/target/release/bifrost /usr/local/bin/
+sudo chmod +x /usr/local/bin/bifrost
+rm -rf /tmp/bifrost-install
+bifrost daemon --init
+```
+
+#### H20 配置 shared storage
+
+```bash
+vim ~/.bifrost/settings.json
+```
+
+```json
+{
+  "shared_storage": "/mnt/shared",
+  "daemon": {
+    "poll_interval": "500ms",
+    "task_timeout": "300s",
+    "max_retries": 3,
+    "heartbeat_interval": "60s",
+    "max_concurrent": 10,
+    "working_dir": "/tmp/bifrost/work"
+  }
+}
+```
+
+> **重要：** Ascend 和 H20 的 `shared_storage` 必须指向同一物理目录。
+
+#### 注册 systemd 服务（推荐生产使用）
+
+```bash
+# 安装服务文件（项目根目录有 bifrost.service）
+sudo cp bifrost.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable bifrost
 sudo systemctl start bifrost
+
+# 查看状态
+sudo systemctl status bifrost
+
+# 查看实时日志
+journalctl -u bifrost -f
+```
+
+#### 手动启动守护进程（调试用）
+
+```bash
+# 前台运行，按 Ctrl+C 停止
+bifrost daemon
+
+# 指定配置文件
+bifrost daemon --config ~/.bifrost/settings.json
+
+# 验证心跳文件已生成
+ls -la /mnt/shared/heartbeat.json
+```
+
+---
+
+### 端到端验证部署
+
+```bash
+# H20 端：确认 daemon 运行且心跳正常
+ls -la /mnt/shared/heartbeat.json           # 文件应存在，60s 内更新
+cat /mnt/shared/heartbeat.json | head -5    # 显示 daemon 状态
+
+# Ascend 端：端到端测试
+bifrost client submit \
+  --command "echo 'bifrost deployment ok' && nvidia-smi -L | head -3" \
+  --task-type shell \
+  --timeout 30
+
+# 5-10 秒后拉取结果
+bifrost client results --task-id <TASK_ID> --format text
+# 预期输出包含 "bifrost deployment ok" 和 GPU 信息
 ```
 
 ## Configuration
