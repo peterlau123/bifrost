@@ -3,7 +3,6 @@ use crate::core::batch_tracker::BatchTracker;
 use crate::core::error::{BifrostError, Result};
 use crate::core::models::{BatchProgress, BatchStatus, Task, TaskManifest, TaskType};
 use crate::core::protocol::Protocol;
-use crate::core::job::{JobDefinition, JobResult, JobTaskResult};
 use chrono::Utc;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -30,14 +29,6 @@ pub fn submit_task(
     let task_id = task.task_id;
     protocol.submit_task(&task)?;
     Ok(task_id)
-}
-
-/// Submit a job (sequential task execution from YAML)
-pub fn submit_job(
-    protocol: &Protocol,
-    job_def: JobDefinition,
-) -> Result<JobResult> {
-    crate::client::launcher::launch_job(protocol, job_def)
 }
 
 /// Submit a batch manifest and create batch progress tracking

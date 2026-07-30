@@ -40,9 +40,8 @@ Ascend (联网)          共享存储              H20 (离线)
 - **安全防护**：shell-words 防注入、路径遍历检测
 - **生产级容错**：超时控制、失败重试、心跳检测、panic-safe RAII
 - **GPU 感知调度**：nvidia-smi 监控 + round-robin 分配 + CUDA_VISIBLE_DEVICES 隔离
-- **pytest 集成**：自动添加 --json-report，解析 JSON 报告，存储到 SQLite
+- **pytest 集成**：自动识别 pytest 命令，可解析 JSON 报告
 - **批量与 Job**：YAML Job 顺序执行、JSON Manifest 批量提交、进度跟踪
-- **SQLite 历史**：可选的任务/输出/环境变量/产物/pytest 结果持久化
 - **Claude Code 友好**：结构化 JSON 输出，便于 AI 分析和后续调度
 
 ## 构建与部署
@@ -50,7 +49,7 @@ Ascend (联网)          共享存储              H20 (离线)
 ### 环境要求
 
 - **Rust**: 1.70+ (2021 edition)
-- **共享存储**: Ascend 和 H20 都能访问的目录（USB/NFS/rsync）
+- **共享存储**: Ascend 和 H20 都能访问的 GPFS 共享目录
 
 ### 构建
 
@@ -64,12 +63,12 @@ cargo build --release
 ```bash
 # Ascend (联网机器)
 sudo cp target/release/bifrost /usr/local/bin/
-bifrost client init          # 生成 ~/.bifrost/settings.json
+bifrost server --init          # 生成 ~/.bifrost/settings.json
 
 # H20 (离线机器)
 sudo cp target/release/bifrost /usr/local/bin/
-bifrost daemon --init
-sudo ./scripts/systemd-setup.sh
+bifrost server --init
+sudo cp bifrost.service /etc/systemd/system/
 sudo systemctl enable bifrost
 sudo systemctl start bifrost
 ```
@@ -114,7 +113,6 @@ bifrost/
 │   │   ├── submit.rs       # 任务提交
 │   │   ├── status.rs       # 状态查询
 │   │   ├── results.rs      # 结果检索 + 路径遍历防护
-│   │   ├── pytest.rs       # pytest 命令构建 + 报告解析
 │   │   └── launcher.rs     # 顺序 Job 执行器
 │   └── daemon/             # H20 端守护进程
 │       ├── runner.rs       # 主循环
@@ -141,7 +139,7 @@ bifrost/
 
 ```json
 {
-  "shared_storage": "/mnt/shared",
+  "shared_storage": "/mnt/gpfs/bifrost",
   "client": {
     "poll_interval": "2s",
     "heartbeat_timeout": "180s"
@@ -172,7 +170,7 @@ bifrost/
 ### 为什么选择文件通信而非数据库队列？
 
 - **双向分离**：commands/ 和 results/ 由不同机器写入，天然解耦
-- **零依赖**：核心通信无需 SQLite
+- **零依赖**：核心通信无需数据库
 - **易调试**：直接查看 JSON 文件内容
 - **容错简单**：文件损坏只影响单个任务
 

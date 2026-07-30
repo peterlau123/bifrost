@@ -60,8 +60,6 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 
 ### Key Features
 
-- **Task history with SQLite** - All tasks recorded for query
-- **Structured pytest reports** - Store pytest JSON results
 - **Unified settings** - ~/.bifrost/settings.json, init via CLI
 - **Air-gapped operation** - Complete separation between client and daemon
 - **Security hardened** - Command injection prevention, path traversal protection
@@ -78,7 +76,7 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 flowchart TB
     subgraph Client["Client Machine (Online)"]
         CLI["bifrost CLI"]
-        DB["SQLite Index<br/>(optional)"]
+        DB["SQLite Index<br/>(TODO)"]
     end
     
     subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
@@ -155,7 +153,6 @@ sequenceDiagram
 | 需求 | 版本 | 说明 |
 |------|------|------|
 | **Rust** | 1.70+ | 编译环境，只需编译一次 |
-| **SQLite** | 3.x | 可选，任务历史索引 |
 | **共享存储** | - | GPFS / NFS / Lustre 等 POSIX 共享文件系统，与 H20 共用 |
 
 ### H20（离线机器，Daemon 端）
@@ -241,7 +238,7 @@ vim ~/.bifrost/settings.json
 bifrost client submit --help
 
 # 提交一个简单任务验证连通性（需 H20 daemon 已运行）
-bifrost client submit --command "hostname" --task-type shell --timeout 30
+bifrost client submit --command "hostname" --timeout 30
 # 记下返回的 TASK_ID
 bifrost client status <TASK_ID>
 ```
@@ -265,7 +262,7 @@ sudo chmod +x /usr/local/bin/bifrost
 
 # 初始化配置
 mkdir -p ~/.bifrost
-bifrost daemon --init
+bifrost server --init
 ```
 
 #### H20 配置 shared storage
@@ -310,10 +307,10 @@ journalctl -u bifrost -f
 
 ```bash
 # 前台运行，按 Ctrl+C 停止
-bifrost daemon
+bifrost server
 
 # 指定配置文件
-bifrost daemon --config ~/.bifrost/settings.json
+bifrost server --config ~/.bifrost/settings.json
 
 # 验证心跳文件已生成
 ls -la /mnt/gpfs/bifrost/heartbeat.json
@@ -331,7 +328,6 @@ cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # 显示 daemon 状态
 # Ascend 端：端到端测试
 bifrost client submit \
   --command "echo 'bifrost deployment ok' && nvidia-smi -L | head -3" \
-  --task-type shell \
   --timeout 30
 
 # 5-10 秒后查询结果
@@ -412,10 +408,9 @@ artifacts:
 2. **Submit task with adapter**:
 ```bash
 bifrost client submit \
-  --command "tests/unit/" \
-  --task-type pytest \
-  --adapter docker_pytest \
-  --working-dir /workspace/myproject
+  --command "docker run --rm -v /workspace/myproject:/app -w /app python:3.10-slim pytest tests/unit/ --json-report --json-report-file=report.json" \
+  --working-dir /workspace/myproject \
+  --timeout 600
 ```
 
 ### Pytest Prerequisites (Offline Machine)
@@ -497,15 +492,15 @@ bifrost/
 │   │   ├── models.rs   # Task, TaskResult, TaskStatus
 │   │   ├── protocol.rs # File communication
 │   │   ├── settings.rs # ~/.bifrost/settings.json
-│   │   ├── db.rs       # SQLite history (tasks, artifacts, pytest)
+│   │   ├── db.rs       # TODO: SQLite history
 │   │   ├── error.rs    # Error types
 │   │   ├── lock.rs     # File locking
 │   │   └── batch_tracker.rs
 │   ├── client/         # Client submission and query
-│   │   ├── submit.rs   # Task submission (file + SQLite)
+│   │   ├── submit.rs   # Task submission
 │   │   ├── status.rs   # Status query
 │   │   ├── results.rs  # Result retrieval
-│   │   └── pytest.rs   # Pytest builder
+│   │   └── launcher.rs # Job launcher
 │   ├── daemon/         # Daemon executor and watcher
 │   │   ├── watcher.rs  # File event monitoring
 │   │   ├── executor.rs # Command execution
@@ -531,7 +526,7 @@ bifrost/
 ### Daemon Not Detecting Tasks
 
 1. Check shared storage path permissions
-2. Verify notify library works: `strace -e inotify_wait bifrost daemon`
+2. Verify notify library works: `strace -e inotify_wait bifrost server`
 3. Check commands/ directory exists
 
 ### Task Timeout
