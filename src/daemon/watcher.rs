@@ -236,7 +236,7 @@ pub async fn run_with_gpu_processor(
         .map_err(|e| format!("Failed to create executor: {}", e))?;
 
     // Create GPU task processor
-    let mut processor = GpuTaskProcessor::new(gpu_pool, executor, simulate_mode, batch_tracker, None)
+    let mut processor = GpuTaskProcessor::new(gpu_pool, executor, simulate_mode, batch_tracker)
         .map_err(|e| format!("Failed to create GPU task processor: {}", e))?;
 
     // Start processing tasks from watcher

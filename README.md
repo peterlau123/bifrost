@@ -217,7 +217,7 @@ Ascend 机器负责下发命令和查询结果，只需要 CLI 二进制和配�
 sudo cp target/release/bifrost /usr/local/bin/
 
 # 2. 初始化配置（生成 ~/.bifrost/settings.json）
-bifrost client init
+bifrost server --init
 
 # 3. 编辑配置，指定共享存储路径
 vim ~/.bifrost/settings.json
@@ -238,13 +238,12 @@ vim ~/.bifrost/settings.json
 
 ```bash
 # 查看帮助
-bifrost client status --help
+bifrost client submit --help
 
 # 提交一个简单任务验证连通性（需 H20 daemon 已运行）
 bifrost client submit --command "hostname" --task-type shell --timeout 30
 # 记下返回的 TASK_ID
-bifrost client status --task-id <TASK_ID>
-bifrost client results --task-id <TASK_ID> --format text
+bifrost client status <TASK_ID>
 ```
 
 ---
@@ -335,9 +334,9 @@ bifrost client submit \
   --task-type shell \
   --timeout 30
 
-# 5-10 秒后拉取结果
-bifrost client results --task-id <TASK_ID> --format text
-# 预期输出包含 "bifrost deployment ok" 和 GPU 信息
+# 5-10 秒后查询结果
+bifrost client status <TASK_ID>
+# 预期输出应为 "Completed"，消息包含 "bifrost deployment ok"
 ```
 
 ## Configuration
@@ -345,8 +344,7 @@ bifrost client results --task-id <TASK_ID> --format text
 ### Settings File (`~/.bifrost/settings.json`)
 
 ```bash
-bifrost client init    # generate default settings
-bifrost daemon --init  # same file
+bifrost server --init  # generate default settings
 ```
 
 ```json
@@ -357,10 +355,9 @@ bifrost daemon --init  # same file
 }
 ```
 
-| Field | Client | Daemon | Description |
+| Field | Client | Server | Description |
 |-------|--------|--------|-------------|
 | shared_storage | Yes | Yes | Root directory for commands/results/logs |
-| database | Yes | -- | SQLite file for task history (client) |
 | client.* | Yes | -- | Poll interval, heartbeat timeout |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
@@ -369,135 +366,33 @@ bifrost daemon --init  # same file
 ### Submit Tasks
 
 ```bash
-# Shell command
-bifrost client submit \
-  --command "python script.py --input data.csv" \
-  --task-type shell \
-  --timeout 300 \
-  --priority 10
+# 提交任意 shell 命令（以 pytest 开头自动识别为 pytest 任务）
+bifrost client submit --command "pytest tests/unit/ -v" --timeout 600
+bifrost client submit --command "python script.py --input data.csv" --timeout 300 --priority 10
 
-# Pytest test
-bifrost client pytest \
-  --path tests/unit/ \
-  --timeout 600 \
-  --priority 5
+# 指定工作目录
+bifrost client submit --command "make build" --working-dir /workspace/project --timeout 1200
 
-# With working directory
-bifrost client submit \
-  --command "make build" \
-  --task-type shell \
-  --working-dir /workspace/project \
-  --timeout 1200
+# 提交 YAML Job（多步骤顺序执行）
+bifrost client submit --job examples/quick_start.yaml
 ```
 
 ### Check Status
 
 ```bash
-# Query task status
-bifrost client status --task-id <TASK_ID>
+# 查询任务状态（位置参数，无需 --task-id）
+bifrost client status <TASK_ID>
 
-# Output
-Task ID: abc123-def456
-Status: Running
-Progress: 45%
-Elapsed: 120s
-Estimated: 180s remaining
-```
-
-### Retrieve Results
-
-```bash
-# Get result in JSON format
-bifrost client results --task-id <TASK_ID> --format json
-
-# Get result in text format
-bifrost client results --task-id <TASK_ID> --format text
-
-# Output
+# 输出
 Task ID: abc123-def456
 Status: Completed
-Duration: 45 seconds
-Exit Code: 0
-
---- STDOUT ---
-Test passed: 15
-Test failed: 2
-
---- ARTIFACTS ---
-report.json
-coverage.xml
+Message: Task completed in 45s
 ```
 
-### Read Artifacts
+### Cancel Task
 
 ```bash
-# Get artifact path
-bifrost client artifact --task-id <TASK_ID> --name report.json
-
-# Read artifact content
-bifrost client artifact --task-id <TASK_ID> --name report.json --read
-```
-
-### Health Check
-
-```bash
-# Check daemon health
-bifrost client health
-
-# Output
-Daemon Status: Healthy
-Last Heartbeat: 30s ago
-Active Tasks: 2
-Pending Tasks: 5
-Completed Today: 15
-```
-
-### Query Task History
-
-```bash
-# List recent tasks
-bifrost client history
-
-# Filter by status
-bifrost client history --status failed
-
-# Filter by type
-bifrost client history --type pytest
-
-# Task detail
-bifrost client history --task-id TASK_ID
-
-# JSON output
-bifrost client history --limit 50 --format json
-```
-
-### Daemon Operations
-
-```bash
-# Start daemon manually
-bifrost daemon
-
-# Check systemd service
-sudo systemctl status bifrost
-
-# View logs
-journalctl -u bifrost -f
-```
-
-## Pytest Integration
-
-### Basic Usage
-
-Bifrost automatically builds pytest commands with JSON reporting:
-
-```bash
-# Submit pytest task
-bifrost client pytest --path tests/ --timeout 600
-```
-
-Generated command:
-```bash
-pytest tests/ --json-report --json-report-file=report.json -v
+bifrost client cancel <TASK_ID>
 ```
 
 ### Pytest in Container (Offline Machine)

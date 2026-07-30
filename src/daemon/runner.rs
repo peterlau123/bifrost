@@ -30,7 +30,7 @@ pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                 let c = match std::fs::read_to_string(&path) { Ok(c) => c, Err(e) => { eprintln!("r: {}", e); continue; } };
                 let t: crate::core::models::Task = match serde_json::from_str(&c) { Ok(t) => t, Err(e) => { eprintln!("p: {}", e); continue; } };
                 let tid = t.task_id; let _ = p.write_status(&tid, &TaskStatus::Running, Some("executing"));
-                match ex.execute(&t, None).await {
+                match ex.execute(&t).await {
                     Ok(r) => { let _ = p.write_result(&tid, &r); let m = match r.status { TaskStatus::Completed => Some("ok"), _ => None };
                         let _ = p.write_status(&tid, &r.status, m); let _ = p.remove_command_file(&tid);
                         println!("  {}: {} ({}s)", tid, r.status, r.duration_secs()); }

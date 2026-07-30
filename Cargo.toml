@@ -23,12 +23,7 @@ humantime = "2.1"
 shell-words = "1.0"
 ctrlc = "3.4"
 
-# Optional SQLite
-rusqlite = { version = "0.28", features = ["bundled"], optional = true }
-
-[features]
-default = ["sqlite"]
-sqlite = ["rusqlite"]
+# TODO: SQLite integration (task history persistence)
 
 [[bin]]
 name = "bifrost"

@@ -76,17 +76,23 @@ sudo systemctl start bifrost
 
 ## CLI 命令速查
 
-| 命令 | 用途 |
-|------|------|
-| `bifrost client submit -c "<cmd>" -t shell --timeout 300` | 提交任意命令 |
-| `bifrost client pytest -p tests/ --timeout 600` | 提交 pytest 任务 |
-| `bifrost client status --task-id <uuid>` | 查询状态 |
-| `bifrost client results --task-id <uuid> -f json` | 获取结果 |
-| `bifrost client history` | SQLite 历史查询 |
-| `bifrost client launch --job job.yaml` | 顺序执行 YAML Job |
-| `bifrost client batch submit-manifest -m manifest.json` | 批量提交 |
-| `bifrost daemon` | 启动守护进程 |
-| `bifrost daemon --config daemon.json --systemd` | systemd 模式 |
+```bash
+# 提交单条命令（自动识别 pytest/shell）
+bifrost client submit --command "pytest tests/ -v" --timeout 600
+
+# 提交 YAML Job（多步骤顺序执行）
+bifrost client submit --job job.yaml
+
+# 查询任务状态
+bifrost client status <task-id>
+
+# 取消任务
+bifrost client cancel <task-id>
+
+# 启动服务端守护进程
+bifrost server
+bifrost server --config server.json --systemd
+```
 
 ## 项目结构
 
@@ -94,14 +100,14 @@ sudo systemctl start bifrost
 bifrost/
 ├── Cargo.toml              # 包清单 (bifrost v0.1.0)
 ├── src/
-│   ├── main.rs             # CLI 入口: client/daemon 双模式
+│   ├── main.rs             # CLI 入口: client/server 双模式
 │   ├── core/               # 共享核心
 │   │   ├── models.rs       # Task, TaskResult, BatchProgress, JobDefinition
 │   │   ├── protocol.rs     # 文件通信协议 (4 目录)
 │   │   ├── settings.rs     # ~/.bifrost/settings.json 配置
 │   │   ├── error.rs        # BifrostError 枚举
 │   │   ├── lock.rs         # fs2 文件锁 + atomic_write
-│   │   ├── db.rs           # SQLite 6 表 schema
+│   │   ├── db.rs           # TODO: SQLite 集成（任务历史持久化）
 │   │   ├── batch_tracker.rs# 批量进度跟踪
 │   │   └── job.rs          # YAML Job 定义
 │   ├── client/             # Ascend 端 CLI

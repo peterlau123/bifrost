@@ -1,5 +1,5 @@
 [Unit]
-Description=Bifrost - Offline Machine Command Execution Daemon
+Description=Bifrost - Offline Machine Command Execution Server
 Documentation=https://github.com/your-org/bifrost
 After=network.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/var/lib/bifrost
-ExecStart=/usr/local/bin/bifrost daemon --systemd
+ExecStart=/usr/local/bin/bifrost server --systemd
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

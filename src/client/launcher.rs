@@ -2,7 +2,6 @@
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use crate::client::status;
-use crate::core::db::Database;
 use crate::core::error::{BifrostError, Result as BifrostResult};
 use crate::core::job::{JobDefinition, JobResult, JobTaskResult};
 use crate::core::models::{Task, TaskStatus, TaskType};
@@ -10,9 +9,9 @@ use crate::core::protocol::Protocol;
 
 const POLL: Duration = Duration::from_secs(2);
 
-pub fn launch_job(protocol: &Protocol, db: Option<&Database>, job: JobDefinition) -> BifrostResult<JobResult> {
+pub fn launch_job(protocol: &Protocol, job: JobDefinition) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
-    eprintln!("Job ''{}'' ({} tasks)", job.name, total);
+    eprintln!("Job '{}' ({} tasks)", job.name, total);
     let mut jr = JobResult::new(job.name.clone(), total);
     for (i, ti) in job.tasks.iter().enumerate() {
         let label = format!("[{}/{}] {}", i+1, total, ti.name);
@@ -21,7 +20,6 @@ pub fn launch_job(protocol: &Protocol, db: Option<&Database>, job: JobDefinition
             .with_priority(ti.priority).with_timeout(ti.timeout).with_retry_count(0);
         let tid = task.task_id;
         protocol.submit_task(&task).map_err(|e| BifrostError::ConfigInvalid(format!("submit: {}", e)))?;
-        if let Some(ref db) = db { let _ = db.insert_task(&task, None); }
         let start = Instant::now();
         let limit = Duration::from_secs(ti.timeout + 30);
         loop {
