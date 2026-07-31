@@ -327,8 +327,9 @@ ls -la /mnt/gpfs/bifrost/heartbeat.json           # 文件应存在，60s 内更
 cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # 显示 daemon 状态
 
 # 源机器 端：端到端测试
+# 注意：命令不经 shell 解释（防注入），&& / | / > 等 shell 语法需用 sh -c 包裹
 bifrost client submit \
-  --command "echo 'bifrost deployment ok' && nvidia-smi -L | head -3" \
+  --command "sh -c 'echo \"bifrost deployment ok\"; nvidia-smi -L | head -3'" \
   --timeout 30
 
 # 5-10 秒后查询结果
@@ -453,6 +454,23 @@ let args = shell_words::split(&command)?;
 Command::new(&args[0]).args(&args[1..]);
 ```
 
+> **实测注意**：由于命令不经 shell 解释，`&&`、`||`、管道 `|`、重定向 `>`、通配符 `*` 等 **shell 语法不会生效**，整条命令会被当作单个可执行文件的参数。需要 shell 特性时，请显式用 `sh -c` 包裹：
+
+```bash
+# ✅ 正确：显式调用 shell 解释多命令/管道/重定向
+bifrost client submit --command "sh -c 'cd /workspace && make build 2>&1 | tee build.log'"
+
+# ❌ 错误：&& 和 | 会被原样当作 echo 的参数输出，不会执行
+bifrost client submit --command "echo hello && nvidia-smi -L | head -3"
+```
+
+### 任务监控时机（inotify 行为）
+
+Daemon 使用 `notify`（inotify）监听 `commands/` 目录，**只捕获启动后新出现的文件**，不会扫描启动前已存在的存量任务。因此：
+
+- **正确姿势**：先启动 daemon，再提交任务
+- **遗留任务**：daemon 启动前已写入 `commands/` 的任务文件不会被消费（也不报错），需要重新提交或在 daemon 重启后处理
+
 ### Path Traversal Protection
 
 Artifact paths are validated with canonicalization:
@@ -530,6 +548,7 @@ bifrost/
 1. Check shared storage path permissions
 2. Verify notify library works: `strace -e inotify_wait bifrost server`
 3. Check commands/ directory exists
+4. **Task was submitted before daemon started** - inotify only watches files created *after* daemon startup; stale tasks in `commands/` are silently ignored. Re-submit the task or restart the daemon.
 
 ### Task Timeout
 
