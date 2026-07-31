@@ -1,4 +1,4 @@
-// SimpleDaemon
+// Server runner
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use crate::daemon::executor::Executor;
 use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
 
-pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), String> {
+pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), String> {
     let ss = s.shared_storage.clone(); let cd = ss.join("commands"); let ld = ss.join("logs");
     if !cd.exists() { std::fs::create_dir_all(&cd).map_err(|e| format!("mkdir: {}", e))?; }
     let p = Protocol::new(ss.clone()).map_err(|e| format!("p: {}", e))?;
@@ -23,7 +23,7 @@ pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         hb.update_status(crate::daemon::heartbeat::DaemonStatus::Running); hb.update_task_counts(0, 0); let _ = hb.write_heartbeat();
         tokio::time::sleep(hi).await; } });
     let mut rx = AsyncFileWatcher::new(cd.clone()).map_err(|e| format!("w: {}", e))?.watch_async().await;
-    println!("Daemon ready, watching {}", cd.display());
+    println!("Server ready, watching {}", cd.display());
     loop {
         if sd.load(Ordering::Relaxed) { break; }
         tokio::select! {
@@ -41,5 +41,5 @@ pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             _ = tokio::time::sleep(Duration::from_millis(500)) => {}
         }
     }
-    println!("Daemon stopped."); Ok(())
+    println!("Server stopped."); Ok(())
 }

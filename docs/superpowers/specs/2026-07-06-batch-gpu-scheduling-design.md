@@ -538,13 +538,13 @@ pub fn cleanup_old_batches(shared_storage: PathBuf) {
 **Manual run** (recommended for development):
 ```bash
 # Direct run (simplest)
-bifrost daemon --config config/daemon.yaml --log-level debug --shared-storage ./test_shared_storage
+bifrost server --config config/daemon.yaml --log-level debug --shared-storage ./test_shared_storage
 
 # With GPU debug output
-bifrost daemon --config config/daemon.yaml --log-level debug --gpu-debug
+bifrost server --config config/daemon.yaml --log-level debug --gpu-debug
 
 # Simulate mode (no real GPU)
-bifrost daemon --config config/daemon.yaml --simulate-gpu 8
+bifrost server --config config/daemon.yaml --simulate-gpu 8
 ```
 
 ### 5.3 Debug Helper Features
@@ -666,7 +666,7 @@ esac
 
 **Daemon status**:
 ```bash
-bifrost daemon status
+bifrost server status
 
 # Output:
 {

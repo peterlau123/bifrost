@@ -69,7 +69,7 @@ sudo systemctl start bifrost
 
 ## Configuration
 
-### Daemon Configuration
+### Server Configuration
 
 
 Edit `~/.bifrost/settings.json`:
@@ -91,12 +91,12 @@ Edit `/etc/systemd/system/bifrost.service`:
 
 ```ini
 [Unit]
-Description=Bifrost Daemon
+Description=Bifrost Server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bifrost daemon
+ExecStart=/usr/local/bin/bifrost server
 Restart=on-failure
 RestartSec=10
 
@@ -373,11 +373,11 @@ sudo cp bifrost.service /etc/systemd/system/bifrost-2.service
 sudo mkdir -p /var/lib/bifrost-2
 
 # Configure each
-bifrost daemon --init
+bifrost server --init
 # Edit ~/.bifrost/settings.json to set shared_storage: /var/lib/bifrost-1
 
 # For second daemon:
-bifrost daemon --init
+bifrost server --init
 # Edit ~/.bifrost/settings.json to set shared_storage: /var/lib/bifrost-2
 
 # Start instances

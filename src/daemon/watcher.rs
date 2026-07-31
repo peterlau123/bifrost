@@ -209,7 +209,7 @@ impl AsyncFileWatcher {
 /// ```rust,no_run
 /// use std::path::PathBuf;
 /// use std::time::Duration;
-/// use offline_executor::daemon::watcher::{AsyncFileWatcher, run_with_gpu_processor};
+/// use bifrost::daemon::watcher::{AsyncFileWatcher, run_with_gpu_processor};
 ///
 /// #[tokio::main]
 /// async fn main() {

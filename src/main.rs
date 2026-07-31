@@ -153,6 +153,10 @@ fn handle_client_mode(command: ClientCommand) {
                     }
                     Err(e) => eprintln!("Failed to submit task: {}", e),
                 }
+            } else {
+                eprintln!("Error: must provide either --command or --job");
+                eprintln!("  Usage: bifrost client submit --command <shell>");
+                eprintln!("         bifrost client submit --job <job.yaml>");
             }
         }
 
@@ -183,7 +187,7 @@ fn handle_client_mode(command: ClientCommand) {
         ClientCommand::Cancel { id } => {
             println!("Cancel: {}", id);
             println!("  Note: Task cancellation not yet implemented");
-            println!("  Requires daemon to support cancel signal");
+            println!("  Requires server to support cancel signal");
         }
     }
 }
@@ -192,7 +196,7 @@ fn handle_client_mode(command: ClientCommand) {
 fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use bifrost::daemon::runner::run_daemon;
+    use bifrost::daemon::runner::run_server;
     use bifrost::core::settings;
 
     println!("Starting bifrost server...");
@@ -231,7 +235,7 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
     rt.block_on(async {
-        if let Err(e) = run_daemon(settings, shutdown).await {
+        if let Err(e) = run_server(settings, shutdown).await {
             eprintln!("Server error: {}", e);
         }
     });

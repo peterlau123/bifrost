@@ -29,7 +29,7 @@ pub fn get_result_formatted(
     task_id: Uuid,
     format: ResultFormat,
 ) -> Result<String> {
-    let result = get_result(protocol, task_id)?;;
+    let result = get_result(protocol, task_id)?;
 
     match format {
         ResultFormat::Json => {

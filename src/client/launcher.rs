@@ -33,7 +33,7 @@ pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition) -> BifrostResult<JobR
             match status::query_status(bridge, tid) {
                 Ok(s) => match s.status {
                     TaskStatus::Pending | TaskStatus::Running => { std::thread::sleep(POLL); }
-                    _ => { let r = fetch_result(protocol, ti, tid, start.elapsed());
+                    _ => { let r = fetch_result(bridge, ti, tid, start.elapsed());
                         eprintln!("{} {}", label, s.status); jr.record_task(r); break; }
                 },
                 Err(BifrostError::TaskNotFound(_)) => { std::thread::sleep(POLL); }

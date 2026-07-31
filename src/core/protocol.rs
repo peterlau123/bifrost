@@ -292,7 +292,7 @@ impl Bridge for Protocol {
     }
 
     fn remove_task(&self, task_id: &Uuid) -> Result<()> {
-        Protocol::remove_command_file(self, task_id)
+        Protocol::remove_task(self, task_id)
     }
 }
 
