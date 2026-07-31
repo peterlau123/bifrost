@@ -35,15 +35,13 @@ impl Executor {
             task_timeout
         };
 
-        let execution_result = timeout(
-            effective_timeout,
-            self.execute_command(task),
-        ).await;
+        // execute_command 内部处理超时并 kill 整个进程组
+        let execution_result = self.execute_command(task, effective_timeout).await;
 
         let end_time = Utc::now();
 
         let result = match execution_result {
-            Ok(Ok(output)) => {
+            Ok(output) => {
                 self.log_manager.write_stdout(task.task_id, &output.stdout)?;
                 self.log_manager.write_stderr(task.task_id, &output.stderr)?;
                 self.log_manager.write_metadata(task.task_id, start_time, end_time, output.exit_code)?;
@@ -66,8 +64,9 @@ impl Executor {
                     error_message: None,
                 }
             }
-            Ok(Err(e)) => {
-                let error_msg = format!("Execution error: {}", e);
+            Err(e) => {
+                let error_msg = e;
+                let timed_out = error_msg.contains("Task timed out");
                 let output = TaskOutput {
                     stdout: String::new(),
                     stderr: error_msg.clone(),
@@ -78,29 +77,7 @@ impl Executor {
 
                 TaskResult {
                     task_id: task.task_id,
-                    status: TaskStatus::Failed,
-                    output,
-                    start_time,
-                    end_time,
-                    duration_ms: (end_time - start_time).num_milliseconds(),
-                    retries_used: 0,
-                    artifacts: Vec::new(),
-                    error_message: Some(error_msg),
-                }
-            }
-            Err(_) => {
-                let error_msg = format!("Task timed out after {} seconds", effective_timeout.as_secs());
-                let output = TaskOutput {
-                    stdout: String::new(),
-                    stderr: error_msg.clone(),
-                    exit_code: None,
-                };
-                self.log_manager.write_stderr(task.task_id, &error_msg)?;
-                self.log_manager.write_metadata(task.task_id, start_time, end_time, None)?;
-
-                TaskResult {
-                    task_id: task.task_id,
-                    status: TaskStatus::Timeout,
+                    status: if timed_out { TaskStatus::Timeout } else { TaskStatus::Failed },
                     output,
                     start_time,
                     end_time,
@@ -116,7 +93,9 @@ impl Executor {
     }
 
     /// Execute the actual command with safe parsing (no shell injection)
-    async fn execute_command(&self, task: &Task) -> Result<TaskOutput, String> {
+    /// Timeout handling: kills the whole process group so grandchildren
+    /// (e.g. `sh -c '...'` children) don't leak as orphans.
+    async fn execute_command(&self, task: &Task, effective_timeout: Duration) -> Result<TaskOutput, String> {
         let args = shell_words::split(&task.command)
             .map_err(|e| format!("Invalid command syntax: {}", e))?;
 
@@ -137,11 +116,32 @@ impl Executor {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Put the child in its own process group so a timeout can kill the
+        // entire tree (child + grandchildren), not just the direct child.
+        #[cfg(unix)]
+        cmd.process_group(0);
+
         let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-        let status = child.wait().await
-            .map_err(|e| format!("Failed to wait for process: {}", e))?;
+        let wait_result = timeout(effective_timeout, child.wait()).await;
+
+        let status = match wait_result {
+            Ok(res) => res.map_err(|e| format!("Failed to wait for process: {}", e))?,
+            Err(_) => {
+                // Kill the whole process group: prevents orphaned grandchildren
+                // like `sh -c 'sleep 30'` whose sleep survives a plain child kill.
+                #[cfg(unix)]
+                unsafe {
+                    if let Some(pid) = child.id() {
+                        libc::kill(-(pid as i32), libc::SIGKILL);
+                    }
+                }
+                // Reap the child so it doesn't become a zombie
+                let _ = child.wait().await;
+                return Err(format!("Task timed out after {} seconds", effective_timeout.as_secs()));
+            }
+        };
 
         let stdout_data = if let Some(mut stdout) = child.stdout.take() {
             use tokio::io::AsyncReadExt;

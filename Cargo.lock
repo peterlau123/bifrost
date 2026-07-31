@@ -76,6 +76,7 @@ dependencies = [
  "ctrlc",
  "fs2",
  "humantime",
+ "libc",
  "notify",
  "serde",
  "serde_json",
