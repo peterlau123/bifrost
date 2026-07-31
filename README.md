@@ -28,6 +28,13 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
   - [Read Artifacts](#read-artifacts)
   - [Health Check](#health-check)
   - [Daemon Operations](#daemon-operations)
+- [MCP Server (Agent Integration)](#mcp-server-agent-integration)
+  - [Quick Start](#quick-start-3-steps)
+  - [Agent Configurations](#agent-configurations)
+  - [MCP Tools](#mcp-tools)
+  - [Standard Call Sequence](#standard-call-sequence)
+  - [Verification](#verification)
+  - [Troubleshooting](#mcp-troubleshooting)
 - [Pytest Integration](#pytest-integration)
   - [Basic Usage](#basic-usage)
   - [Pytest in Container (Offline Machine)](#pytest-in-container-offline-machine)
@@ -423,6 +430,150 @@ Install on offline machine or in container:
 pip install pytest pytest-json-report pytest-cov
 ```
 
+---
+
+## MCP Server (Agent Integration)
+
+Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes task submission as structured tools over stdio. **Any MCP-capable agent** — Hermes, OpenCode, Claude Code, Cline, Cursor, Codex, or any generic coding agent — can connect and submit tasks to the offline daemon without writing file-exchange glue code.
+
+```
+┌─────────────────────────────────────────┐
+│ 任意 MCP Agent (Hermes/OpenCode/Claude…) │
+│   └─ stdio MCP ── bifrost mcp-serve    │  ← 联网侧 (client 机器)
+├─────────────────────────────────────────┤
+│        GPFS 共享存储 (shared_storage)    │
+│   commands/  results/  status/  logs/   │
+├─────────────────────────────────────────┤
+│        bifrost daemon (H20, 离线)        │
+│   inotify 监控 → 并发执行 → 写回结果     │
+└─────────────────────────────────────────┘
+```
+
+The MCP server is **stateless**: every tool call reads/writes GPFS directly. Multiple agents can connect simultaneously (one process instance per connection) without conflicts.
+
+> 完整接入指南（含全部 Agent 配置示例）见 [MCP.md](MCP.md)。
+
+### Quick Start (3 steps)
+
+**1. Build the binary** (on the online/client machine):
+
+```bash
+cargo build --release        # target/release/bifrost (3.0M)
+```
+
+**2. Prepare a settings file** — point `shared_storage` at the same GPFS exchange directory used by the offline daemon:
+
+```json
+{
+  "shared_storage": "/gpfs/gcsp/liuxin/bifrost",
+  "client": { "poll_interval": "2s", "heartbeat_timeout": "180s" },
+  "daemon": { "task_timeout": "300s", "heartbeat_interval": "60s", "max_concurrent": 10 }
+}
+```
+
+**3. Register in your agent** — the universal config is:
+
+```
+command: /path/to/target/release/bifrost
+args:    ["mcp-serve"]
+env:     BIFROST_CONFIG=/path/to/settings.json   (optional; falls back to ~/.bifrost/settings.json)
+```
+
+Config resolution order: **`BIFROST_CONFIG` env > `-c` flag > `~/.bifrost/settings.json` > defaults**.
+
+### Agent Configurations
+
+**Hermes**
+
+```bash
+hermes mcp add bifrost --command /path/to/target/release/bifrost --args mcp-serve
+hermes mcp test bifrost
+```
+
+**OpenCode** — `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "bifrost": {
+      "type": "stdio",
+      "command": "/path/to/target/release/bifrost",
+      "args": ["mcp-serve"],
+      "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
+    }
+  }
+}
+```
+
+**Claude Code**
+
+```bash
+claude mcp add bifrost --env BIFROST_CONFIG=/path/to/settings.json -- /path/to/target/release/bifrost mcp-serve
+```
+
+or project-level `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "command": "/path/to/target/release/bifrost",
+      "args": ["mcp-serve"],
+      "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
+    }
+  }
+}
+```
+
+**Cline / Cursor / generic coding agents** — same `mcpServers` JSON shape with `command` + `args` + `env` (see [MCP.md](MCP.md) for screenshots-level detail).
+
+### MCP Tools
+
+| Tool | Purpose | When to call |
+|------|---------|-------------|
+| `bifrost_health` | Check offline daemon heartbeat freshness | **Always before submit**: if `alive=false`, tasks would be written but never consumed (inotify only watches new files) |
+| `bifrost_submit` | Submit a command task, returns `task_id` | Args: `command` (required), `timeout`, `priority`, `working_dir` |
+| `bifrost_status` | Query task status | Poll with `task_id` until terminal state |
+| `bifrost_result` | Fetch full result | After terminal state: stdout/stderr/exit_code/duration_ms |
+
+### Standard Call Sequence
+
+```
+1. bifrost_health        → confirm alive=true (daemon online)
+2. bifrost_submit        → {"command": "sh -c 'echo hi'", "timeout": 60} → task_id
+3. bifrost_status        → poll: Pending → Running → Completed/Failed/Timeout
+4. bifrost_result        → get stdout, exit code, duration
+```
+
+**Important rules:**
+- Complex commands **must be wrapped in `sh -c '...'`** (injection-prevention design; `>`, `&&`, `$VAR`, `&` need a shell)
+- Check `bifrost_health` before submitting — a not-ready daemon silently drops tasks
+- Daemon executes concurrently up to `max_concurrent` (default 10); burst submits are fine
+
+### Verification
+
+```bash
+# Via Hermes
+hermes mcp test bifrost
+
+# Manual JSON-RPC handshake (any agent-agnostic check)
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"inspector","version":"1.0"}}}' \
+  | bifrost mcp-serve | head -3
+
+# Full E2E: health → submit → status → result
+python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
+```
+
+### MCP Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Connection closed on add | shared_storage path not writable/missing | Fix `shared_storage` in settings.json |
+| `alive: false` | daemon not running or heartbeat stale | Start `bifrost server -c <cfg>` on H20, wait 2s |
+| Task stuck Pending | daemon not consuming (inotify skips existing files) | Check health before submit; ensure server is up |
+| submit error | command format issue | Wrap complex commands in `sh -c '...'` |
+| Multi-agent usage | — (no conflict, file-based) | No extra config needed |
+
 ## Task Types
 
 | Type | Description | Use Case |
@@ -540,6 +691,8 @@ bifrost/
 - [Adapter Guide](docs/ADAPTER_GUIDE.md) - Custom task adapters
 - [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
 - [Architecture Guide](docs/ARCHITECTURE.md) - Technical architecture
+- [MCP Integration Guide](MCP.md) - Universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
+- [Test Report](test.md) - Performance & timeout & job workflow test reports
 
 ## Troubleshooting
 
