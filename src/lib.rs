@@ -2,3 +2,4 @@
 pub mod core;
 pub mod client;
 pub mod daemon;
+pub mod mcp_server;

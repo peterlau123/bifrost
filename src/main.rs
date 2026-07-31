@@ -34,6 +34,13 @@ enum Mode {
         #[arg(long)]
         systemd: bool,
     },
+
+    /// MCP server mode - expose bifrost as MCP tools over stdio
+    McpServe {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
 }
 
 /// Client commands
@@ -89,6 +96,37 @@ fn main() {
                 return;
             }
             handle_server_mode(config, systemd);
+        }
+        Mode::McpServe { config } => handle_mcp_serve(config),
+    }
+}
+
+/// Handle MCP server mode: expose bifrost tools over stdio
+fn handle_mcp_serve(config: Option<PathBuf>) {
+    use bifrost::core::settings;
+    let settings = if let Some(ref config_path) = config {
+        match std::fs::read_to_string(config_path) {
+            Ok(content) => match serde_json::from_str::<settings::BifrostSettings>(&content) {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("Bad config, using defaults");
+                    settings::BifrostSettings::defaults()
+                }
+            },
+            Err(_) => {
+                eprintln!("Cannot read config, using defaults");
+                settings::BifrostSettings::defaults()
+            }
+        }
+    } else {
+        settings::load()
+    };
+    let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
+    match rt.block_on(bifrost::mcp_server::run(settings)) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("MCP server error: {}", e);
+            std::process::exit(1);
         }
     }
 }
