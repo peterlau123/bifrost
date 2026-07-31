@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, test/deploy]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 1. 静态检查 + 单元测试
+  check-and-test:
+    name: fmt / clippy / unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (static analysis)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test
+
+  # 2. 端到端测试 (release 构建 + 全部 e2e 场景)
+  e2e:
+    name: e2e tests (timeout / job / concurrent / robustness / mcp)
+    runs-on: ubuntu-latest
+    needs: check-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run e2e test suite
+        run: python3 tests/e2e/run_all.py ./target/release/bifrost

@@ -77,7 +77,9 @@ fn collect_for_task(storage: &Path, task_id: &str, result: PathBuf) -> CleanCand
 
     let mut commands = Vec::new();
     for suffix in ["json", "lock"] {
-        let p = storage.join("commands").join(format!("{}.{}", task_id, suffix));
+        let p = storage
+            .join("commands")
+            .join(format!("{}.{}", task_id, suffix));
         if p.exists() {
             commands.push(p);
         }
@@ -150,18 +152,30 @@ mod tests {
     fn setup_storage(tmp: &Path) {
         // 过期任务 A (7 天前)
         let a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-        write(&tmp.join("results").join(format!("{}_result.json", a)), "{}");
+        write(
+            &tmp.join("results").join(format!("{}_result.json", a)),
+            "{}",
+        );
         write(&tmp.join("status").join(format!("{}.json", a)), "{}");
         write(&tmp.join("commands").join(format!("{}.json", a)), "{}");
         write(&tmp.join("logs").join(a).join("stdout.log"), "x");
-        write(&tmp.join("artifacts").join(format!("{}_report.json", a)), "{}");
+        write(
+            &tmp.join("artifacts").join(format!("{}_report.json", a)),
+            "{}",
+        );
         // 过期任务 B (仅 result + status, 无 logs/artifacts)
         let b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-        write(&tmp.join("results").join(format!("{}_result.json", b)), "{}");
+        write(
+            &tmp.join("results").join(format!("{}_result.json", b)),
+            "{}",
+        );
         write(&tmp.join("status").join(format!("{}.json", b)), "{}");
         // 新任务 C (今天的)
         let c = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-        write(&tmp.join("results").join(format!("{}_result.json", c)), "{}");
+        write(
+            &tmp.join("results").join(format!("{}_result.json", c)),
+            "{}",
+        );
         // 未完成任务 D (只有 commands, 无 result → 不应清理)
         let d = "dddddddd-dddd-dddd-dddd-dddddddddddd";
         write(&tmp.join("commands").join(format!("{}.json", d)), "{}");
@@ -182,24 +196,44 @@ mod tests {
         setup_storage(tmp.path());
 
         // 让 A、B 的 result 文件变旧
-        set_mtime_old(&tmp.path().join("results").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json"));
-        set_mtime_old(&tmp.path().join("results").join("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb_result.json"));
+        set_mtime_old(
+            &tmp.path()
+                .join("results")
+                .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json"),
+        );
+        set_mtime_old(
+            &tmp.path()
+                .join("results")
+                .join("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb_result.json"),
+        );
 
         let now = SystemTime::now();
         let cands = scan_finished(tmp.path(), 7, now).unwrap();
         let ids: Vec<&str> = cands.iter().map(|c| c.task_id.as_str()).collect();
-        assert_eq!(ids, vec!["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"],
-                   "只应扫到过期的已完成任务 A/B, 实际: {:?}", ids);
+        assert_eq!(
+            ids,
+            vec![
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+            ],
+            "只应扫到过期的已完成任务 A/B, 实际: {:?}",
+            ids
+        );
 
         // A 的配套文件应全部收集
-        let a = cands.iter().find(|c| c.task_id.starts_with("aaaa")).unwrap();
+        let a = cands
+            .iter()
+            .find(|c| c.task_id.starts_with("aaaa"))
+            .unwrap();
         assert!(a.status.is_some(), "A 的 status 文件应收集");
         assert_eq!(a.commands.len(), 1, "A 的 commands 残留应收集");
         assert!(a.logs.is_some(), "A 的 logs 目录应收集");
         assert_eq!(a.artifacts.len(), 1, "A 的 artifacts 应收集");
         // B 无 logs/artifacts 时保持 None/空
-        let b = cands.iter().find(|c| c.task_id.starts_with("bbbb")).unwrap();
+        let b = cands
+            .iter()
+            .find(|c| c.task_id.starts_with("bbbb"))
+            .unwrap();
         assert!(b.logs.is_none());
         assert!(b.artifacts.is_empty());
     }
@@ -208,8 +242,16 @@ mod tests {
     fn test_purge_removes_all_files_keeps_protected() {
         let tmp = tempfile::TempDir::new().unwrap();
         setup_storage(tmp.path());
-        set_mtime_old(&tmp.path().join("results").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json"));
-        set_mtime_old(&tmp.path().join("results").join("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb_result.json"));
+        set_mtime_old(
+            &tmp.path()
+                .join("results")
+                .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json"),
+        );
+        set_mtime_old(
+            &tmp.path()
+                .join("results")
+                .join("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb_result.json"),
+        );
 
         let cands = scan_finished(tmp.path(), 7, SystemTime::now()).unwrap();
         let removed = purge(&cands).unwrap();
@@ -218,18 +260,52 @@ mod tests {
         assert_eq!(removed, 7, "共删除 7 项, 实际: {}", removed);
 
         // A 的所有文件消失
-        assert!(!tmp.path().join("results").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json").exists());
-        assert!(!tmp.path().join("status").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json").exists());
-        assert!(!tmp.path().join("commands").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json").exists());
-        assert!(!tmp.path().join("logs").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").exists());
-        assert!(!tmp.path().join("artifacts").join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_report.json").exists());
+        assert!(!tmp
+            .path()
+            .join("results")
+            .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_result.json")
+            .exists());
+        assert!(!tmp
+            .path()
+            .join("status")
+            .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json")
+            .exists());
+        assert!(!tmp
+            .path()
+            .join("commands")
+            .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json")
+            .exists());
+        assert!(!tmp
+            .path()
+            .join("logs")
+            .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+            .exists());
+        assert!(!tmp
+            .path()
+            .join("artifacts")
+            .join("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_report.json")
+            .exists());
 
         // 保护文件仍在
-        assert!(tmp.path().join("heartbeat.json").exists(), "heartbeat 必须保留");
-        assert!(tmp.path().join("settings.json").exists(), "settings 必须保留");
+        assert!(
+            tmp.path().join("heartbeat.json").exists(),
+            "heartbeat 必须保留"
+        );
+        assert!(
+            tmp.path().join("settings.json").exists(),
+            "settings 必须保留"
+        );
 
         // 新任务 C 与未完成 D 保留
-        assert!(tmp.path().join("results").join("cccccccc-cccc-cccc-cccc-cccccccccccc_result.json").exists());
-        assert!(tmp.path().join("commands").join("dddddddd-dddd-dddd-dddd-dddddddddddd.json").exists());
+        assert!(tmp
+            .path()
+            .join("results")
+            .join("cccccccc-cccc-cccc-cccc-cccccccccccc_result.json")
+            .exists());
+        assert!(tmp
+            .path()
+            .join("commands")
+            .join("dddddddd-dddd-dddd-dddd-dddddddddddd.json")
+            .exists());
     }
 }

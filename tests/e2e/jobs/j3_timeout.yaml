@@ -1,0 +1,5 @@
+name: j3-timeout
+tasks:
+  - name: sleep-long
+    command: "sleep 30"
+    timeout: 2

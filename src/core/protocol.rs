@@ -90,7 +90,10 @@ impl Protocol {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 // Only match .json task files, never .lock sidecars
-                e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "json")
+                    .unwrap_or(false)
                     && e.file_name()
                         .to_string_lossy()
                         .contains(&task_id.to_string())
@@ -181,25 +184,46 @@ impl Protocol {
     }
 
     /// Get the shared storage root path
-
     pub fn write_result(&self, task_id: &Uuid, result: &TaskResult) -> Result<()> {
-        if !self.results_dir.exists() { fs::create_dir_all(&self.results_dir).map_err(BifrostError::IoError)?; }
-        atomic_write(&self.results_dir.join(format!("{}_result.json", task_id)), serde_json::to_string_pretty(result)?.as_bytes())
+        if !self.results_dir.exists() {
+            fs::create_dir_all(&self.results_dir).map_err(BifrostError::IoError)?;
+        }
+        atomic_write(
+            &self.results_dir.join(format!("{}_result.json", task_id)),
+            serde_json::to_string_pretty(result)?.as_bytes(),
+        )
     }
-    pub fn write_status(&self, task_id: &Uuid, status: &TaskStatus, message: Option<&str>) -> Result<()> {
-        if !self.status_dir.exists() { fs::create_dir_all(&self.status_dir).map_err(BifrostError::IoError)?; }
+    pub fn write_status(
+        &self,
+        task_id: &Uuid,
+        status: &TaskStatus,
+        message: Option<&str>,
+    ) -> Result<()> {
+        if !self.status_dir.exists() {
+            fs::create_dir_all(&self.status_dir).map_err(BifrostError::IoError)?;
+        }
         let filepath = self.status_dir.join(format!("{}.json", task_id));
         let mut map = serde_json::Map::new();
         map.insert("task_id".into(), serde_json::json!(task_id.to_string()));
         map.insert("status".into(), serde_json::json!(format!("{}", status)));
-        if let Some(msg) = message { map.insert("message".into(), serde_json::json!(msg)); }
+        if let Some(msg) = message {
+            map.insert("message".into(), serde_json::json!(msg));
+        }
         atomic_write(&filepath, serde_json::to_string_pretty(&map)?.as_bytes())
     }
     pub fn remove_command_file(&self, task_id: &Uuid) -> Result<()> {
-        if !self.commands_dir.exists() { return Ok(()); }
+        if !self.commands_dir.exists() {
+            return Ok(());
+        }
         for entry in fs::read_dir(&self.commands_dir).map_err(BifrostError::IoError)? {
             let entry = entry.map_err(BifrostError::IoError)?;
-            if entry.file_name().to_string_lossy().contains(&task_id.to_string()) { fs::remove_file(entry.path()).map_err(BifrostError::IoError)?; }
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .contains(&task_id.to_string())
+            {
+                fs::remove_file(entry.path()).map_err(BifrostError::IoError)?;
+            }
         }
         Ok(())
     }
@@ -227,10 +251,20 @@ impl Protocol {
         if status_file.exists() {
             let content = fs::read_to_string(&status_file).map_err(BifrostError::IoError)?;
             let data: serde_json::Value = serde_json::from_str(&content)?;
-            let status_str = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let status_str = data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let status = parse_status_string(status_str);
-            let message = data.get("message").and_then(|v| v.as_str()).map(|s| s.to_string());
-            return Ok(TaskStatusResponse { task_id: *task_id, status, message });
+            let message = data
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            return Ok(TaskStatusResponse {
+                task_id: *task_id,
+                status,
+                message,
+            });
         }
 
         // 3. Pending? check commands/
@@ -294,7 +328,12 @@ impl Bridge for Protocol {
         Protocol::write_result(self, task_id, result)
     }
 
-    fn write_status(&self, task_id: &Uuid, status: &TaskStatus, message: Option<&str>) -> Result<()> {
+    fn write_status(
+        &self,
+        task_id: &Uuid,
+        status: &TaskStatus,
+        message: Option<&str>,
+    ) -> Result<()> {
         Protocol::write_status(self, task_id, status, message)
     }
 
@@ -302,5 +341,3 @@ impl Bridge for Protocol {
         Protocol::remove_task(self, task_id)
     }
 }
-
-

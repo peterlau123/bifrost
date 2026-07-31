@@ -16,16 +16,14 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmcp::{
-    ServerHandler, ServiceExt, serve_server, tool, tool_handler, tool_router,
-    handler::server::router::tool::ToolRouter,
-    handler::server::wrapper::Parameters,
-    transport::stdio,
+    handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, serve_server,
+    tool, tool_handler, tool_router, transport::stdio, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::bridge::Bridge;
-use crate::core::models::{TaskStatus, TaskType};
+use crate::core::models::TaskType;
 use crate::core::protocol::Protocol;
 use crate::core::settings::BifrostSettings;
 
@@ -49,8 +47,7 @@ impl McpServer {
     }
 
     fn bridge(&self) -> Protocol {
-        Protocol::new(self.settings.shared_storage.clone())
-            .expect("failed to create bridge")
+        Protocol::new(self.settings.shared_storage.clone()).expect("failed to create bridge")
     }
 
     /// Server's own process group id is never negative; -pgid kills the group
@@ -67,7 +64,10 @@ impl McpServer {
 impl McpServer {
     /// Submit a shell command as a task to the offline node. Returns the task_id.
     /// Example command: "sh -c 'echo hello'" (shell features need sh -c wrapping).
-    #[tool(name = "bifrost_submit", description = "Submit a command task to the offline H20 node. Returns task_id as JSON. Complex commands (redirects, &&, $VAR, background &) must be wrapped in sh -c '...'.")]
+    #[tool(
+        name = "bifrost_submit",
+        description = "Submit a command task to the offline H20 node. Returns task_id as JSON. Complex commands (redirects, &&, $VAR, background &) must be wrapped in sh -c '...'."
+    )]
     pub async fn submit(
         &self,
         Parameters(req): Parameters<SubmitRequest>,
@@ -92,7 +92,10 @@ impl McpServer {
     }
 
     /// Query the status of a task by its task_id. Returns status + message.
-    #[tool(name = "bifrost_status", description = "Query task status by task_id. Returns JSON with status (Pending/Running/Completed/Failed/Timeout) and message.")]
+    #[tool(
+        name = "bifrost_status",
+        description = "Query task status by task_id. Returns JSON with status (Pending/Running/Completed/Failed/Timeout) and message."
+    )]
     pub async fn status(
         &self,
         Parameters(req): Parameters<StatusRequest>,
@@ -106,12 +109,16 @@ impl McpServer {
             "task_id": req.task_id,
             "status": format!("{}", resp.status),
             "message": resp.message,
-        }).to_string())
+        })
+        .to_string())
     }
 
     /// Fetch the full result of a completed/failed/timed-out task.
     /// Returns stdout, stderr, exit_code, duration_ms, error_message.
-    #[tool(name = "bifrost_result", description = "Fetch full task result by task_id. Returns JSON with status, stdout, stderr, exit_code, duration_ms, error_message. Call after status shows a terminal state (Completed/Failed/Timeout).")]
+    #[tool(
+        name = "bifrost_result",
+        description = "Fetch full task result by task_id. Returns JSON with status, stdout, stderr, exit_code, duration_ms, error_message. Call after status shows a terminal state (Completed/Failed/Timeout)."
+    )]
     pub async fn result(
         &self,
         Parameters(req): Parameters<StatusRequest>,
@@ -129,14 +136,18 @@ impl McpServer {
             "stderr": r.output.stderr,
             "duration_ms": r.duration_ms(),
             "error_message": r.error_message,
-        }).to_string())
+        })
+        .to_string())
     }
 
     /// Check whether the daemon (server) on the offline node is alive.
     /// Call this BEFORE submitting tasks: if not alive, submissions are
     /// written but never consumed (inotify does not scan pre-existing files).
     /// Returns JSON: {alive: bool, heartbeat_age_secs, heartbeat_timeout_secs}.
-    #[tool(name = "bifrost_health", description = "Check daemon heartbeat freshness. Call before submitting tasks. Returns JSON: alive (bool), heartbeat_age_secs, heartbeat_timeout_secs. If alive=false, the server is down or stale - do not submit.")]
+    #[tool(
+        name = "bifrost_health",
+        description = "Check daemon heartbeat freshness. Call before submitting tasks. Returns JSON: alive (bool), heartbeat_age_secs, heartbeat_timeout_secs. If alive=false, the server is down or stale - do not submit."
+    )]
     pub async fn health(&self) -> Result<String, String> {
         let timeout_secs = self
             .settings
@@ -150,7 +161,8 @@ impl McpServer {
             "alive": alive,
             "heartbeat_age_secs": age,
             "heartbeat_timeout_secs": timeout_secs,
-        }).to_string())
+        })
+        .to_string())
     }
 }
 
@@ -159,7 +171,8 @@ impl McpServer {
 pub async fn run(settings: BifrostSettings) -> Result<(), String> {
     let server = McpServer::new(settings);
     eprintln!("bifrost MCP server ready (stdio)");
-    let running = serve_server(server, stdio()).await
+    let running = serve_server(server, stdio())
+        .await
         .map_err(|e| format!("MCP serve failed: {}", e))?;
     let _ = running.waiting().await;
     Ok(())
@@ -230,18 +243,25 @@ mod tests {
     async fn test_submit_returns_task_id() {
         let tmp = TempDir::new().unwrap();
         let srv = McpServer::new(test_settings(&tmp));
-        let out = srv.submit(Parameters(SubmitRequest {
-            command: "echo mcp-test".into(),
-            timeout: Some(30),
-            priority: None,
-            working_dir: None,
-        })).await.unwrap();
+        let out = srv
+            .submit(Parameters(SubmitRequest {
+                command: "echo mcp-test".into(),
+                timeout: Some(30),
+                priority: None,
+                working_dir: None,
+            }))
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["status"], "Pending");
         let tid = v["task_id"].as_str().unwrap();
-        assert!(uuid::Uuid::parse_str(tid).is_ok(), "task_id 必须是合法 UUID");
+        assert!(
+            uuid::Uuid::parse_str(tid).is_ok(),
+            "task_id 必须是合法 UUID"
+        );
         // 任务文件必须落盘
-        let files: Vec<_> = std::fs::read_dir(tmp.path().join("commands")).unwrap()
+        let files: Vec<_> = std::fs::read_dir(tmp.path().join("commands"))
+            .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
             .collect();
@@ -252,19 +272,33 @@ mod tests {
     async fn test_status_not_found_error() {
         let tmp = TempDir::new().unwrap();
         let srv = McpServer::new(test_settings(&tmp));
-        let err = srv.status(Parameters(StatusRequest {
-            task_id: uuid::Uuid::new_v4().to_string(),
-        })).await.unwrap_err();
-        assert!(err.contains("status query failed"), "任务不存在应返回结构化错误, got: {}", err);
+        let err = srv
+            .status(Parameters(StatusRequest {
+                task_id: uuid::Uuid::new_v4().to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("status query failed"),
+            "任务不存在应返回结构化错误, got: {}",
+            err
+        );
     }
 
     #[tokio::test]
     async fn test_status_invalid_uuid() {
         let tmp = TempDir::new().unwrap();
         let srv = McpServer::new(test_settings(&tmp));
-        let err = srv.status(Parameters(StatusRequest {
-            task_id: "not-a-uuid".into(),
-        })).await.unwrap_err();
-        assert!(err.contains("invalid task_id"), "非法 UUID 应报参数错误, got: {}", err);
+        let err = srv
+            .status(Parameters(StatusRequest {
+                task_id: "not-a-uuid".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("invalid task_id"),
+            "非法 UUID 应报参数错误, got: {}",
+            err
+        );
     }
 }

@@ -13,16 +13,15 @@
 //     task still can't be parsed, a Failed result is written so the
 //     client never sees a forever-Pending task.
 //   - Executor errors also produce a Failed result instead of silence.
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
-use crate::core::models::{Task, TaskResult, TaskStatus, TaskOutput};
-use crate::core::bridge::Bridge;
+use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
 use crate::core::protocol::Protocol;
 use crate::core::settings::BifrostSettings;
 use crate::daemon::executor::Executor;
 use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Fallback scan interval: catches tasks inotify missed (watcher death,
 /// event overflow, pre-server submissions).
@@ -42,7 +41,10 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let to = s.daemon.task_timeout.unwrap_or(Duration::from_secs(300));
     let ex = Executor::new(ld, to).map_err(|e| format!("e: {}", e))?;
     let mut hb = Heartbeat::new(ss.clone()).map_err(|e| format!("hb: {}", e))?;
-    let hi = s.daemon.heartbeat_interval.unwrap_or(Duration::from_secs(60));
+    let hi = s
+        .daemon
+        .heartbeat_interval
+        .unwrap_or(Duration::from_secs(60));
     let hbs = sd.clone();
     let active_count = Arc::new(AtomicUsize::new(0));
     let hb_active = active_count.clone();
@@ -76,7 +78,13 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     // Initial catch-up: tasks submitted before the server started
     // (e.g. during restart) must not be silently lost.
     for path in scan_pending(&cd) {
-        spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path);
+        spawn_task(
+            p.clone(),
+            ex.clone(),
+            sem.clone(),
+            active_count.clone(),
+            path,
+        );
     }
 
     let mut last_scan = Instant::now();
@@ -146,7 +154,10 @@ async fn process_one(p: &Protocol, ex: &Executor, path: &std::path::Path) -> Res
     let task = match read_task_retry(path).await {
         Some(t) => t,
         None => {
-            let err = format!("cannot parse task file (after {} retries)", MAX_READ_RETRIES);
+            let err = format!(
+                "cannot parse task file (after {} retries)",
+                MAX_READ_RETRIES
+            );
             write_failed_result(p, path, &err);
             return Ok(()); // handled: Failed result written
         }
@@ -275,7 +286,10 @@ mod tests {
             Some(uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
         );
         assert_eq!(task_id_from_path(std::path::Path::new("bad.json")), None);
-        assert_eq!(task_id_from_path(std::path::Path::new("20260731_x.json")), None);
+        assert_eq!(
+            task_id_from_path(std::path::Path::new("20260731_x.json")),
+            None
+        );
     }
 
     #[test]
@@ -283,10 +297,26 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cd = tmp.path().join("commands");
         std::fs::create_dir_all(&cd).unwrap();
-        std::fs::write(cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json"), "{}").unwrap();
-        std::fs::write(cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.lock"), "").unwrap();
-        std::fs::write(cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.processing"), "").unwrap();
-        std::fs::write(cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json.tmp123"), "{}").unwrap();
+        std::fs::write(
+            cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.lock"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.processing"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json.tmp123"),
+            "{}",
+        )
+        .unwrap();
 
         let found = scan_pending(&cd);
         assert_eq!(found.len(), 1, "只应返回 .json 文件, 实际: {:?}", found);
@@ -296,15 +326,23 @@ mod tests {
     #[test]
     fn test_claim_marker_is_exclusive() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json");
+        let path = tmp
+            .path()
+            .join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json");
         std::fs::write(&path, "{}").unwrap();
         let marker = path.with_extension("processing");
 
         // 第一次创建成功 (领取)
-        let first = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker);
+        let first = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker);
         assert!(first.is_ok(), "第一次领取应成功");
         // 第二次创建失败 (已被领取 → 去重)
-        let second = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker);
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker);
         assert!(second.is_err(), "第二次领取必须失败 (防重复执行)");
     }
 
@@ -312,7 +350,9 @@ mod tests {
     async fn test_read_task_retry_good_json() {
         let tmp = TempDir::new().unwrap();
         let task = Task::new("echo hi".into(), crate::core::models::TaskType::Shell);
-        let path = tmp.path().join(format!("20260731_103000_{}.json", task.task_id));
+        let path = tmp
+            .path()
+            .join(format!("20260731_103000_{}.json", task.task_id));
         std::fs::write(&path, serde_json::to_string(&task).unwrap()).unwrap();
         let t = read_task_retry(&path).await;
         assert!(t.is_some(), "合法 JSON 应解析成功");
@@ -322,7 +362,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_task_retry_bad_json_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json");
+        let path = tmp
+            .path()
+            .join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json");
         std::fs::write(&path, "{ not valid json").unwrap();
         let t = read_task_retry(&path).await;
         assert!(t.is_none(), "坏 JSON 重试后应返回 None");

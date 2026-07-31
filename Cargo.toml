@@ -3,7 +3,6 @@ name = "bifrost"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-license-file = "LICENSE"
 description = "Offline machine command execution framework over shared storage (GPFS) with MCP server support"
 repository = "https://github.com/peterlau123/bifrost"
 

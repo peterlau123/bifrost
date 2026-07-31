@@ -2,8 +2,8 @@
 use std::collections::{HashMap, VecDeque};
 use uuid::Uuid;
 
-use crate::core::models::Task;
 use super::gpu_monitor::GpuMonitor;
+use crate::core::models::Task;
 
 /// GPU scheduler for managing task execution across GPU resources
 ///
@@ -121,6 +121,7 @@ mod tests {
     use crate::core::models::TaskType;
     use std::path::PathBuf;
 
+    #[allow(dead_code)]
     fn create_test_task(name: &str) -> Task {
         Task::new(format!("echo {}", name), TaskType::Shell)
             .with_timeout(300)

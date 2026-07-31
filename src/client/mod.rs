@@ -1,6 +1,6 @@
 // Client module - task submission and status checking
-pub mod submit;
-pub mod status;
-pub mod results;
-pub mod launcher;
 pub mod clean;
+pub mod launcher;
+pub mod results;
+pub mod status;
+pub mod submit;

@@ -1,0 +1,8 @@
+name: j4-env-wd
+tasks:
+  - name: check-env
+    command: "sh -c 'pwd && echo $MY_VAR'"
+    timeout: 30
+    working_dir: /tmp
+    env_vars:
+      MY_VAR: "job-env-ok"

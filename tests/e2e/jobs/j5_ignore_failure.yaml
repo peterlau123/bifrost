@@ -1,0 +1,9 @@
+name: j5-ignore-failure
+tasks:
+  - name: will-fail
+    command: "sh -c 'exit 1'"
+    timeout: 30
+    ignore_failure: true
+  - name: after-fail
+    command: "echo still-running"
+    timeout: 30

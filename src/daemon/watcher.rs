@@ -1,7 +1,7 @@
 // File event watcher using notify library
 // Monitors commands/ directory for new task files with 500ms debounce
 
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
@@ -9,8 +9,8 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 // GpuTaskProcessor integration
 use super::gpu_task_processor::GpuTaskProcessor;
-use crate::daemon::executor::Executor;
 use crate::core::batch_tracker::BatchTracker;
+use crate::daemon::executor::Executor;
 
 /// File watcher for detecting new task files
 pub struct FileWatcher {
@@ -29,7 +29,10 @@ impl FileWatcher {
     /// Returns a watcher instance and an async channel for task file notifications
     pub fn new(commands_dir: PathBuf) -> Result<Self, String> {
         if !commands_dir.exists() {
-            return Err(format!("Commands directory does not exist: {}", commands_dir.display()));
+            return Err(format!(
+                "Commands directory does not exist: {}",
+                commands_dir.display()
+            ));
         }
 
         // Create channel for notify events
@@ -43,7 +46,8 @@ impl FileWatcher {
                 }
             },
             notify::Config::default(),
-        ).map_err(|e| format!("Failed to create watcher: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
         let commands_dir_clone = commands_dir.clone();
         let mut watcher = Self {
@@ -56,7 +60,9 @@ impl FileWatcher {
         };
 
         // Start watching the commands directory
-        watcher.watcher.watch(&commands_dir_clone, RecursiveMode::NonRecursive)
+        watcher
+            .watcher
+            .watch(&commands_dir_clone, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to start watching: {}", e))?;
 
         Ok(watcher)
@@ -89,7 +95,9 @@ impl FileWatcher {
                                     // (e.g. batch jobs) are all picked up.
                                     let now = Instant::now();
                                     let is_duplicate = matches!(&self.last_path, Some(last) if *last == *path)
-                                        && self.last_event_time.map_or(false, |t| now.duration_since(t) < self.debounce_threshold);
+                                        && self.last_event_time.is_some_and(|t| {
+                                            now.duration_since(t) < self.debounce_threshold
+                                        });
 
                                     if !is_duplicate {
                                         self.last_path = Some(path.clone());
@@ -122,8 +130,8 @@ impl FileWatcher {
             EventKind::Create(_) | EventKind::Modify(_) => {
                 // Check if it's in commands directory and is a JSON file
                 event.paths.iter().any(|path| {
-                    path.starts_with(&self.commands_dir) &&
-                    path.extension().map(|ext| ext == "json").unwrap_or(false)
+                    path.starts_with(&self.commands_dir)
+                        && path.extension().map(|ext| ext == "json").unwrap_or(false)
                 })
             }
             _ => false,
@@ -132,7 +140,8 @@ impl FileWatcher {
 
     /// Stop watching
     pub fn stop(&mut self) -> Result<(), String> {
-        self.watcher.unwatch(&self.commands_dir)
+        self.watcher
+            .unwatch(&self.commands_dir)
             .map_err(|e| format!("Failed to stop watching: {}", e))?;
         Ok(())
     }
@@ -148,7 +157,10 @@ impl AsyncFileWatcher {
     /// Create a new async file watcher
     pub fn new(commands_dir: PathBuf) -> Result<Self, String> {
         if !commands_dir.exists() {
-            return Err(format!("Commands directory does not exist: {}", commands_dir.display()));
+            return Err(format!(
+                "Commands directory does not exist: {}",
+                commands_dir.display()
+            ));
         }
 
         Ok(Self {
@@ -194,7 +206,7 @@ impl AsyncFileWatcher {
                             // events for the same file within the window.
                             let now = Instant::now();
                             let is_duplicate = matches!(&last_path, Some(last) if *last == path)
-                                && last_time.map_or(false, |t| now.duration_since(t) < debounce);
+                                && last_time.is_some_and(|t| now.duration_since(t) < debounce);
 
                             if is_duplicate {
                                 continue;
@@ -222,7 +234,8 @@ impl AsyncFileWatcher {
                     }
                 }
             })
-            .await;
+            .await
+            .ok();
         });
 
         rx
@@ -278,9 +291,9 @@ pub async fn run_with_gpu_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
     use std::io::Write;
+    use tempfile::TempDir;
 
     #[test]
     fn test_watcher_new() {

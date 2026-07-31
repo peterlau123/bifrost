@@ -102,7 +102,11 @@ fn main() {
 
     match cli.mode {
         Mode::Client { command } => handle_client_mode(command),
-        Mode::Server { init, config, systemd } => {
+        Mode::Server {
+            init,
+            config,
+            systemd,
+        } => {
             if init {
                 match bifrost::core::settings::init() {
                     Ok(p) => println!("Settings saved to {}", p.display()),
@@ -155,10 +159,10 @@ fn handle_mcp_serve(config: Option<PathBuf>) {
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
     use bifrost::core::bridge::Bridge;
+    use bifrost::core::job::load_job;
     use bifrost::core::models::TaskType;
     use bifrost::core::protocol::Protocol;
     use bifrost::core::settings;
-    use bifrost::core::job::load_job;
 
     let settings = settings::load();
     let shared_storage = settings.shared_storage.clone();
@@ -171,22 +175,19 @@ fn handle_client_mode(command: ClientCommand) {
             priority,
             working_dir,
         } => {
-            let protocol = Protocol::new(shared_storage)
-                .expect("Failed to create bridge");
+            let protocol = Protocol::new(shared_storage).expect("Failed to create bridge");
             let bridge: &dyn Bridge = &protocol;
 
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
-                    Ok(job_def) => {
-                        match bifrost::client::launcher::launch_job(bridge, job_def) {
-                            Ok(job_result) => {
-                                println!();
-                                println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
-                            }
-                            Err(e) => eprintln!("Job failed: {}", e),
+                    Ok(job_def) => match bifrost::client::launcher::launch_job(bridge, job_def) {
+                        Ok(job_result) => {
+                            println!();
+                            println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
                         }
-                    }
+                        Err(e) => eprintln!("Job failed: {}", e),
+                    },
                     Err(e) => eprintln!("Bad job file: {}", e),
                 }
             } else if let Some(cmd_str) = cmd {
@@ -211,7 +212,10 @@ fn handle_client_mode(command: ClientCommand) {
                         println!("Task submitted successfully");
                         println!("  Task ID: {}", task_id);
                         println!("  Status: Pending");
-                        println!("  Submit time: {:.2}ms", submit_elapsed.as_secs_f64() * 1000.0);
+                        println!(
+                            "  Submit time: {:.2}ms",
+                            submit_elapsed.as_secs_f64() * 1000.0
+                        );
                     }
                     Err(e) => eprintln!("Failed to submit task: {}", e),
                 }
@@ -225,23 +229,20 @@ fn handle_client_mode(command: ClientCommand) {
         ClientCommand::Status { id } => {
             use uuid::Uuid;
 
-            let protocol = Protocol::new(shared_storage)
-                .expect("Failed to create bridge");
+            let protocol = Protocol::new(shared_storage).expect("Failed to create bridge");
             let bridge: &dyn Bridge = &protocol;
 
             match Uuid::parse_str(&id) {
-                Ok(parsed_id) => {
-                    match bifrost::client::status::query_status(bridge, parsed_id) {
-                        Ok(status_resp) => {
-                            println!("Task status for: {}", id);
-                            println!("  Status: {}", status_resp.status);
-                            if let Some(msg) = status_resp.message {
-                                println!("  Message: {}", msg);
-                            }
+                Ok(parsed_id) => match bifrost::client::status::query_status(bridge, parsed_id) {
+                    Ok(status_resp) => {
+                        println!("Task status for: {}", id);
+                        println!("  Status: {}", status_resp.status);
+                        if let Some(msg) = status_resp.message {
+                            println!("  Message: {}", msg);
                         }
-                        Err(e) => eprintln!("Failed to query status: {}", e),
                     }
-                }
+                    Err(e) => eprintln!("Failed to query status: {}", e),
+                },
                 Err(e) => eprintln!("Invalid task ID format: {}", e),
             }
         }
@@ -252,23 +253,39 @@ fn handle_client_mode(command: ClientCommand) {
             println!("  Requires server to support cancel signal");
         }
 
-        ClientCommand::Clean { older_than, dry_run, storage } => {
+        ClientCommand::Clean {
+            older_than,
+            dry_run,
+            storage,
+        } => {
             use std::time::SystemTime;
             let storage = storage.unwrap_or_else(|| PathBuf::from(&shared_storage));
-            let cands = match bifrost::client::clean::scan_finished(&storage, older_than, SystemTime::now()) {
+            let cands = match bifrost::client::clean::scan_finished(
+                &storage,
+                older_than,
+                SystemTime::now(),
+            ) {
                 Ok(c) => c,
-                Err(e) => { eprintln!("Clean failed: {}", e); return; }
+                Err(e) => {
+                    eprintln!("Clean failed: {}", e);
+                    return;
+                }
             };
 
             if cands.is_empty() {
-                println!("No finished tasks older than {} days found. Storage is clean.", older_than);
+                println!(
+                    "No finished tasks older than {} days found. Storage is clean.",
+                    older_than
+                );
                 return;
             }
 
             let mut file_count = 0usize;
             for c in &cands {
                 let mut n = 1; // result file
-                n += c.status.iter().count() + c.commands.len() + c.artifacts.len()
+                n += c.status.iter().count()
+                    + c.commands.len()
+                    + c.artifacts.len()
                     + c.logs.iter().count();
                 file_count += n;
                 if dry_run {
@@ -277,12 +294,22 @@ fn handle_client_mode(command: ClientCommand) {
             }
 
             if dry_run {
-                println!("[dry-run] {} finished tasks, {} files would be removed (older than {} days)", cands.len(), file_count, older_than);
+                println!(
+                    "[dry-run] {} finished tasks, {} files would be removed (older than {} days)",
+                    cands.len(),
+                    file_count,
+                    older_than
+                );
                 return;
             }
 
             match bifrost::client::clean::purge(&cands) {
-                Ok(removed) => println!("Removed {} files from {} finished tasks (older than {} days)", removed, cands.len(), older_than),
+                Ok(removed) => println!(
+                    "Removed {} files from {} finished tasks (older than {} days)",
+                    removed,
+                    cands.len(),
+                    older_than
+                ),
                 Err(e) => eprintln!("Clean failed: {}", e),
             }
         }
@@ -291,22 +318,24 @@ fn handle_client_mode(command: ClientCommand) {
 
 /// Handle server mode operations
 fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use bifrost::daemon::runner::run_server;
     use bifrost::core::settings;
+    use bifrost::daemon::runner::run_server;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     println!("Starting bifrost server...");
 
     let settings = if let Some(ref config_path) = config {
         match std::fs::read_to_string(config_path) {
-            Ok(content) => match serde_json::from_str::<bifrost::core::settings::BifrostSettings>(&content) {
-                Ok(s) => s,
-                Err(_) => {
-                    eprintln!("Bad config, using defaults");
-                    bifrost::core::settings::BifrostSettings::defaults()
+            Ok(content) => {
+                match serde_json::from_str::<bifrost::core::settings::BifrostSettings>(&content) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        eprintln!("Bad config, using defaults");
+                        bifrost::core::settings::BifrostSettings::defaults()
+                    }
                 }
-            },
+            }
             Err(_) => {
                 eprintln!("Cannot read config, using defaults");
                 bifrost::core::settings::BifrostSettings::defaults()
@@ -328,7 +357,8 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
     ctrlc::set_handler(move || {
         eprintln!("\nShutdown requested...");
         s.store(true, Ordering::SeqCst);
-    }).expect("Error setting Ctrl+C handler");
+    })
+    .expect("Error setting Ctrl+C handler");
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
     rt.block_on(async {
@@ -347,16 +377,26 @@ mod tests {
     #[test]
     fn test_cli_parse_submit_command() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "submit",
-            "--command", "pytest tests/",
-            "--timeout", "600",
+            "bifrost",
+            "client",
+            "submit",
+            "--command",
+            "pytest tests/",
+            "--timeout",
+            "600",
         ]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
             Mode::Client { command } => match command {
-                ClientCommand::Submit { command: cmd, job, timeout, priority, working_dir: _ } => {
+                ClientCommand::Submit {
+                    command: cmd,
+                    job,
+                    timeout,
+                    priority,
+                    working_dir: _,
+                } => {
                     assert_eq!(cmd.unwrap(), "pytest tests/");
                     assert!(job.is_none());
                     assert_eq!(timeout, 600);
@@ -371,15 +411,20 @@ mod tests {
     #[test]
     fn test_cli_parse_submit_job() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "submit",
-            "--job", "examples/smoke.yaml",
+            "bifrost",
+            "client",
+            "submit",
+            "--job",
+            "examples/smoke.yaml",
         ]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
             Mode::Client { command } => match command {
-                ClientCommand::Submit { command: cmd, job, .. } => {
+                ClientCommand::Submit {
+                    command: cmd, job, ..
+                } => {
                     assert!(cmd.is_none());
                     assert_eq!(job.unwrap(), PathBuf::from("examples/smoke.yaml"));
                 }
@@ -392,7 +437,9 @@ mod tests {
     #[test]
     fn test_cli_parse_status() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "status",
+            "bifrost",
+            "client",
+            "status",
             "550e8400-e29b-41d4-a716-446655440000",
         ]);
 
@@ -412,7 +459,9 @@ mod tests {
     #[test]
     fn test_cli_parse_cancel() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "cancel",
+            "bifrost",
+            "client",
+            "cancel",
             "550e8400-e29b-41d4-a716-446655440000",
         ]);
 
@@ -436,7 +485,11 @@ mod tests {
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Server { init, config, systemd } => {
+            Mode::Server {
+                init,
+                config,
+                systemd,
+            } => {
                 assert!(!init);
                 assert!(config.is_none());
                 assert!(!systemd);
@@ -448,15 +501,21 @@ mod tests {
     #[test]
     fn test_cli_parse_server_with_config() {
         let cli = Cli::try_parse_from([
-            "bifrost", "server",
-            "--config", "/etc/bifrost/server.json",
+            "bifrost",
+            "server",
+            "--config",
+            "/etc/bifrost/server.json",
             "--systemd",
         ]);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.mode {
-            Mode::Server { init: _, config, systemd } => {
+            Mode::Server {
+                init: _,
+                config,
+                systemd,
+            } => {
                 assert_eq!(config.unwrap(), PathBuf::from("/etc/bifrost/server.json"));
                 assert!(systemd);
             }
@@ -467,9 +526,13 @@ mod tests {
     #[test]
     fn test_cli_parse_submit_command_and_job_conflict() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "submit",
-            "--command", "echo hi",
-            "--job", "job.yaml",
+            "bifrost",
+            "client",
+            "submit",
+            "--command",
+            "echo hi",
+            "--job",
+            "job.yaml",
         ]);
         assert!(cli.is_err());
     }
