@@ -102,8 +102,14 @@ fn main() {
 }
 
 /// Handle MCP server mode: expose bifrost tools over stdio
+/// Config resolution order: BIFROST_CONFIG env > -c flag > ~/.bifrost/settings.json > defaults
 fn handle_mcp_serve(config: Option<PathBuf>) {
     use bifrost::core::settings;
+
+    // BIFROST_CONFIG env lets any MCP client (OpenCode, Claude Code, etc.)
+    // point the server at a specific storage without a shared home dir.
+    let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
+
     let settings = if let Some(ref config_path) = config {
         match std::fs::read_to_string(config_path) {
             Ok(content) => match serde_json::from_str::<settings::BifrostSettings>(&content) {
