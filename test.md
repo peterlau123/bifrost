@@ -276,6 +276,8 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 /gpfs/gcsp/liuxin/bifrost_test/
 ├── test_timeout.py          # 第一部分 Timeout 测试 (T1-T5)
 ├── test_job.py              # 第三部分 Job 测试 (J1-J5)
+├── test_concurrent.py       # 第四部分 并发测试 (N 任务并行)
+├── test_pytest_concurrent.py# 第四部分 多卡 pytest 并行 (GPU 隔离)
 └── jobs/                    # YAML 用例文件
     ├── j1_basic.yaml        # 基本: ok + fail(exit 3) + sleep
     ├── j2_order.yaml        # 顺序: 3 任务追加写文件
@@ -289,6 +291,61 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 - J2 用例依赖绝对路径 `/gpfs/gcsp/liuxin/bifrost_test/job_order.txt`，E2E 时需参数化
 - 用例断言已包含修复前失败/修复后通过的对照，可作回归测试
 - 对应单测：`cargo test test_launch_job_passes_working_dir_and_env`（MockBridge，无需真实 server）
+
+---
+
+# 第四部分：并发与多卡并行测试
+
+> 时间：2026-07-31 17:50 (CST, UTC+8)
+> 测试脚本：`/gpfs/gcsp/liuxin/bifrost_test/test_concurrent.py`、`test_pytest_concurrent.py`
+> 二进制：`./target/release/bifrost`
+
+## 4.1 测试目的
+
+回答三个问题：
+1. 能否同时提交多个独立任务？（client 侧）
+2. server 能否并行执行？（daemon 侧，基于 07c9511 的 tokio::spawn + Semaphore 并发修复）
+3. 多个 pytest 用例能否跑在 H20 不同 GPU 卡上并行执行？
+
+## 4.2 测试结果
+
+### 场景 A：4 个 sleep 3 任务
+
+| 指标 | 结果 |
+|------|------|
+| 提交 4 任务耗时 | **0.01s**（一口气提交，无等待） |
+| 端到端完成 | **3.54s**（串行预期 12s） |
+| 各任务 duration | 3002/3005/3005/3005ms（完整执行） |
+| 并行度 | **3.4x** |
+
+### 场景 B：10 个 sleep 2 任务（压 max_concurrent=10 上限）
+
+| 指标 | 结果 |
+|------|------|
+| 提交耗时 | **0.02s** |
+| 端到端完成 | **2.57s**（串行预期 20s） |
+| 并行度 | **7.8x** |
+
+### 场景 C：4 个 pytest 用例跑 4 张卡（GPU 隔离验证）
+
+4 个任务各指定 `CUDA_VISIBLE_DEVICES=0/1/2/3`，并行执行：
+
+| 任务 | 看到的 GPU | 独立 PID |
+|------|-----------|---------|
+| 23dfdf15 | GPU=0 | 3200653 |
+| ad15c54b | GPU=1 | 3200655 |
+| 8166d3ea | GPU=2 | 3200654 |
+| 475b2e0e | GPU=3 | 3200656 |
+
+- 端到端 **3.01s**（串行预期 ~8s）✅
+- 4 个任务并行运行、GPU 环境变量隔离正确 ✅
+
+## 4.3 结论
+
+1. **提交侧**：支持任意数量任务同时提交（毫秒级，写文件即完成）
+2. **执行侧**：server 按 `daemon.max_concurrent`（默认 10）**并行执行**，互不阻塞；长任务不再卡住后续任务
+3. **多卡场景**：bifrost 本身不分配 GPU——**任务命令自己指定** `CUDA_VISIBLE_DEVICES`（`sh -c 'CUDA_VISIBLE_DEVICES=0 pytest ...'` 或 job YAML 的 env_vars），daemon 并行拉起，天然支持"多个用例跑不同卡"
+4. **并发上限**：`max_concurrent` 可调（H20 上建议 ≤ GPU 卡数，避免排队任务争卡）
 
 ---
 
