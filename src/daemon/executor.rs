@@ -163,12 +163,11 @@ impl Executor {
             String::new()
         };
 
-        // Truncate stdout to 1000 chars
-        let stdout_truncated = if stdout_data.len() > 1000 {
-            format!("{}...", &stdout_data[..1000])
-        } else {
-            stdout_data
-        };
+        // Truncate stdout to 1000 chars, safe at UTF-8 boundaries.
+        // A naive &stdout_data[..1000] panics when byte 1000 splits a
+        // multi-byte char (e.g. Chinese output) - which would lose the
+        // task result entirely.
+        let stdout_truncated = truncate_utf8(&stdout_data, 1000);
 
         Ok(TaskOutput {
             stdout: stdout_truncated,
@@ -188,6 +187,20 @@ impl Executor {
         task_with_gpu.env_vars.insert("CUDA_VISIBLE_DEVICES".to_string(), gpu_id.to_string());
         self.execute(&task_with_gpu).await
     }
+}
+
+/// Truncate a UTF-8 string to at most `max_bytes` bytes without panicking
+/// on multi-byte char boundaries. Appends "..." when truncation happened.
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    // find the largest char-boundary index <= max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 #[cfg(test)]
@@ -267,6 +280,43 @@ mod tests {
         let result = result.unwrap();
         assert!(result.output.stdout.len() <= 1003);
         assert!(result.output.stdout.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn test_stdout_truncation_multibyte_no_panic() {
+        // 回归测试 Bug E: 中文输出超 1000 字节时, 旧代码 &s[..1000] 会 panic
+        // (切片落在多字节字符中间), 导致任务结果丢失.
+        let temp_dir = TempDir::new().unwrap();
+        let log_root = temp_dir.path().join("logs");
+        let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
+        let task = Task::new(
+            "python -c \"print('你好' * 500)\"".to_string(),
+            crate::core::models::TaskType::Shell,
+        ).with_timeout(5);
+
+        let result = executor.execute(&task).await;
+        assert!(result.is_ok(), "中文超长输出不应 panic");
+        let result = result.unwrap();
+        assert_eq!(result.status, TaskStatus::Completed);
+        assert!(result.output.stdout.len() <= 1003, "截断后不超过 1000 字节 + ...");
+        assert!(result.output.stdout.ends_with("..."));
+        // 输出必须仍是合法 UTF-8 (没有半截字符)
+        assert!(std::str::from_utf8(result.output.stdout.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_utf8_boundary() {
+        // 直接测 truncate_utf8 在边界的行为
+        assert_eq!(truncate_utf8("hello", 100), "hello");
+        assert_eq!(truncate_utf8("hello world", 5), "hello...");
+        // 中文: 3 字节/字符, 1000 字节边界正好落在字符中间时必须回退
+        let cn = "你".repeat(500); // 1500 字节
+        let t = truncate_utf8(&cn, 1000);
+        assert!(t.len() <= 1003);
+        assert!(t.ends_with("..."));
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+        // 精确对齐边界时 (1000 = 333*3 + 1 → 回退到 999 = 333 个字符)
+        assert!(t.starts_with(&"你".repeat(333)));
     }
 
     #[tokio::test]

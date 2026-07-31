@@ -167,44 +167,62 @@ impl AsyncFileWatcher {
         let debounce = self.debounce_threshold;
 
         tokio::spawn(async move {
-            // Run watcher in blocking context
+            // Run watcher in blocking context (std::thread::sleep and
+            // blocking_send must not run on an async worker thread).
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut watcher) = FileWatcher::new(commands_dir) {
-                    let mut last_path: Option<PathBuf> = None;
-                    let mut last_time: Option<Instant> = None;
-
-                    loop {
-                        match watcher.wait_for_new_task() {
-                            Ok(Some(path)) => {
-                                // Per-path debounce (second layer): suppress only repeat
-                                // events for the same file within the window.
-                                let now = Instant::now();
-                                let is_duplicate = matches!(&last_path, Some(last) if *last == path)
-                                    && last_time.map_or(false, |t| now.duration_since(t) < debounce);
-
-                                if is_duplicate {
-                                    continue;
-                                }
-                                last_path = Some(path.clone());
-                                last_time = Some(now);
-
-                                // Send path through channel
-                                if tx.blocking_send(path).is_err() {
-                                    break;
-                                }
-                            }
-                            Ok(None) => {
-                                // No event, continue polling
-                                std::thread::sleep(Duration::from_millis(100));
-                            }
-                            Err(e) => {
-                                eprintln!("Watcher error: {}", e);
-                                break;
-                            }
+                // If FileWatcher::new fails (e.g. transient notify error),
+                // retry every 2s instead of giving up: a dead watcher must
+                // not turn the server into a zombie that stops consuming.
+                let mut watcher: Option<FileWatcher> = None;
+                while watcher.is_none() {
+                    match FileWatcher::new(commands_dir.clone()) {
+                        Ok(w) => watcher = Some(w),
+                        Err(e) => {
+                            eprintln!("Watcher init failed, retrying in 2s: {}", e);
+                            std::thread::sleep(Duration::from_secs(2));
                         }
                     }
                 }
-            }).await;
+                let mut watcher = watcher.unwrap();
+                let mut last_path: Option<PathBuf> = None;
+                let mut last_time: Option<Instant> = None;
+
+                loop {
+                    match watcher.wait_for_new_task() {
+                        Ok(Some(path)) => {
+                            // Per-path debounce (second layer): suppress only repeat
+                            // events for the same file within the window.
+                            let now = Instant::now();
+                            let is_duplicate = matches!(&last_path, Some(last) if *last == path)
+                                && last_time.map_or(false, |t| now.duration_since(t) < debounce);
+
+                            if is_duplicate {
+                                continue;
+                            }
+                            last_path = Some(path.clone());
+                            last_time = Some(now);
+
+                            // Send path through channel
+                            if tx.blocking_send(path).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            // No event, continue polling
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        Err(e) => {
+                            // Transient watcher error: log and keep polling.
+                            // Breaking here would close the channel and turn the
+                            // server into a zombie (alive but consuming nothing);
+                            // the runner's fallback scan covers missed tasks.
+                            eprintln!("Watcher error (continuing): {}", e);
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                    }
+                }
+            })
+            .await;
         });
 
         rx
