@@ -1,7 +1,6 @@
 // Additional unit tests for coverage improvement
 // Tests edge cases, error handling, and boundary conditions
 
-use bifrost::core::config::{ClientConfig, DaemonConfig};
 use bifrost::core::error::BifrostError;
 use bifrost::core::models::{Task, TaskOutput, TaskResult, TaskStatus, TaskType};
 use bifrost::core::protocol::Protocol;
@@ -191,58 +190,6 @@ fn test_task_result_duration_calculation() {
     assert_eq!(result.duration_secs(), 330); // 5 minutes 30 seconds
 }
 
-// ==================== Config Edge Cases ====================
-
-#[test]
-fn test_client_config_default_values() {
-    let config = ClientConfig::default();
-
-    assert_eq!(config.shared_storage, PathBuf::from("/tmp/bifrost"));
-    assert_eq!(config.poll_interval, Duration::from_secs(2));
-    assert_eq!(config.heartbeat_timeout, Duration::from_secs(180));
-}
-
-#[test]
-fn test_daemon_config_default_values() {
-    let config = DaemonConfig::default();
-
-    assert_eq!(config.shared_storage, PathBuf::from("/tmp/bifrost"));
-    assert_eq!(config.poll_interval, Duration::from_millis(500));
-    assert_eq!(config.max_concurrent, 10);
-    assert_eq!(config.task_timeout, Duration::from_secs(300));
-}
-
-#[test]
-fn test_client_config_custom_values() {
-    let config = ClientConfig {
-        shared_storage: PathBuf::from("/custom/storage"),
-        poll_interval: Duration::from_secs(5),
-        database: Some(PathBuf::from("custom.db")),
-        heartbeat_timeout: Duration::from_secs(120),
-    };
-
-    assert_eq!(config.shared_storage, PathBuf::from("/custom/storage"));
-    assert_eq!(config.poll_interval, Duration::from_secs(5));
-    assert_eq!(config.database, Some(PathBuf::from("custom.db")));
-}
-
-#[test]
-fn test_daemon_config_custom_values() {
-    let config = DaemonConfig {
-        shared_storage: PathBuf::from("/custom/storage"),
-        poll_interval: Duration::from_millis(1000),
-        max_concurrent: 8,
-        task_timeout: Duration::from_secs(600),
-        max_retries: 5,
-        heartbeat_interval: Duration::from_secs(30),
-        working_dir: PathBuf::from("/custom/work"),
-    };
-
-    assert_eq!(config.shared_storage, PathBuf::from("/custom/storage"));
-    assert_eq!(config.max_concurrent, 8);
-    assert_eq!(config.task_timeout, Duration::from_secs(600));
-}
-
 // ==================== Error Handling Tests ====================
 
 #[test]
@@ -391,7 +338,7 @@ fn test_executor_zero_timeout() {
     // Task with zero timeout should fail immediately
     let task = Task::new("echo test".to_string(), TaskType::Shell).with_timeout(0);
 
-    let result = rt.block_on(executor.execute(&task, None)).unwrap();
+    let result = rt.block_on(executor.execute(&task)).unwrap();
 
     // Zero timeout should trigger timeout error
     assert_eq!(result.status, TaskStatus::Timeout);
@@ -410,7 +357,7 @@ fn test_executor_invalid_working_dir() {
         .with_timeout(5)
         .with_working_dir(PathBuf::from("/nonexistent/path"));
 
-    let result = rt.block_on(executor.execute(&task, None)).unwrap();
+    let result = rt.block_on(executor.execute(&task)).unwrap();
 
     // Should fail due to invalid working directory
     assert_eq!(result.status, TaskStatus::Failed);
@@ -433,7 +380,7 @@ fn test_executor_large_stderr() {
     )
     .with_timeout(10);
 
-    let result = rt.block_on(executor.execute(&task, None)).unwrap();
+    let result = rt.block_on(executor.execute(&task)).unwrap();
 
     // stderr is NOT truncated (only stdout is truncated)
     assert!(result.output.stderr.len() > 1000 || result.status == TaskStatus::Failed);

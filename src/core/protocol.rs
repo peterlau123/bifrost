@@ -1,13 +1,23 @@
-// File communication protocol for task submission and retrieval
+// Shared-storage Bridge implementation
+//
+// Both the source (client) and target (server) machines read/write to the same
+// filesystem. commands/ flows source -> target, results/ + status/ flow back.
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::core::bridge::{Bridge, TaskStatusResponse};
 use crate::core::error::{BifrostError, Result};
 use crate::core::lock::atomic_write;
 use crate::core::models::{Task, TaskResult, TaskStatus};
 use uuid::Uuid;
 
-/// File-based communication protocol for task management
+/// Shared-storage transport implementing [`Bridge`].
+///
+/// Uses four directories under a shared root:
+/// - `commands/`  - source writes, target reads
+/// - `results/`   - target writes, source reads
+/// - `status/`    - target writes progress updates
+/// - `artifacts/` - execution artifacts
 pub struct Protocol {
     /// Root directory for shared storage
     shared_storage: PathBuf,
@@ -22,8 +32,8 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    /// Create a new protocol instance with the given shared storage path
-    /// Creates all required directories (commands, results, status, artifacts)
+    /// Create a new shared-storage bridge at the given root path.
+    /// Creates all required subdirectories (commands, results, status, artifacts).
     pub fn new(shared_storage: PathBuf) -> Result<Self> {
         let commands_dir = shared_storage.join("commands");
         let results_dir = shared_storage.join("results");
@@ -189,6 +199,100 @@ impl Protocol {
 
     pub fn shared_storage(&self) -> &Path {
         &self.shared_storage
+    }
+
+    /// Query task status by checking results/ then status/ then commands/.
+    fn query_task_status(&self, task_id: &Uuid) -> Result<TaskStatusResponse> {
+        // 1. Completed? check results/
+        let result_file = self.results_dir.join(format!("{}_result.json", task_id));
+        if result_file.exists() {
+            let content = fs::read_to_string(&result_file).map_err(BifrostError::IoError)?;
+            let result: TaskResult = serde_json::from_str(&content)?;
+            return Ok(TaskStatusResponse {
+                task_id: *task_id,
+                status: result.status.clone(),
+                message: Some(format!("Task completed in {}s", result.duration_secs())),
+            });
+        }
+
+        // 2. Running/pending? check status/
+        let status_file = self.status_dir.join(format!("{}.json", task_id));
+        if status_file.exists() {
+            let content = fs::read_to_string(&status_file).map_err(BifrostError::IoError)?;
+            let data: serde_json::Value = serde_json::from_str(&content)?;
+            let status_str = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let status = parse_status_string(status_str);
+            let message = data.get("message").and_then(|v| v.as_str()).map(|s| s.to_string());
+            return Ok(TaskStatusResponse { task_id: *task_id, status, message });
+        }
+
+        // 3. Pending? check commands/
+        if self.read_task(task_id).is_ok() {
+            return Ok(TaskStatusResponse {
+                task_id: *task_id,
+                status: TaskStatus::Pending,
+                message: Some("Task is pending execution".to_string()),
+            });
+        }
+
+        Err(BifrostError::TaskNotFound(*task_id))
+    }
+
+    /// Retrieve a completed task's result from results/.
+    fn get_task_result(&self, task_id: &Uuid) -> Result<TaskResult> {
+        let result_file = self.results_dir.join(format!("{}_result.json", task_id));
+        if !result_file.exists() {
+            return Err(BifrostError::TaskNotFound(*task_id));
+        }
+        let content = fs::read_to_string(&result_file).map_err(BifrostError::IoError)?;
+        let result: TaskResult = serde_json::from_str(&content)?;
+        Ok(result)
+    }
+}
+
+fn parse_status_string(s: &str) -> TaskStatus {
+    match s.to_lowercase().as_str() {
+        "pending" => TaskStatus::Pending,
+        "running" => TaskStatus::Running,
+        "completed" | "success" => TaskStatus::Completed,
+        "failed" | "error" => TaskStatus::Failed,
+        "cancelled" => TaskStatus::Cancelled,
+        "timeout" => TaskStatus::Timeout,
+        _ => TaskStatus::Pending,
+    }
+}
+
+impl Bridge for Protocol {
+    fn submit_task(&self, task: &Task) -> Result<()> {
+        Protocol::submit_task(self, task)
+    }
+
+    fn query_status(&self, task_id: &Uuid) -> Result<TaskStatusResponse> {
+        self.query_task_status(task_id)
+    }
+
+    fn get_result(&self, task_id: &Uuid) -> Result<TaskResult> {
+        self.get_task_result(task_id)
+    }
+
+    fn list_pending_tasks(&self) -> Result<Vec<Task>> {
+        self.list_tasks()
+    }
+
+    fn read_task(&self, task_id: &Uuid) -> Result<Task> {
+        Protocol::read_task(self, task_id)
+    }
+
+    fn write_result(&self, task_id: &Uuid, result: &TaskResult) -> Result<()> {
+        Protocol::write_result(self, task_id, result)
+    }
+
+    fn write_status(&self, task_id: &Uuid, status: &TaskStatus, message: Option<&str>) -> Result<()> {
+        Protocol::write_status(self, task_id, status, message)
+    }
+
+    fn remove_task(&self, task_id: &Uuid) -> Result<()> {
+        Protocol::remove_command_file(self, task_id)
     }
 }
 

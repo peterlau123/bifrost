@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use crate::core::models::TaskStatus;
+use crate::core::bridge::Bridge;
 use crate::core::protocol::Protocol;
 use crate::core::settings::BifrostSettings;
 use crate::daemon::executor::Executor;
@@ -32,7 +33,7 @@ pub async fn run_daemon(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                 let tid = t.task_id; let _ = p.write_status(&tid, &TaskStatus::Running, Some("executing"));
                 match ex.execute(&t).await {
                     Ok(r) => { let _ = p.write_result(&tid, &r); let m = match r.status { TaskStatus::Completed => Some("ok"), _ => None };
-                        let _ = p.write_status(&tid, &r.status, m); let _ = p.remove_command_file(&tid);
+                        let _ = p.write_status(&tid, &r.status, m); let _ = p.remove_task(&tid);
                         println!("  {}: {} ({}s)", tid, r.status, r.duration_secs()); }
                     Err(e) => { eprintln!("exec: {}", e); }
                 }

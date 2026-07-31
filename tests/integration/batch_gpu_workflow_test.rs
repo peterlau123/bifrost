@@ -59,7 +59,7 @@ fn test_batch_manifest_submission() {
     fs::write(&manifest_path, manifest_json).unwrap();
 
     // Submit batch manifest
-    let batch_id = submit::submit_batch_manifest(&protocol, None, &batch_tracker, &manifest_path)
+    let batch_id = submit::submit_batch_manifest(&protocol, &batch_tracker, &manifest_path)
         .expect("Failed to submit batch manifest");
 
     // Verify batch ID generated

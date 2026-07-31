@@ -60,15 +60,16 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 
 ### Key Features
 
+- **Bridge abstraction** - Transport-agnostic communication (shared storage implemented, SSH extensible)
 - **Unified settings** - ~/.bifrost/settings.json, init via CLI
-- **Air-gapped operation** - Complete separation between client and daemon
+- **Air-gapped operation** - Complete separation between client and server
 - **Security hardened** - Command injection prevention, path traversal protection
 - **High performance** - notify-based file watching (500ms latency), tokio async execution
 - **Multiple task types** - Shell commands, pytest tests, custom adapters
 - **Priority scheduling** - Tasks sorted by priority (0-255)
 - **Timeout management** - Configurable timeouts with automatic retry
-- **systemd integration** - Production-ready daemon deployment
-- **Health monitoring** - Heartbeat-based daemon health checks
+- **systemd integration** - Production-ready server deployment
+- **Health monitoring** - Heartbeat-based server health checks
 
 ## Architecture
 
@@ -148,27 +149,27 @@ sequenceDiagram
 
 ## 环境要求
 
-### Ascend（联网机器，Client 端）
+### 源机器（联网机器，Client 端）
 
 | 需求 | 版本 | 说明 |
 |------|------|------|
 | **Rust** | 1.70+ | 编译环境，只需编译一次 |
-| **共享存储** | - | GPFS / NFS / Lustre 等 POSIX 共享文件系统，与 H20 共用 |
+| **共享存储** | - | GPFS / NFS / Lustre 等 POSIX 共享文件系统，与 目标机器 共用 |
 
-### H20（离线机器，Daemon 端）
+### 目标机器（离线机器，Daemon 端）
 
 | 需求 | 版本 | 说明 |
 |------|------|------|
 | **bifrost 二进制** | - | 单一二进制，零依赖 |
 | **systemd** | - | 可选，推荐生产使用 |
-| **共享存储** | - | 与 Ascend 挂载同一共享目录（GPFS / NFS / Lustre 等） |
+| **共享存储** | - | 与 源机器 挂载同一共享目录（GPFS / NFS / Lustre 等） |
 | **Python** | 3.10+ | 可选，执行 pytest 任务时需要 |
 | **pytest** | 7.x | 可选，执行 pytest 任务时需要 |
 | **pytest-json-report** | - | Plugin for structured results |
 
 ### Container Execution (Optional)
 
-通过容器在 H20 上执行 pytest：
+通过容器在 目标机器 上执行 pytest：
 
 ```yaml
 # adapters/docker_pytest.yaml
@@ -205,9 +206,9 @@ ls -lh target/release/bifrost
 
 ---
 
-### 部署到 Ascend（联网机器，Client 端）
+### 部署到 源机器（联网机器，Client 端）
 
-Ascend 机器负责下发命令和查询结果，只需要 CLI 二进制和配置文件。
+源机器 机器负责下发命令和查询结果，只需要 CLI 二进制和配置文件。
 
 ```bash
 # 1. 复制二进制
@@ -237,7 +238,7 @@ vim ~/.bifrost/settings.json
 # 查看帮助
 bifrost client submit --help
 
-# 提交一个简单任务验证连通性（需 H20 daemon 已运行）
+# 提交一个简单任务验证连通性（需 目标机器 daemon 已运行）
 bifrost client submit --command "hostname" --timeout 30
 # 记下返回的 TASK_ID
 bifrost client status <TASK_ID>
@@ -245,17 +246,17 @@ bifrost client status <TASK_ID>
 
 ---
 
-### 部署到 H20（离线机器，Daemon 端）
+### 部署到 目标机器（离线机器，Daemon 端）
 
-H20 机器网络隔离，通过共享存储接收命令并返回结果。
+目标机器 机器网络隔离，通过共享存储接收命令并返回结果。
 
-两台机器挂载同一共享目录（当前使用 GPFS，也支持 NFS、Lustre 等 POSIX 文件系统），编译好的二进制可以直接被 H20 访问。
+两台机器挂载同一共享目录（当前使用 GPFS，也支持 NFS、Lustre 等 POSIX 文件系统），编译好的二进制可以直接被 目标机器 访问。
 
 ```bash
-# ---- Ascend 端：编译后写入 GPFS 共享目录 ----
+# ---- 源机器 端：编译后写入 GPFS 共享目录 ----
 cp target/release/bifrost /mnt/gpfs/bifrost/bin/
 
-# ---- H20 端：从共享存储安装 ----
+# ---- 目标机器 端：从共享存储安装 ----
 # GPFS 已挂载在 /mnt/gpfs，直接访问
 sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
@@ -265,7 +266,7 @@ mkdir -p ~/.bifrost
 bifrost server --init
 ```
 
-#### H20 配置 shared storage
+#### 目标机器 配置 shared storage
 
 ```bash
 vim ~/.bifrost/settings.json
@@ -285,7 +286,7 @@ vim ~/.bifrost/settings.json
 }
 ```
 
-> **重要：** Ascend 和 H20 的 `shared_storage` 必须指向同一物理目录。
+> **重要：** 源机器 和 目标机器 的 `shared_storage` 必须指向同一物理目录。
 
 #### 注册 systemd 服务（推荐生产使用）
 
@@ -321,11 +322,11 @@ ls -la /mnt/gpfs/bifrost/heartbeat.json
 ### 端到端验证部署
 
 ```bash
-# H20 端：确认 daemon 运行且心跳正常
+# 目标机器 端：确认 daemon 运行且心跳正常
 ls -la /mnt/gpfs/bifrost/heartbeat.json           # 文件应存在，60s 内更新
 cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # 显示 daemon 状态
 
-# Ascend 端：端到端测试
+# 源机器 端：端到端测试
 bifrost client submit \
   --command "echo 'bifrost deployment ok' && nvidia-smi -L | head -3" \
   --timeout 30
@@ -490,7 +491,8 @@ bifrost/
 ├── src/
 │   ├── core/           # Core models, protocol, and services
 │   │   ├── models.rs   # Task, TaskResult, TaskStatus
-│   │   ├── protocol.rs # File communication
+│   │   ├── bridge.rs   # Bridge transport trait
+│   │   ├── protocol.rs # Shared-storage bridge impl
 │   │   ├── settings.rs # ~/.bifrost/settings.json
 │   │   ├── db.rs       # TODO: SQLite history
 │   │   ├── error.rs    # Error types

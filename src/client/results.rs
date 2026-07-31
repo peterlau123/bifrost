@@ -1,7 +1,8 @@
 // Client results retrieval functionality
-use crate::core::protocol::Protocol;
+use crate::core::bridge::Bridge;
 use crate::core::error::{BifrostError, Result};
 use crate::core::models::TaskResult;
+use crate::core::protocol::Protocol;
 use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
@@ -17,31 +18,18 @@ pub enum ResultFormat {
     Text,
 }
 
-/// Retrieve task results from shared storage
-pub fn get_result(protocol: &Protocol, task_id: Uuid) -> Result<TaskResult> {
-    let shared_storage = protocol.shared_storage();
-    let results_dir = shared_storage.join("results");
-    let result_file = results_dir.join(format!("{}_result.json", task_id));
-
-    if !result_file.exists() {
-        return Err(BifrostError::TaskNotFound(task_id));
-    }
-
-    let content = fs::read_to_string(&result_file)
-        .map_err(BifrostError::IoError)?;
-
-    let result: TaskResult = serde_json::from_str(&content)?;
-
-    Ok(result)
+/// Retrieve task results via the bridge
+pub fn get_result(bridge: &dyn Bridge, task_id: Uuid) -> Result<TaskResult> {
+    bridge.get_result(&task_id)
 }
 
-/// Get result in formatted output
+/// Get result in formatted output (shared-storage specific)
 pub fn get_result_formatted(
     protocol: &Protocol,
     task_id: Uuid,
     format: ResultFormat,
 ) -> Result<String> {
-    let result = get_result(protocol, task_id)?;
+    let result = get_result(protocol, task_id)?;;
 
     match format {
         ResultFormat::Json => {

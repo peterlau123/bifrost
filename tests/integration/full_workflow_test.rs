@@ -26,7 +26,6 @@ fn test_full_workflow_shell_command() {
     let command = "echo 'Integration test successful'";
     let task_id = submit::submit_task(
         &protocol,
-        None,
         command.to_string(),
         TaskType::Shell,
         0,
@@ -48,7 +47,7 @@ fn test_full_workflow_shell_command() {
     let executor =
         Executor::new(log_root, Duration::from_secs(30)).expect("Failed to create executor");
 
-    let execution_result = rt.block_on(executor.execute(&task, None));
+    let execution_result = rt.block_on(executor.execute(&task));
     assert!(execution_result.is_ok());
     let result = execution_result.unwrap();
 
@@ -99,7 +98,6 @@ def test_simple():
     let pytest_path = test_file.to_str().unwrap();
     let task_id = submit::submit_task(
         &protocol,
-        None,
         format!("pytest {} -v", pytest_path),
         TaskType::Pytest,
         5,
@@ -115,7 +113,7 @@ def test_simple():
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
     let result = rt
-        .block_on(executor.execute(&task, None))
+        .block_on(executor.execute(&task))
         .expect("Failed to execute");
 
     // Write result
@@ -147,7 +145,6 @@ fn test_workflow_with_timeout() {
     // Submit task that will timeout
     let task_id = submit::submit_task(
         &protocol,
-        None,
         "sleep 10".to_string(),
         TaskType::Shell,
         0,
@@ -163,7 +160,7 @@ fn test_workflow_with_timeout() {
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
     let result = rt
-        .block_on(executor.execute(&task, None))
+        .block_on(executor.execute(&task))
         .expect("Failed to execute");
 
     // Write result
@@ -195,7 +192,6 @@ fn test_workflow_with_failure() {
     // Submit failing task
     let task_id = submit::submit_task(
         &protocol,
-        None,
         "exit 42".to_string(),
         TaskType::Shell,
         0,
@@ -211,7 +207,7 @@ fn test_workflow_with_failure() {
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
     let result = rt
-        .block_on(executor.execute(&task, None))
+        .block_on(executor.execute(&task))
         .expect("Failed to execute");
 
     // Write result
@@ -242,7 +238,6 @@ fn test_concurrent_task_submissions() {
     for i in 0..5 {
         let task_id = submit::submit_task(
             &protocol,
-            None,
             format!("echo 'Task {}'", i),
             TaskType::Shell,
             i,
@@ -274,7 +269,6 @@ fn test_result_formatting() {
     // Create and submit task
     let task_id = submit::submit_task(
         &protocol,
-        None,
         "echo 'Format test'".to_string(),
         TaskType::Shell,
         0,
@@ -291,7 +285,7 @@ fn test_result_formatting() {
 
     let task = protocol.read_task(&task_id).expect("Failed to read task");
     let result = rt
-        .block_on(executor.execute(&task, None))
+        .block_on(executor.execute(&task))
         .expect("Failed to execute");
 
     // Write result

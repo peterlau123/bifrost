@@ -1,15 +1,15 @@
 // Client submit functionality
 use crate::core::batch_tracker::BatchTracker;
+use crate::core::bridge::Bridge;
 use crate::core::error::{BifrostError, Result};
 use crate::core::models::{BatchProgress, BatchStatus, Task, TaskManifest, TaskType};
-use crate::core::protocol::Protocol;
 use chrono::Utc;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// Submit a single command task to the daemon via shared storage
+/// Submit a single command task via the bridge
 pub fn submit_task(
-    protocol: &Protocol,
+    bridge: &dyn Bridge,
     command: String,
     task_type: TaskType,
     priority: u8,
@@ -27,13 +27,13 @@ pub fn submit_task(
     };
 
     let task_id = task.task_id;
-    protocol.submit_task(&task)?;
+    bridge.submit_task(&task)?;
     Ok(task_id)
 }
 
 /// Submit a batch manifest and create batch progress tracking
 pub fn submit_batch_manifest(
-    protocol: &Protocol,
+    bridge: &dyn Bridge,
     batch_tracker: &BatchTracker,
     manifest_path: &PathBuf,
 ) -> Result<Uuid> {
@@ -70,7 +70,7 @@ pub fn submit_batch_manifest(
             .fold(task, |t, (k, v)| t.with_env_var(k.clone(), v.clone()));
 
         let task_id = task.task_id;
-        protocol.submit_task(&task)?;
+        bridge.submit_task(&task)?;
 
         progress.submitted_tasks.push((index, task_id, task_item.task_name.clone()));
         progress.current_index = index + 1;
@@ -89,15 +89,17 @@ pub fn submit_batch_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::protocol::Protocol;
     use tempfile::TempDir;
 
     #[test]
     fn test_submit_task() {
         let temp_dir = TempDir::new().unwrap();
         let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
+        let bridge: &dyn Bridge = &protocol;
 
         let task_id = submit_task(
-            &protocol,
+            bridge,
             "echo hello".to_string(),
             TaskType::Shell,
             10,
@@ -118,9 +120,10 @@ mod tests {
     fn test_submit_task_with_working_dir() {
         let temp_dir = TempDir::new().unwrap();
         let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
+        let bridge: &dyn Bridge = &protocol;
 
         let task_id = submit_task(
-            &protocol,
+            bridge,
             "pytest tests/".to_string(),
             TaskType::Pytest,
             5, 600,

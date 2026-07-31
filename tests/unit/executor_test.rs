@@ -32,7 +32,7 @@ fn test_execute_shell_command() {
     let executor = Executor::new(log_root.clone(), Duration::from_secs(30)).unwrap();
     let task = create_test_task("echo 'Hello, Executor!'".to_string());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -58,7 +58,7 @@ fn test_execute_failed_command() {
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
     let task = create_test_task("exit 42".to_string());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -78,7 +78,7 @@ fn test_execute_timeout() {
     // Sleep command with 2 second timeout
     let task = create_test_task("sleep 5".to_string()).with_timeout(2);
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -97,7 +97,7 @@ fn test_stdout_truncation() {
     // Python script to generate large output
     let task = create_test_task("python -c \"print('X' * 2000)\"".to_string());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -119,7 +119,7 @@ fn test_execute_with_env_vars() {
     let task = create_test_task("echo $TEST_VAR".to_string())
         .with_env_var("TEST_VAR".to_string(), "custom_value".to_string());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -141,7 +141,7 @@ fn test_execute_with_working_dir() {
         .with_timeout(10)
         .with_working_dir(work_dir.clone());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -163,7 +163,7 @@ fn test_execute_python_command() {
     )
     .with_timeout(10);
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     let result = result.unwrap();
@@ -180,7 +180,7 @@ fn test_executor_log_metadata() {
     let executor = Executor::new(log_root.clone(), Duration::from_secs(30)).unwrap();
     let task = create_test_task("echo 'test'".to_string());
 
-    let result = rt.block_on(executor.execute(&task, None));
+    let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
 
     // Check metadata file

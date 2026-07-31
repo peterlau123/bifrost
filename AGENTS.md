@@ -8,18 +8,18 @@ This file provides guidance to AI coding agents (Claude Code, etc.) when working
 
 ### 起源与定位
 
-Bifrost 起源于 vLLM/SGLang 在华为昇腾（MACA）硬件上的 pytest 测试场景，但它不局限于 pytest，而是一个**通用框架**：
+Bifrost 是一个**通用框架**，用于在网络隔离的机器间下发并执行命令：
 
-- **Ascend 机器（t_ascend，联网）**：下发命令、调度任务、接收结果
-- **H20 机器（t_h20，离线）**：执行命令、返回结果、报告状态
-- **共享存储**：双向目录通信，无需 SSH / RPC / REST API
+- **源机器（联网）**：下发命令、调度任务、接收结果
+- **目标机器（离线）**：执行命令、返回结果、报告状态
+- **Bridge**：传输抽象层，目前实现共享存储，可扩展 SSH 等
 
 任何需要在网络隔离机器间下发并执行命令的场景，Bifrost 都可以胜任。
 
 ### 数据流
 
 ```
-Ascend (联网)          共享存储              H20 (离线)
+源机器 (联网)          共享存储              目标机器 (离线)
 ┌──────────────┐    ┌────────────┐    ┌──────────────┐
 │ bifrost CLI  │───▶│ commands/  │───▶│   daemon     │
 │ 下发命令      │    │ task.json  │    │  监控+执行    │
@@ -35,6 +35,7 @@ Ascend (联网)          共享存储              H20 (离线)
 ### 关键特性
 
 - **通用命令执行**：shell / pytest / 任意自定义命令
+- **Bridge 传输抽象**：共享存储已实现，可扩展 SSH 等其他传输
 - **双向目录通信**：commands/ 写入任务，results/ 返回结果
 - **Rust 高性能**：notify 文件事件监控（500ms），tokio 异步执行
 - **安全防护**：shell-words 防注入、路径遍历检测
@@ -49,7 +50,7 @@ Ascend (联网)          共享存储              H20 (离线)
 ### 环境要求
 
 - **Rust**: 1.70+ (2021 edition)
-- **共享存储**: Ascend 和 H20 都能访问的 GPFS 共享目录
+- **共享存储**: 源机器 和 目标机器 都能访问的 GPFS 共享目录（也支持 NFS/Lustre 等 POSIX 文件系统）
 
 ### 构建
 
@@ -61,11 +62,11 @@ cargo build --release
 ### 部署
 
 ```bash
-# Ascend (联网机器)
+# 源机器 (联网机器)
 sudo cp target/release/bifrost /usr/local/bin/
 bifrost server --init          # 生成 ~/.bifrost/settings.json
 
-# H20 (离线机器)
+# 目标机器 (离线机器)
 sudo cp target/release/bifrost /usr/local/bin/
 bifrost server --init
 sudo cp bifrost.service /etc/systemd/system/
@@ -102,19 +103,20 @@ bifrost/
 │   ├── main.rs             # CLI 入口: client/server 双模式
 │   ├── core/               # 共享核心
 │   │   ├── models.rs       # Task, TaskResult, BatchProgress, JobDefinition
-│   │   ├── protocol.rs     # 文件通信协议 (4 目录)
+│   │   ├── bridge.rs      # Bridge 传输抽象 trait + TaskStatusResponse
+│   │   ├── protocol.rs     # 共享存储 Bridge 实现 (4 目录)
 │   │   ├── settings.rs     # ~/.bifrost/settings.json 配置
 │   │   ├── error.rs        # BifrostError 枚举
 │   │   ├── lock.rs         # fs2 文件锁 + atomic_write
 │   │   ├── db.rs           # TODO: SQLite 集成（任务历史持久化）
 │   │   ├── batch_tracker.rs# 批量进度跟踪
 │   │   └── job.rs          # YAML Job 定义
-│   ├── client/             # Ascend 端 CLI
+│   ├── client/             # 源机器 端 CLI
 │   │   ├── submit.rs       # 任务提交
 │   │   ├── status.rs       # 状态查询
 │   │   ├── results.rs      # 结果检索 + 路径遍历防护
 │   │   └── launcher.rs     # 顺序 Job 执行器
-│   └── daemon/             # H20 端守护进程
+│   └── daemon/             # 目标机器 端守护进程
 │       ├── runner.rs       # 主循环
 │       ├── watcher.rs      # notify 文件监控 (500ms 防抖)
 │       ├── executor.rs     # tokio 命令执行 (超时/截断/隔离)
@@ -191,6 +193,6 @@ cargo test --test full_workflow_test # 集成测试
 ## 常见问题
 
 1. **守护进程检测不到新任务** → 检查共享存储权限，确认 notify 正常工作
-2. **命令执行失败** → 检查 H20 上相应环境（Python/pytest 等）
-3. **心跳超时** → 检查 H20 守护进程是否运行，heartbeat.json 是否可读写
+2. **命令执行失败** → 检查 目标机器 上相应环境（Python/pytest 等）
+3. **心跳超时** → 检查 目标机器 守护进程是否运行，heartbeat.json 是否可读写
 4. **文件锁冲突** → 确认共享存储支持文件锁（NFS 需 lockd 服务）

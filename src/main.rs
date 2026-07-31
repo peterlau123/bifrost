@@ -95,6 +95,7 @@ fn main() {
 
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
+    use bifrost::core::bridge::Bridge;
     use bifrost::core::models::TaskType;
     use bifrost::core::protocol::Protocol;
     use bifrost::core::settings;
@@ -112,13 +113,14 @@ fn handle_client_mode(command: ClientCommand) {
             working_dir,
         } => {
             let protocol = Protocol::new(shared_storage)
-                .expect("Failed to create protocol");
+                .expect("Failed to create bridge");
+            let bridge: &dyn Bridge = &protocol;
 
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
                     Ok(job_def) => {
-                        match bifrost::client::launcher::launch_job(&protocol, job_def) {
+                        match bifrost::client::launcher::launch_job(bridge, job_def) {
                             Ok(job_result) => {
                                 println!();
                                 println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
@@ -137,7 +139,7 @@ fn handle_client_mode(command: ClientCommand) {
                 };
 
                 match bifrost::client::submit::submit_task(
-                    &protocol,
+                    bridge,
                     cmd_str,
                     task_type,
                     priority,
@@ -158,11 +160,12 @@ fn handle_client_mode(command: ClientCommand) {
             use uuid::Uuid;
 
             let protocol = Protocol::new(shared_storage)
-                .expect("Failed to create protocol");
+                .expect("Failed to create bridge");
+            let bridge: &dyn Bridge = &protocol;
 
             match Uuid::parse_str(&id) {
                 Ok(parsed_id) => {
-                    match bifrost::client::status::query_status(&protocol, parsed_id) {
+                    match bifrost::client::status::query_status(bridge, parsed_id) {
                         Ok(status_resp) => {
                             println!("Task status for: {}", id);
                             println!("  Status: {}", status_resp.status);

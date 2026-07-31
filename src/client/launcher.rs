@@ -2,14 +2,14 @@
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use crate::client::status;
+use crate::core::bridge::Bridge;
 use crate::core::error::{BifrostError, Result as BifrostResult};
 use crate::core::job::{JobDefinition, JobResult, JobTaskResult};
 use crate::core::models::{Task, TaskStatus, TaskType};
-use crate::core::protocol::Protocol;
 
 const POLL: Duration = Duration::from_secs(2);
 
-pub fn launch_job(protocol: &Protocol, job: JobDefinition) -> BifrostResult<JobResult> {
+pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
     eprintln!("Job '{}' ({} tasks)", job.name, total);
     let mut jr = JobResult::new(job.name.clone(), total);
@@ -19,7 +19,7 @@ pub fn launch_job(protocol: &Protocol, job: JobDefinition) -> BifrostResult<JobR
         let task = Task::new(ti.command.clone(), TaskType::Custom)
             .with_priority(ti.priority).with_timeout(ti.timeout).with_retry_count(0);
         let tid = task.task_id;
-        protocol.submit_task(&task).map_err(|e| BifrostError::ConfigInvalid(format!("submit: {}", e)))?;
+        bridge.submit_task(&task).map_err(|e| BifrostError::ConfigInvalid(format!("submit: {}", e)))?;
         let start = Instant::now();
         let limit = Duration::from_secs(ti.timeout + 30);
         loop {
@@ -30,7 +30,7 @@ pub fn launch_job(protocol: &Protocol, job: JobDefinition) -> BifrostResult<JobR
                     error_message: Some(format!("timeout {}s", ti.timeout)), artifacts: vec![] });
                 break;
             }
-            match status::query_status(protocol, tid) {
+            match status::query_status(bridge, tid) {
                 Ok(s) => match s.status {
                     TaskStatus::Pending | TaskStatus::Running => { std::thread::sleep(POLL); }
                     _ => { let r = fetch_result(protocol, ti, tid, start.elapsed());
@@ -49,8 +49,8 @@ pub fn launch_job(protocol: &Protocol, job: JobDefinition) -> BifrostResult<JobR
     Ok(jr)
 }
 
-fn fetch_result(protocol: &Protocol, ti: &crate::core::job::JobTask, tid: Uuid, elapsed: Duration) -> JobTaskResult {
-    match crate::client::results::get_result(protocol, tid) {
+fn fetch_result(bridge: &dyn Bridge, ti: &crate::core::job::JobTask, tid: Uuid, elapsed: Duration) -> JobTaskResult {
+    match crate::client::results::get_result(bridge, tid) {
         Ok(r) => JobTaskResult { name: ti.name.clone(), task_id: tid, exit_code: r.output.exit_code,
             status: format!("{}", r.status), stdout: r.output.stdout.clone(), stderr: r.output.stderr.clone(),
             duration_secs: r.duration_secs(), error_message: r.error_message, artifacts: r.artifacts },
