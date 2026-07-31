@@ -22,6 +22,12 @@
   - [2.3 测试结果](#23-测试结果)
   - [2.4 发现并修复的问题](#24-发现并修复的问题)
   - [2.5 结论](#25-结论)
+- [第三部分：Job 工作流专项测试（--job）](#第三部分job-工作流专项测试--job)
+  - [3.1 测试目的](#31-测试目的)
+  - [3.2 测试用例设计](#32-测试用例设计)
+  - [3.3 测试结果](#33-测试结果)
+  - [3.4 发现并修复的问题](#34-发现并修复的问题)
+  - [3.5 测试用例归档（供端到端测试复用）](#35-测试用例归档供端到端测试复用)
 - [附录：所有测试中发现并修复的 Bug 汇总](#附录所有测试中发现并修复的-bug-汇总)
 
 ---
@@ -208,6 +214,84 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 
 ---
 
+# 第三部分：Job 工作流专项测试（--job）
+
+> 时间：2026-07-31 17:30 (CST, UTC+8)
+> 测试脚本：`/gpfs/gcsp/liuxin/bifrost_test/test_job.py`
+> YAML 用例：`/gpfs/gcsp/liuxin/bifrost_test/jobs/`（j1~j5）
+> 二进制：`./target/release/bifrost`
+
+## 3.1 测试目的
+
+`--job` 是 YAML 多任务工作流提交入口（client 侧串行执行引擎，launcher.rs）。验证：
+
+1. 基本 job 生命周期：提交 → 逐任务执行 → JobResult 汇总
+2. 任务执行顺序（YAML 定义序）
+3. job 内任务超时处理
+4. `working_dir` / `env_vars` 等字段是否真正传递到任务
+5. `ignore_failure` 语义（失败后是否继续）
+
+## 3.2 测试用例设计
+
+| 用例 | YAML | 任务 | 验证点 |
+|------|------|------|--------|
+| J1 | j1_basic.yaml | echo-ok / echo-fail(exit 3) / sleep-1 | JobResult 汇总、状态、stdout、exit_code、耗时 |
+| J2 | j2_order.yaml | first→second→third 追加写文件 | 执行顺序严格按 YAML |
+| J3 | j3_timeout.yaml | sleep 30 + timeout 2 | job 内任务超时 → Timeout 状态 |
+| J4 | j4_env_wd.yaml | `sh -c 'pwd && echo $MY_VAR'`，wd=/tmp，MY_VAR=job-env-ok | working_dir / env_vars 传递 |
+| J5 | j5_ignore_failure.yaml | will-fail(exit 1) → after-fail | 失败后 job 继续执行 |
+
+## 3.3 测试结果
+
+| 用例 | 结果 | 数据 |
+|------|------|------|
+| J1 结构 | ✅ | 3 任务全部进入 task_results |
+| J1 状态汇总 | ✅ | job_status=CompletedWithFailures，completed=2/failed=1 |
+| J1 各任务状态 | ✅ | [Completed, Failed, Completed] |
+| J1 stdout 捕获 | ✅ | `job-task-ok` |
+| J1 exit_code 捕获 | ✅ | 3 |
+| J1 耗时记录 | ✅ | sleep-1 duration=1s |
+| J2 执行顺序 | ✅ | `first\nsecond\nthird`（修复用例写法后） |
+| J3 超时状态 | ✅ | Timeout, dur=2s |
+| J3 超时消息 | ✅ | "Task timed out after 2 seconds" |
+| J4 working_dir | ✅ | stdout=`/tmp`（修复前为仓库根目录） |
+| J4 env_vars | ✅ | stdout=`job-env-ok`（修复前为空） |
+| J5 失败后继续 | ✅ | 2 任务均执行：[will-fail=Failed, after-fail=Completed] |
+
+## 3.4 发现并修复的问题
+
+### 🐛 Bug D：launcher 静默忽略 JobTask 的 working_dir / env_vars（严重）
+
+- **现象**：J4 中 YAML 配置 `working_dir: /tmp` 和 `env_vars: {MY_VAR: job-env-ok}`，但任务实际在**仓库根目录**执行、环境变量**为空**
+- **根因**：`launcher.rs` 的 `launch_job` 构造 Task 时只设置了 `priority`/`timeout`/`retry_count`，**从未调用 `with_working_dir` / `with_env_var`**——YAML 中这两个字段被静默忽略，用户配置了但完全不生效
+- **影响面**：所有依赖特定工作目录或环境变量的 job 任务（如 Python 虚拟环境、GPU 相关变量）都会在错误环境下运行
+- **修复**（`ea4fea5`）：launcher 构造 Task 后应用 `with_working_dir` / `with_env_var`
+- **回归测试**：新增 MockBridge 单测 `test_launch_job_passes_working_dir_and_env`，验证字段传递（59 项测试全过）
+
+## 3.5 测试用例归档（供端到端测试复用）
+
+以下用例设计可直接放入未来的端到端（E2E）测试套件，脚本与 YAML 均已保留：
+
+```
+/gpfs/gcsp/liuxin/bifrost_test/
+├── test_timeout.py          # 第一部分 Timeout 测试 (T1-T5)
+├── test_job.py              # 第三部分 Job 测试 (J1-J5)
+└── jobs/                    # YAML 用例文件
+    ├── j1_basic.yaml        # 基本: ok + fail(exit 3) + sleep
+    ├── j2_order.yaml        # 顺序: 3 任务追加写文件
+    ├── j3_timeout.yaml      # 超时: sleep 30 + timeout 2
+    ├── j4_env_wd.yaml       # wd/env: working_dir + env_vars 传递
+    └── j5_ignore_failure.yaml  # 失败继续: exit 1 → echo
+```
+
+**复用说明：**
+- 脚本均以 `<binary> <storage> [n]` 方式参数化，E2E 中只需替换二进制路径和存储区
+- J2 用例依赖绝对路径 `/gpfs/gcsp/liuxin/bifrost_test/job_order.txt`，E2E 时需参数化
+- 用例断言已包含修复前失败/修复后通过的对照，可作回归测试
+- 对应单测：`cargo test test_launch_job_passes_working_dir_and_env`（MockBridge，无需真实 server）
+
+---
+
 # 附录：所有测试中发现并修复的 Bug 汇总
 
 | # | Bug | 涉及文件 | 现象 | 修复 commit |
@@ -218,5 +302,6 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 | 4 | **超时后子进程泄漏** | `executor.rs` | tokio timeout 取消 future 不杀进程；`sh -c` 孙进程变孤儿 | `07c9511` |
 | 5 | **server 串行执行阻塞** | `runner.rs` | `max_concurrent` 配置存在但从未生效，长任务阻塞后续所有任务 | `07c9511` |
 | 6 | （测试脚本）pgrep 假阴性 | `test_timeout.py` | `pgrep -f "^sleep$"` 匹配不到带参数进程 `sleep 30`，漏报泄漏 | `07c9511` |
+| 7 | **launcher 忽略 wd/env** | `launcher.rs` | `--job` 任务的 working_dir / env_vars 被静默忽略，任务在错误环境下执行 | `ea4fea5` |
 
-> 所有修复均已通过 `cargo test`（58 项）与端到端实测验证，并推送到 `test/deploy` 分支。
+> 所有修复均已通过 `cargo test`（59 项）与端到端实测验证，并推送到 `test/deploy` 分支。
