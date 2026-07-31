@@ -80,6 +80,21 @@ enum ClientCommand {
         /// Task or job ID
         id: String,
     },
+
+    /// Clean up files of finished tasks older than the age threshold
+    Clean {
+        /// Only remove files older than N days (default 7)
+        #[arg(long, default_value = "7")]
+        older_than: u64,
+
+        /// Preview what would be removed without deleting anything
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Storage directory to clean (default: settings.json's shared_storage)
+        #[arg(long, value_name = "PATH")]
+        storage: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -235,6 +250,41 @@ fn handle_client_mode(command: ClientCommand) {
             println!("Cancel: {}", id);
             println!("  Note: Task cancellation not yet implemented");
             println!("  Requires server to support cancel signal");
+        }
+
+        ClientCommand::Clean { older_than, dry_run, storage } => {
+            use std::time::SystemTime;
+            let storage = storage.unwrap_or_else(|| PathBuf::from(&shared_storage));
+            let cands = match bifrost::client::clean::scan_finished(&storage, older_than, SystemTime::now()) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("Clean failed: {}", e); return; }
+            };
+
+            if cands.is_empty() {
+                println!("No finished tasks older than {} days found. Storage is clean.", older_than);
+                return;
+            }
+
+            let mut file_count = 0usize;
+            for c in &cands {
+                let mut n = 1; // result file
+                n += c.status.iter().count() + c.commands.len() + c.artifacts.len()
+                    + c.logs.iter().count();
+                file_count += n;
+                if dry_run {
+                    println!("  would remove {} ({} files)", c.task_id, n);
+                }
+            }
+
+            if dry_run {
+                println!("[dry-run] {} finished tasks, {} files would be removed (older than {} days)", cands.len(), file_count, older_than);
+                return;
+            }
+
+            match bifrost::client::clean::purge(&cands) {
+                Ok(removed) => println!("Removed {} files from {} finished tasks (older than {} days)", removed, cands.len(), older_than),
+                Err(e) => eprintln!("Clean failed: {}", e),
+            }
         }
     }
 }
