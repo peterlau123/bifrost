@@ -400,6 +400,37 @@ Message: Task completed in 45s
 bifrost client cancel <TASK_ID>
 ```
 
+### Clean Up Old Tasks (prevent storage growth)
+
+Long-running deployments accumulate files in `commands/ results/ status/ logs/ artifacts/`. Clean removes all files of **finished tasks** (those with a result file) older than N days:
+
+```bash
+# Preview what would be removed (safe, no deletion)
+bifrost client clean --older-than 7 --dry-run
+
+# Actually remove finished tasks' files older than 7 days
+bifrost client clean --older-than 7
+
+# Target a specific storage directory
+bifrost client clean --storage /gpfs/gcsp/liuxin/bifrost_test --older-than 30
+```
+
+**Safety guarantees:**
+- Only tasks **with a result file** (terminal state) are touched — pending/running tasks are never candidates
+- `heartbeat.json` and `settings.json` are **never** removed
+- `--dry-run` previews before any deletion; `--older-than` defaults to 7 days
+
+**Example output:**
+```
+$ bifrost client clean --older-than 7 --dry-run
+  would remove aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa (5 files)
+  would remove bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb (2 files)
+[dry-run] 2 finished tasks, 7 files would be removed (older than 7 days)
+
+$ bifrost client clean --older-than 7
+Removed 7 files from 2 finished tasks (older than 7 days)
+```
+
 ### Pytest in Container (Offline Machine)
 
 To run pytest in a container on the offline machine:
