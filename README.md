@@ -694,6 +694,17 @@ cargo test --test full_workflow_test
 cargo tarpaulin --out Html
 ```
 
+### End-to-End Tests (CI-equivalent)
+
+The full e2e suite lives in `tests/e2e/` (timeout, job, concurrent, multi-GPU pytest, robustness, MCP) and runs on **GitHub Actions CI** (`.github/workflows/ci.yml`):
+
+```bash
+cargo build --release
+python3 tests/e2e/run_all.py ./target/release/bifrost   # 6 suites, ~50s
+```
+
+CI also enforces `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on every push.
+
 ### Project Structure
 
 ```

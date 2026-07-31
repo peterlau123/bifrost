@@ -279,25 +279,39 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 
 ## 3.5 测试用例归档（供端到端测试复用）
 
-以下用例设计可直接放入未来的端到端（E2E）测试套件，脚本与 YAML 均已保留：
+> **已集成进仓库**（`cf8bd33`）：全部脚本迁至 `tests/e2e/`，参数化后可在任意 Linux 环境运行（CI Ubuntu 已验证逻辑，本地 /gpfs 版保留在 `/gpfs/gcsp/liuxin/bifrost_test/`）。
 
 ```
-/gpfs/gcsp/liuxin/bifrost_test/
+tests/e2e/
+├── run_all.py               # 统一入口: 顺序跑 6 套件 (约 50s)
 ├── test_timeout.py          # 第一部分 Timeout 测试 (T1-T5)
 ├── test_job.py              # 第三部分 Job 测试 (J1-J5)
 ├── test_concurrent.py       # 第四部分 并发测试 (N 任务并行)
 ├── test_pytest_concurrent.py# 第四部分 多卡 pytest 并行 (GPU 隔离)
+├── test_robustness.py       # 第五部分 server 健壮性 (S1-S4)
+├── test_mcp_e2e.py          # MCP 全链路 (health→submit→status→result)
 └── jobs/                    # YAML 用例文件
     ├── j1_basic.yaml        # 基本: ok + fail(exit 3) + sleep
-    ├── j2_order.yaml        # 顺序: 3 任务追加写文件
+    ├── j2_order.yaml        # 顺序: 3 任务追加写 $BIFROST_ORDER_FILE
     ├── j3_timeout.yaml      # 超时: sleep 30 + timeout 2
     ├── j4_env_wd.yaml       # wd/env: working_dir + env_vars 传递
     └── j5_ignore_failure.yaml  # 失败继续: exit 1 → echo
 ```
 
+**运行方式（CI 等价）：**
+```bash
+cargo build --release
+python3 tests/e2e/run_all.py ./target/release/bifrost
+# 或: BIFROST_BIN=./target/release/bifrost python3 tests/e2e/run_all.py
+```
+
+**CI（GitHub Actions，`.github/workflows/ci.yml`）**：
+- Job 1 (check-and-test)：`cargo fmt --check` + `cargo clippy --all-targets -D warnings` + `cargo test`
+- Job 2 (e2e，依赖 Job 1)：`cargo build --release` + `python3 tests/e2e/run_all.py`
+
 **复用说明：**
-- 脚本均以 `<binary> <storage> [n]` 方式参数化，E2E 中只需替换二进制路径和存储区
-- J2 用例依赖绝对路径 `/gpfs/gcsp/liuxin/bifrost_test/job_order.txt`，E2E 时需参数化
+- 脚本均以环境变量/参数方式指定二进制与存储区（`BIFROST_BIN`/`BIFROST_STORAGE`），默认临时目录，无 /gpfs 依赖
+- J2 顺序文件经 `$BIFROST_ORDER_FILE` 环境变量传递（server 继承进程环境）
 - 用例断言已包含修复前失败/修复后通过的对照，可作回归测试
 - 对应单测：`cargo test test_launch_job_passes_working_dir_and_env`（MockBridge，无需真实 server）
 
