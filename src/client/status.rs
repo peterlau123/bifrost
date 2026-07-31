@@ -23,7 +23,7 @@ mod tests {
     use super::*;
     use crate::core::protocol::Protocol;
     use tempfile::TempDir;
-    use crate::core::models::{Task, TaskOutput, TaskStatus};
+    use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
     use chrono::Utc;
     use std::fs;
 
@@ -63,6 +63,7 @@ mod tests {
             },
             start_time: Utc::now(),
             end_time: Utc::now(),
+            duration_ms: 0,
             retries_used: 0,
             artifacts: vec![],
             error_message: None,

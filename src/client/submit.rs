@@ -111,7 +111,9 @@ mod tests {
 
         let commands_dir = temp_dir.path().join("commands");
         let files: Vec<_> = std::fs::read_dir(&commands_dir)
-            .unwrap().filter_map(|e| e.ok()).collect();
+            .unwrap().filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+            .collect();
         assert_eq!(files.len(), 1);
         assert!(files[0].file_name().to_string_lossy().contains(&task_id.to_string()));
     }

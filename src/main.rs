@@ -138,6 +138,7 @@ fn handle_client_mode(command: ClientCommand) {
                     TaskType::Shell
                 };
 
+                let submit_start = std::time::Instant::now();
                 match bifrost::client::submit::submit_task(
                     bridge,
                     cmd_str,
@@ -147,9 +148,11 @@ fn handle_client_mode(command: ClientCommand) {
                     working_dir,
                 ) {
                     Ok(task_id) => {
+                        let submit_elapsed = submit_start.elapsed();
                         println!("Task submitted successfully");
                         println!("  Task ID: {}", task_id);
                         println!("  Status: Pending");
+                        println!("  Submit time: {:.2}ms", submit_elapsed.as_secs_f64() * 1000.0);
                     }
                     Err(e) => eprintln!("Failed to submit task: {}", e),
                 }

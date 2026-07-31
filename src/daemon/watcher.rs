@@ -18,6 +18,9 @@ pub struct FileWatcher {
     event_receiver: Receiver<Result<Event, notify::Error>>,
     commands_dir: PathBuf,
     debounce_threshold: Duration,
+    /// Last processed file path (for per-path debounce)
+    last_path: Option<PathBuf>,
+    /// When the last event was processed
     last_event_time: Option<Instant>,
 }
 
@@ -48,6 +51,7 @@ impl FileWatcher {
             event_receiver: rx,
             commands_dir,
             debounce_threshold: Duration::from_millis(500),
+            last_path: None,
             last_event_time: None,
         };
 
@@ -72,21 +76,24 @@ impl FileWatcher {
                         Ok(event) => {
                             // Filter for file creation events
                             if self.is_new_json_file(&event) {
-                                // Apply debounce logic
-                                let now = Instant::now();
-
-                                if let Some(last_time) = self.last_event_time {
-                                    if now.duration_since(last_time) < self.debounce_threshold {
-                                        // Skip this event (within debounce window)
+                                // event.paths may contain multiple entries (e.g. the
+                                // temp file + renamed target from atomic_write), so
+                                // iterate to find the actual .json task file.
+                                for path in event.paths.iter() {
+                                    if !path.extension().map(|ext| ext == "json").unwrap_or(false) {
                                         continue;
                                     }
-                                }
+                                    // Per-path debounce: skip only if the SAME file was
+                                    // reported within the debounce window. Different files
+                                    // are never suppressed, so rapid task submissions
+                                    // (e.g. batch jobs) are all picked up.
+                                    let now = Instant::now();
+                                    let is_duplicate = matches!(&self.last_path, Some(last) if *last == *path)
+                                        && self.last_event_time.map_or(false, |t| now.duration_since(t) < self.debounce_threshold);
 
-                                self.last_event_time = Some(now);
-
-                                // Extract the new file path
-                                if let Some(path) = event.paths.first() {
-                                    if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+                                    if !is_duplicate {
+                                        self.last_path = Some(path.clone());
+                                        self.last_event_time = Some(now);
                                         return Ok(Some(path.clone()));
                                     }
                                 }
@@ -163,18 +170,22 @@ impl AsyncFileWatcher {
             // Run watcher in blocking context
             tokio::task::spawn_blocking(move || {
                 if let Ok(mut watcher) = FileWatcher::new(commands_dir) {
-                    let mut last_time = None;
+                    let mut last_path: Option<PathBuf> = None;
+                    let mut last_time: Option<Instant> = None;
 
                     loop {
                         match watcher.wait_for_new_task() {
                             Ok(Some(path)) => {
-                                // Apply additional debounce
+                                // Per-path debounce (second layer): suppress only repeat
+                                // events for the same file within the window.
                                 let now = Instant::now();
-                                if let Some(last) = last_time {
-                                    if now.duration_since(last) < debounce {
-                                        continue;
-                                    }
+                                let is_duplicate = matches!(&last_path, Some(last) if *last == path)
+                                    && last_time.map_or(false, |t| now.duration_since(t) < debounce);
+
+                                if is_duplicate {
+                                    continue;
                                 }
+                                last_path = Some(path.clone());
                                 last_time = Some(now);
 
                                 // Send path through channel
@@ -217,7 +228,7 @@ impl AsyncFileWatcher {
 ///     let log_dir = PathBuf::from("/shared/logs");
 ///     let gpu_pool = vec![0, 1, 2, 3]; // 4 GPUs
 ///
-///     run_with_gpu_processor(commands_dir, log_dir, gpu_pool, false).await;
+///     run_with_gpu_processor(commands_dir, log_dir, gpu_pool, false, None).await;
 /// }
 /// ```
 pub async fn run_with_gpu_processor(

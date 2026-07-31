@@ -151,6 +151,7 @@ mod tests {
             },
             start_time: Utc::now(),
             end_time: Utc::now(),
+            duration_ms: 0,
             retries_used: 0,
             artifacts: vec!["report.json".to_string()],
             error_message: None,

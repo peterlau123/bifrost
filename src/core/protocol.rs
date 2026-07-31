@@ -89,9 +89,11 @@ impl Protocol {
             .map_err(BifrostError::IoError)?
             .filter_map(|e| e.ok())
             .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains(&task_id.to_string())
+                // Only match .json task files, never .lock sidecars
+                e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+                    && e.file_name()
+                        .to_string_lossy()
+                        .contains(&task_id.to_string())
             })
             .collect();
 
@@ -147,8 +149,13 @@ impl Protocol {
             return Err(BifrostError::TaskNotFound(*task_id));
         }
 
-        // Delete the matching file
-        fs::remove_file(entries[0].path()).map_err(BifrostError::IoError)?;
+        // Delete ALL files matching the task id (.json command + .lock sidecar).
+        // The .lock file shares the same uuid in its name, so a naive
+        // entries[0] deletion could remove the lock while leaving the task
+        // JSON behind (observed under rapid submission).
+        for entry in &entries {
+            fs::remove_file(entry.path()).map_err(BifrostError::IoError)?;
+        }
 
         Ok(())
     }
@@ -211,7 +218,7 @@ impl Protocol {
             return Ok(TaskStatusResponse {
                 task_id: *task_id,
                 status: result.status.clone(),
-                message: Some(format!("Task completed in {}s", result.duration_secs())),
+                message: Some(format!("Task completed in {}ms", result.duration_ms())),
             });
         }
 

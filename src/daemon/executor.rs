@@ -60,6 +60,7 @@ impl Executor {
                     output,
                     start_time,
                     end_time,
+                    duration_ms: (end_time - start_time).num_milliseconds(),
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: None,
@@ -81,6 +82,7 @@ impl Executor {
                     output,
                     start_time,
                     end_time,
+                    duration_ms: (end_time - start_time).num_milliseconds(),
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: Some(error_msg),
@@ -102,6 +104,7 @@ impl Executor {
                     output,
                     start_time,
                     end_time,
+                    duration_ms: (end_time - start_time).num_milliseconds(),
                     retries_used: 0,
                     artifacts: Vec::new(),
                     error_message: Some(error_msg),
@@ -223,7 +226,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let log_root = temp_dir.path().join("logs");
         let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
-        let task = Task::new("exit 1".to_string(), crate::core::models::TaskType::Shell)
+        let task = Task::new("sh -c 'exit 1'".to_string(), crate::core::models::TaskType::Shell)
             .with_timeout(5);
 
         let result = executor.execute(&task).await;
@@ -272,7 +275,7 @@ mod tests {
         let log_root = temp_dir.path().join("logs");
         let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
         let task = Task::new(
-            "echo $TEST_VAR".to_string(), crate::core::models::TaskType::Shell,
+            "sh -c 'echo $TEST_VAR'".to_string(), crate::core::models::TaskType::Shell,
         ).with_timeout(5)
          .with_env_var("TEST_VAR".to_string(), "test_value".to_string());
 
