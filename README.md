@@ -6,6 +6,10 @@
 ![Tests](https://img.shields.io/badge/Tests-73%20passed-brightgreen.svg)
 ![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
 
+<p align="center">
+  <img src="assets/bifrost-banner.svg" alt="Bifrost - the rainbow bridge connecting online client and offline daemon" width="720">
+</p>
+
 Bifrost is a Rust-based framework for executing commands on offline/air-gapped machines through shared storage communication. It enables networked client machines to submit tasks and offline daemon machines to execute them, with results synchronized via portable storage.
 
 ## 目录
