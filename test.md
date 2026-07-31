@@ -28,6 +28,15 @@
   - [3.3 测试结果](#33-测试结果)
   - [3.4 发现并修复的问题](#34-发现并修复的问题)
   - [3.5 测试用例归档（供端到端测试复用）](#35-测试用例归档供端到端测试复用)
+- [第四部分：并发与多卡并行测试](#第四部分并发与多卡并行测试)
+  - [4.1 测试目的](#41-测试目的)
+  - [4.2 测试结果](#42-测试结果)
+  - [4.3 结论](#43-结论)
+- [第五部分：Server 健壮性审查与加固](#第五部分server-健壮性审查与加固)
+  - [5.1 审查结论：1 个真 bug + 4 个健壮性缺口](#51-审查结论1-个真-bug--4-个健壮性缺口)
+  - [5.2 修复方案](#52-修复方案)
+  - [5.3 验证结果（test_robustness.py，S1-S4 全过）](#53-验证结果test_robustnesspys1-s4-全过)
+  - [5.4 结论](#54-结论)
 - [附录：所有测试中发现并修复的 Bug 汇总](#附录所有测试中发现并修复的-bug-汇总)
 
 ---
@@ -294,6 +303,46 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 
 ---
 
+# 第五部分：Server 健壮性审查与加固
+
+> 时间：2026-07-31 18:30 (CST, UTC+8)
+> 审查对象：`src/daemon/runner.rs`、`watcher.rs`、`executor.rs`
+> 验证脚本：`/gpfs/gcsp/liuxin/bifrost_test/test_robustness.py`
+> 修复 commit：`21269c5`
+
+## 5.1 审查结论：1 个真 bug + 4 个健壮性缺口
+
+| # | 严重度 | 问题 | 后果 |
+|---|--------|------|------|
+| Bug E | 🔴 真 bug | stdout 截断 `&s[..1000]` UTF-8 边界 panic | 中文输出超 1000 字节时任务结果丢失 |
+| 缺口 1 | 🔴 严重 | server 启动不消费存量任务 | 重启/提前提交的任务**永久丢失** |
+| 缺口 2 | 🔴 严重 | watcher 出错 break 循环 | server **变僵尸**（活着但不消费） |
+| 缺口 3 | 🟡 中 | 坏 JSON 静默丢弃 | client **永远 Pending** |
+| 缺口 4 | 🟡 中 | executor 错误不写结果 | client **永远 Pending** |
+
+## 5.2 修复方案
+
+1. **Bug E**：`truncate_utf8()` 按字符边界安全截断（3 个新单测）
+2. **缺口 1**：启动时 catch-up 扫描 + **每 5s 兜底扫描** commands/（inotify 快路径之外的第二通道，watcher 死了也能自愈）
+3. **缺口 2**：watcher Err 时 continue 而非 break；init 失败每 2s 重试；主体包进 `spawn_blocking`（实测发现 thread::sleep 在 async worker 上会 panic，一并修复）
+4. **缺口 3/4**：3 次读/解析重试 + 失败写 Failed 结果 → client 必得终态
+5. **去重**：`commands/{name}.processing` 领取标记（`create_new` 原子）——inotify 与 scan 双通道不会重复执行同一任务
+
+## 5.3 验证结果（test_robustness.py，S1-S4 全过）
+
+| 场景 | 验证点 | 结果 |
+|------|--------|------|
+| S1 重启恢复 | server 启动前提交的任务被执行（旧版永久丢失） | ✅ |
+| S2 快路径 | 正常运行期 inotify 毫秒级消费 | ✅ |
+| S3 坏 JSON | 不可解析任务写 Failed 结果，非永远 Pending | ✅ |
+| S4 防重 | 同 task_id 重复提交只执行一次 | ✅ |
+
+## 5.4 结论
+
+server 端现在具备**自愈能力**：watcher 失效 → 5s 兜底扫描接管；重启 → 存量任务补执行；解析/执行失败 → 必有终态结果。73 项单测全过。
+
+---
+
 # 第四部分：并发与多卡并行测试
 
 > 时间：2026-07-31 17:50 (CST, UTC+8)
@@ -360,5 +409,6 @@ $ cat results/<task_id>_result.json   # ✅ result JSON 含 duration_ms 字段
 | 5 | **server 串行执行阻塞** | `runner.rs` | `max_concurrent` 配置存在但从未生效，长任务阻塞后续所有任务 | `07c9511` |
 | 6 | （测试脚本）pgrep 假阴性 | `test_timeout.py` | `pgrep -f "^sleep$"` 匹配不到带参数进程 `sleep 30`，漏报泄漏 | `07c9511` |
 | 7 | **launcher 忽略 wd/env** | `launcher.rs` | `--job` 任务的 working_dir / env_vars 被静默忽略，任务在错误环境下执行 | `ea4fea5` |
+| 8 | **stdout 截断 UTF-8 panic** | `executor.rs` | `&s[..1000]` 切片落在多字节字符中间时 panic（中文超长输出），任务结果丢失 | `21269c5` |
 
-> 所有修复均已通过 `cargo test`（59 项）与端到端实测验证，并推送到 `test/deploy` 分支。
+> 所有修复均已通过 `cargo test`（73 项）与端到端实测验证，并推送到 `test/deploy` 分支。
