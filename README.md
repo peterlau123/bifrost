@@ -5,6 +5,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
 ![Tests](https://img.shields.io/badge/Tests-73%20passed-brightgreen.svg)
 ![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
+[![CI](https://img.shields.io/github/actions/workflow/status/peterlau123/bifrost/ci.yml?branch=test%2Fdeploy)](https://github.com/peterlau123/bifrost/actions)
 
 <p align="center">
   <img src="assets/bifrost-banner.svg" alt="Bifrost - the rainbow bridge connecting online client and offline daemon" width="720">
