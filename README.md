@@ -1,4 +1,10 @@
-# Bifrost - Offline Machine Command Execution Framework
+# 🌉 Bifrost - Offline Machine Command Execution Framework
+
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Rust Edition](https://img.shields.io/badge/Rust-2021%20Edition-dea584.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
+![Tests](https://img.shields.io/badge/Tests-73%20passed-brightgreen.svg)
+![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
 
 Bifrost is a Rust-based framework for executing commands on offline/air-gapped machines through shared storage communication. It enables networked client machines to submit tasks and offline daemon machines to execute them, with results synchronized via portable storage.
 
@@ -54,7 +60,7 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
 
 ---
 
-## Overview
+## 🌉 Overview
 
 ### Problem Solved
 
@@ -78,7 +84,7 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 - **systemd integration** - Production-ready server deployment
 - **Health monitoring** - Heartbeat-based server health checks
 
-## Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TB
@@ -114,7 +120,7 @@ flowchart TB
     DB -->|"index history"| CLI
 ```
 
-## Workflow
+## 🔄 Workflow
 
 ```mermaid
 sequenceDiagram
@@ -134,7 +140,7 @@ sequenceDiagram
     C->>C: Parse result, display to user
 ```
 
-## Directory Structure
+## 📁 Directory Structure
 
 ```
 /shared/storage/
@@ -190,7 +196,7 @@ env_vars:
   PYTEST_JSON_REPORT_FILE: "/work/report.json"
 ```
 
-## Installation
+## 🛠️ Installation
 
 ### Build
 
@@ -344,7 +350,7 @@ bifrost client status <TASK_ID>
 # 预期输出应为 "Completed"，消息包含 "bifrost deployment ok"
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 ### Settings File (`~/.bifrost/settings.json`)
 
@@ -366,7 +372,7 @@ bifrost server --init  # generate default settings
 | client.* | Yes | -- | Poll interval, heartbeat timeout |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
-## Usage
+## 🚀 Usage
 
 ### Submit Tasks
 
@@ -463,7 +469,7 @@ pip install pytest pytest-json-report pytest-cov
 
 ---
 
-## MCP Server (Agent Integration)
+## 🤖 MCP Server (Agent Integration)
 
 Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes task submission as structured tools over stdio. **Any MCP-capable agent** — Hermes, OpenCode, Claude Code, Cline, Cursor, Codex, or any generic coding agent — can connect and submit tasks to the offline daemon without writing file-exchange glue code.
 
@@ -624,7 +630,7 @@ Priority ranges from 0 to 255:
 | 51-100 | Low | Background tasks, cleanup |
 | 101-255 | Lowest | Maintenance, logs |
 
-## Security Features
+## 🛡️ Security Features
 
 ### Command Injection Prevention
 
@@ -666,7 +672,7 @@ if !canonical.starts_with(&artifacts_dir) {
 }
 ```
 
-## Development
+## 🧪 Development
 
 ### Running Tests
 
@@ -717,7 +723,7 @@ bifrost/
 └── docs/               # Documentation
 ```
 
-## Documentation
+## 📚 Documentation
 
 - [Adapter Guide](docs/ADAPTER_GUIDE.md) - Custom task adapters
 - [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
@@ -725,7 +731,7 @@ bifrost/
 - [MCP Integration Guide](MCP.md) - Universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
 - [Test Report](test.md) - Performance & timeout & job workflow test reports
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 ### Daemon Not Detecting Tasks
 
@@ -752,11 +758,11 @@ bifrost/
 2. Check working directory
 3. Verify artifact_name doesn't contain path separators
 
-## License
+## 📄 License
 
 MIT License - see [LICENSE](LICENSE) file.
 
-## Status
+## 📌 Status
 
 Bifrost v0.1.0 is released. Core functionality is stable and tested. Future enhancements:
 
