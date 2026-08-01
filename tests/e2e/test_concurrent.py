@@ -18,6 +18,7 @@ cfg = {"shared_storage": STORAGE,
        "client": {"poll_interval": "2s", "heartbeat_timeout": "180s"},
        "daemon": {"task_timeout": "300s", "heartbeat_interval": "2s", "max_concurrent": 10}}
 open(os.path.join(STORAGE, "settings.json"), "w").write(json.dumps(cfg))
+os.makedirs(os.path.expanduser("~/.bifrost"), exist_ok=True)
 open(os.path.expanduser("~/.bifrost/settings.json"), "w").write(json.dumps(cfg))
 
 # 2. 启动 server

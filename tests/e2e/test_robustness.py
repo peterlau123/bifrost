@@ -20,6 +20,7 @@ open(os.path.join(STORAGE, "settings.json"), "w").write(json.dumps(cfg))
 
 # 统一 settings (client 也用这个)
 os.makedirs(os.path.expanduser("~/.bifrost"), exist_ok=True)
+os.makedirs(os.path.expanduser("~/.bifrost"), exist_ok=True)
 open(os.path.expanduser("~/.bifrost/settings.json"), "w").write(json.dumps(cfg))
 
 def make_task_file(command, task_id=None, valid=True):

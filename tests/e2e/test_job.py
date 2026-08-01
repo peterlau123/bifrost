@@ -37,6 +37,7 @@ def setup():
            "daemon": {"task_timeout": "300s", "heartbeat_interval": "60s", "max_concurrent": 10}}
     with open(os.path.join(STORAGE, "settings.json"), "w") as fh:
         json.dump(cfg, fh)
+    os.makedirs(os.path.dirname(CLIENT_SETTINGS), exist_ok=True)
     with open(CLIENT_SETTINGS, "w") as fh:
         json.dump(cfg, fh)
     if os.path.exists(ORDER_FILE):
