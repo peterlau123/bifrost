@@ -31,7 +31,14 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Unit tests
-        run: cargo test
+        run: cargo test -- --nocapture > /tmp/unit_tests.log 2>&1
+
+      - name: Upload test log (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-tests-log
+          path: /tmp/unit_tests.log
 
   # 2. 端到端测试 (release 构建 + 全部 e2e 场景)
   e2e:
