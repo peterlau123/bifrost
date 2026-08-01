@@ -209,7 +209,9 @@ mod tests {
 
         let now = SystemTime::now();
         let cands = scan_finished(tmp.path(), 7, now).unwrap();
-        let ids: Vec<&str> = cands.iter().map(|c| c.task_id.as_str()).collect();
+        let mut ids: Vec<&str> = cands.iter().map(|c| c.task_id.as_str()).collect();
+        // read_dir 不保证遍历顺序 (GPFS/tmpfs 结果不同), 断言前排序
+        ids.sort_unstable();
         assert_eq!(
             ids,
             vec![
