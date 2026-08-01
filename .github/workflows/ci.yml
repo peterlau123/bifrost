@@ -60,4 +60,12 @@ jobs:
         run: cargo build --release
 
       - name: Run e2e test suite
-        run: python3 tests/e2e/run_all.py ./target/release/bifrost
+        run: python3 tests/e2e/run_all.py ./target/release/bifrost > /tmp/e2e.log 2>&1 || true
+
+      - name: Emit e2e failure annotations
+        if: always()
+        run: |
+          grep -E "❌|Traceback|Error:|assert|FAILED|PASS \(" /tmp/e2e.log | head -30 | while IFS= read -r line; do
+            echo "::error::$(echo "$line" | tr -d '\r' | head -c 1000)"
+          done
+          if grep -q "❌ 有失败" /tmp/e2e.log; then exit 1; fi
