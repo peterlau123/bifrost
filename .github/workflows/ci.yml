@@ -36,8 +36,8 @@ jobs:
       - name: Emit failure annotations (visible without login)
         if: always()
         run: |
-          grep -E "FAILED|panicked at|failures:$|test result:" /tmp/unit_tests.log | head -30 | while IFS= read -r line; do
-            echo "::error::$(echo "$line" | tr -d '\r' | head -c 300)"
+          grep -E "FAILED|panicked at|failures:$|test result:|left:|right:" /tmp/unit_tests.log | head -40 | while IFS= read -r line; do
+            echo "::error::$(echo "$line" | tr -d '\r' | head -c 1500)"
           done
           # 保留正确退出码
           if grep -q "test result: FAILED" /tmp/unit_tests.log; then exit 1; fi
