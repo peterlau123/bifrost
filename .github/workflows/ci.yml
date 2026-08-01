@@ -31,16 +31,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Unit tests
-        run: cargo test -- --nocapture > /tmp/unit_tests.log 2>&1 || true
-
-      - name: Emit failure annotations (visible without login)
-        if: always()
-        run: |
-          grep -E "FAILED|panicked at|failures:$|test result:|left:|right:" /tmp/unit_tests.log | head -40 | while IFS= read -r line; do
-            echo "::error::$(echo "$line" | tr -d '\r' | head -c 1500)"
-          done
-          # 保留正确退出码
-          if grep -q "test result: FAILED" /tmp/unit_tests.log; then exit 1; fi
+        run: cargo test
 
   # 2. 端到端测试 (release 构建 + 全部 e2e 场景)
   e2e:
@@ -60,12 +51,4 @@ jobs:
         run: cargo build --release
 
       - name: Run e2e test suite
-        run: python3 tests/e2e/run_all.py ./target/release/bifrost > /tmp/e2e.log 2>&1 || true
-
-      - name: Emit e2e failure annotations
-        if: always()
-        run: |
-          grep -E "❌|Traceback|Error:|assert|FAILED|PASS \(" /tmp/e2e.log | head -30 | while IFS= read -r line; do
-            echo "::error::$(echo "$line" | tr -d '\r' | head -c 1000)"
-          done
-          if grep -q "❌ 有失败" /tmp/e2e.log; then exit 1; fi
+        run: python3 tests/e2e/run_all.py ./target/release/bifrost
