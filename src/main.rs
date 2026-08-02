@@ -164,7 +164,20 @@ fn handle_client_mode(command: ClientCommand) {
     use bifrost::core::protocol::Protocol;
     use bifrost::core::settings;
 
-    let settings = settings::load();
+    // Same config resolution as MCP server: BIFROST_CONFIG env > ~/.bifrost/settings.json
+    let settings = match std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from) {
+        Some(cfg_path) => match std::fs::read_to_string(&cfg_path) {
+            Ok(c) => match serde_json::from_str::<settings::BifrostSettings>(&c) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Warning: invalid BIFROST_CONFIG ({})", e);
+                    settings::load()
+                }
+            },
+            Err(_) => settings::load(),
+        },
+        None => settings::load(),
+    };
     let shared_storage = settings.shared_storage.clone();
 
     match command {
