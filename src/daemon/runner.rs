@@ -37,6 +37,15 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     if !cd.exists() {
         std::fs::create_dir_all(&cd).map_err(|e| format!("mkdir: {}", e))?;
     }
+    // Auto-create daemon working_dir if configured but doesn't exist
+    if let Some(ref wd) = s.daemon.working_dir {
+        if !wd.exists() {
+            std::fs::create_dir_all(wd).map_err(|e| format!("mkdir working_dir: {}", e))?;
+            println!("Created working_dir: {}", wd.display());
+        }
+        // Set as process cwd so tasks without explicit working_dir use this
+        std::env::set_current_dir(wd).map_err(|e| format!("set_current_dir: {}", e))?;
+    }
     let p = Arc::new(Protocol::new(ss.clone()).map_err(|e| format!("p: {}", e))?);
     let to = s.daemon.task_timeout.unwrap_or(Duration::from_secs(300));
     let ex = Executor::new(ld, to).map_err(|e| format!("e: {}", e))?;

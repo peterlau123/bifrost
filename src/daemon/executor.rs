@@ -2,6 +2,7 @@
 // Handles timeout, stdout/stderr capture, and log file writing
 
 use chrono::Utc;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
@@ -126,7 +127,11 @@ impl Executor {
             cmd.args(&args[1..]);
         }
 
-        cmd.current_dir(&task.working_dir);
+        // Only set current_dir if task specifies a non-trivial path.
+        // Default ("." or empty) means inherit daemon's cwd (set via set_current_dir).
+        if !task.working_dir.as_os_str().is_empty() && task.working_dir != PathBuf::from(".") {
+            cmd.current_dir(&task.working_dir);
+        }
         for (key, value) in &task.env_vars {
             cmd.env(key, value);
         }

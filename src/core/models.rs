@@ -138,7 +138,7 @@ impl Task {
             timeout: 300,
             retry_count: 3,
             env_vars: HashMap::new(),
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            working_dir: PathBuf::from("."),
             artifacts_expected: Vec::new(),
             metadata: HashMap::new(),
             batch_id: None,

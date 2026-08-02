@@ -352,22 +352,26 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
     println!("  Shared storage: {}", settings.shared_storage.display());
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let s = shutdown.clone();
-
-    ctrlc::set_handler(move || {
-        eprintln!("\nShutdown requested...");
-        s.store(true, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl+C handler");
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
     rt.block_on(async {
+        // tokio::signal::ctrl_c() integrates with tokio's select! for clean shutdown
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            eprintln!("\nShutdown requested...");
+            sd.store(true, Ordering::SeqCst);
+        });
+
         if let Err(e) = run_server(settings, shutdown).await {
             eprintln!("Server error: {}", e);
         }
     });
 
     println!("Server exited.");
+    // Force exit: spawned heartbeat/task futures may still be alive
+    // and block runtime drop. We're done — just leave.
+    std::process::exit(0);
 }
 
 #[cfg(test)]
