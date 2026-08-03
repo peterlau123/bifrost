@@ -105,6 +105,12 @@ do_status() {
         echo "bifrost server: STOPPED"
     fi
     echo "log: $LOG_FILE"
+    # 回写到共享存储 (供本机 bifrost-ctl.sh status 读取)
+    if [[ -n "$srv_pid" ]]; then
+        echo "{\"supervisor_pid\": $sup_pid, \"server_pid\": $srv_pid, \"server\": \"running\", \"time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "${STATE_DIR}/status.json"
+    else
+        echo "{\"supervisor_pid\": $sup_pid, \"server_pid\": null, \"server\": \"stopped\", \"time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "${STATE_DIR}/status.json"
+    fi
 }
 
 # ── 信号处理 ────────────────────────────────────────────────────────────────
@@ -154,14 +160,27 @@ case "${1:-}" in
         fi
         ;;
     attach)
-        # 前台常驻循环: 保证 server 存活 (崩溃自动拉起)
+        # 前台常驻循环: 保证 server 存活 (崩溃自动拉起) + 轮询共享存储控制文件
         log "== supervisor attach (pid=$$) =="
         start_server
+        CONTROL_FILE="${STATE_DIR}/control.json"
+        rm -f "$CONTROL_FILE"
         while true; do
-            sleep 5
+            sleep 2
+            # 1. server 崩溃自动拉起
             if ! kill -0 "$(server_pid 2>/dev/null)" 2>/dev/null; then
                 log "server died, restarting..."
                 start_server
+            fi
+            # 2. 轮询共享存储控制文件 (跨机器控制: 本机写 control.json)
+            if [[ -f "$CONTROL_FILE" ]]; then
+                action=$(python3 -c "import json;print(json.load(open('$CONTROL_FILE')).get('action',''))" 2>/dev/null)
+                case "$action" in
+                    restart) log "control: restart"; do_restart ;;
+                    stop)    log "control: stop"; do_stop ;;
+                    status)  do_status ;;
+                esac
+                rm -f "$CONTROL_FILE"
             fi
         done
         ;;
