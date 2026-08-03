@@ -131,7 +131,7 @@ bifrost/
 ├── config/                 # 配置模板
 ├── examples/               # YAML Job 示例 (pytest, benchmark, smoke)
 ├── scripts/                # 部署脚本
-├── docs/                   # ADAPTER_GUIDE.md, DEPLOYMENT.md
+├── docs/                   # adapter-guide.md, deployment.md, ops-practice.md
 └── adapters/               # pytest_template.yaml
 ```
 

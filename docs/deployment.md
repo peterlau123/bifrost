@@ -454,5 +454,4 @@ bifrost-health-check.sh heartbeat
 ## See Also
 
 - [README.md](../README.md) - Project overview
-- [Adapter Guide](ADAPTER_GUIDE.md) - Task adapters
-- [Architecture Guide](ARCHITECTURE.md) - System architecture
+- [Adapter Guide](adapter-guide.md) - Task adapters

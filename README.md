@@ -873,9 +873,8 @@ bifrost/
 
 ## 📚 Documentation
 
-- [Adapter Guide](docs/ADAPTER_GUIDE.md) - Custom task adapters
-- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
-- [Architecture Guide](docs/ARCHITECTURE.md) - Technical architecture
+- [Adapter Guide](docs/adapter-guide.md) - Custom task adapters
+- [Deployment Guide](docs/deployment.md) - Production deployment
 - [MCP Integration Guide](MCP.md) - Universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
 - [Test Report](test.md) - Performance & timeout & job workflow test reports
 
