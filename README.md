@@ -34,6 +34,7 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
   - [Daemon Configuration](#daemon-configuration)
 - [Usage](#usage)
 - [部署全景与发布更新流程](#-部署全景与发布更新流程)
+- [Supervisor 守护进程部署](#-supervisor-守护进程部署)
 - [运维实践（APMM UT 场景）](docs/ops-practice.md)
   - [Submit Tasks](#submit-tasks)
   - [Check Status](#check-status)
@@ -531,6 +532,77 @@ ls -lh target/release/bifrost
 ```
 
 > 详细运维记录见 [docs/ops-practice.md](docs/ops-practice.md)。
+
+---
+
+## 🛡️ Supervisor 守护进程部署
+
+Supervisor 是跑在**离线机（Daemon 端）**的守护脚本，管理 bifrost server 生命周期：
+崩溃自愈、信号控制、跨机器控制（通过 GPFS 控制文件）。推荐生产使用，替代手动启停。
+
+### 脚本一览
+
+| 脚本 | 位置 | 用途 |
+|---|---|---|
+| `bifrost-supervisor.sh` | 离线机（H20）| 守护进程：server 生命周期管理 |
+| `bifrost-ctl.sh` | 联网机（Client 端）| 跨机器控制（restart/stop/status）|
+| `install-supervisor-cron.sh` | 离线机（H20）| crontab @reboot 开机自启 |
+| `restart_server.sh` | 离线机（H20）| 轻量版一键重启（无 supervisor 时用）|
+
+### 部署（离线机 H20，一次性）
+
+```bash
+cd /gpfs/gcsp/liuxin/bifrost
+
+# 1. 启动 supervisor（后台常驻，nohup，SSH 断开不影响）
+./bifrost-supervisor.sh start
+#   输出: supervisor pid: <PID>  (log: .../server.log)
+
+# 2. 可选: 开机自启（系统重启后自动拉起）
+./install-supervisor-cron.sh
+
+# 3. 验证
+./bifrost-supervisor.sh status
+#    supervisor:  running (pid=<PID>)
+#    bifrost server: running (pid=<PID>)
+```
+
+### 跨机器控制（联网机，无需 SSH）
+
+```bash
+# 通过 GPFS control.json 给 H20 supervisor 发指令（2s 内生效）
+./bifrost-ctl.sh restart    # 重启 H20 daemon（编译新 binary 后必做）
+./bifrost-ctl.sh status     # 查询状态（supervisor 回写 status.json）
+./bifrost-ctl.sh stop       # 关闭 server + supervisor
+```
+
+### 本地信号控制（H20 上，可选）
+
+```bash
+kill -HUP  <supervisor_pid>   # 重启 bifrost server
+kill -TERM <supervisor_pid>   # 关闭 server + supervisor
+kill -USR1 <supervisor_pid>   # 打印状态
+```
+
+### 健壮性特性
+
+| 特性 | 机制 |
+|---|---|
+| 长期常驻 | nohup 后台，SSH 断开不影响 |
+| 崩溃自愈 | 2s 健康检查 + 指数退避重试（上限 60s）|
+| 单实例锁 | flock 防重复启动 |
+| 日志轮转 | 5MB 自动归档，保留 3 份 |
+| 控制容错 | 坏 JSON/未知指令忽略 |
+| 优雅停止 | TERM 等 5s，超时 SIGKILL |
+| **孤儿进程防护** | setsid 启动 daemon（独立进程组）+ 进程组 kill + 启动前清理残留任务 |
+
+### 卸载
+
+```bash
+./bifrost-supervisor.sh stop
+# 如安装了自启, 移除 crontab 行:
+# crontab -e 删除含 bifrost-supervisor 的行
+```
 
 ---
 
