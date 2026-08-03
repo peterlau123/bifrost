@@ -106,7 +106,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             Some(path) = rx.recv() => {
                 spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path);
             }
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+            _ = tokio::time::sleep(FALLBACK_SCAN_INTERVAL) => {
                 // Fallback scan: self-healing against watcher death and
                 // missed events. Cheap (readdir) and runs at most once
                 // per FALLBACK_SCAN_INTERVAL.
