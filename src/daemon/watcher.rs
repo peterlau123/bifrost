@@ -128,10 +128,7 @@ impl FileWatcher {
     fn is_new_json_file(&self, event: &Event) -> bool {
         // Match Create/Modify events (rename targets arrive as Modify(Name(To))
         // on GPFS inotify, which the broad Modify(_) arm already covers).
-        let is_file_event = match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) => true,
-            _ => false,
-        };
+        let is_file_event = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
         if !is_file_event {
             return false;
         }

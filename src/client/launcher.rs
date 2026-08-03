@@ -9,7 +9,11 @@ use uuid::Uuid;
 
 const POLL: Duration = Duration::from_secs(2);
 
-pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition, parallel: bool) -> BifrostResult<JobResult> {
+pub fn launch_job(
+    bridge: &dyn Bridge,
+    job: JobDefinition,
+    parallel: bool,
+) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
     eprintln!(
         "Job '{}' ({} tasks, {})",
