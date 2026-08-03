@@ -126,16 +126,20 @@ impl FileWatcher {
 
     /// Check if event represents a new JSON file creation
     fn is_new_json_file(&self, event: &Event) -> bool {
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) => {
-                // Check if it's in commands directory and is a JSON file
-                event.paths.iter().any(|path| {
-                    path.starts_with(&self.commands_dir)
-                        && path.extension().map(|ext| ext == "json").unwrap_or(false)
-                })
-            }
+        // Match Create/Modify events (rename targets arrive as Modify(Name(To))
+        // on GPFS inotify, which the broad Modify(_) arm already covers).
+        let is_file_event = match event.kind {
+            EventKind::Create(_) | EventKind::Modify(_) => true,
             _ => false,
+        };
+        if !is_file_event {
+            return false;
         }
+        // Check if it's in commands directory and is a JSON file
+        event.paths.iter().any(|path| {
+            path.starts_with(&self.commands_dir)
+                && path.extension().map(|ext| ext == "json").unwrap_or(false)
+        })
     }
 
     /// Stop watching

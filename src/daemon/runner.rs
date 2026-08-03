@@ -24,8 +24,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Fallback scan interval: catches tasks inotify missed (watcher death,
-/// event overflow, pre-server submissions).
-const FALLBACK_SCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// event overflow, pre-server submissions). GPFS inotify is unreliable for
+/// rename events, so keep this tight (100ms) as a safety net.
+const FALLBACK_SCAN_INTERVAL: Duration = Duration::from_millis(100);
 /// Read/parse retries with 200ms backoff.
 const MAX_READ_RETRIES: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(200);
