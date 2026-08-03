@@ -85,20 +85,56 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 - **Unified settings** - ~/.bifrost/settings.json, init via CLI
 - **Air-gapped operation** - Complete separation between client and server
 - **Security hardened** - Command injection prevention, path traversal protection
-- **High performance** - notify-based file watching (500ms latency), tokio async execution
+- **High performance** - inotify file watching + fallback scan (100ms), tokio async execution, e2e overhead ~4-6%
 - **Multiple task types** - Shell commands, pytest tests, custom adapters
+- **Parallel jobs** - `--parallel` submits all tasks concurrently (daemon max_concurrent)
 - **Priority scheduling** - Tasks sorted by priority (0-255)
 - **Timeout management** - Configurable timeouts with automatic retry
 - **systemd integration** - Production-ready server deployment
+- **Supervisor daemon** - 崩溃自愈、信号控制、跨机器控制（bifrost-supervisor.sh）
+- **MCP Server** - 内置 MCP，任何 MCP Agent (Hermes/OpenCode/Claude) 直接接入
 - **Health monitoring** - Heartbeat-based server health checks
 
 ## 🏗️ Architecture
+
+### 简略图（四组件交互）
+
+```mermaid
+flowchart LR
+    subgraph Agent["Agent（AI Agent：Hermes/OpenCode/Claude…）"]
+        A1["通过 MCP 提交任务<br/>读取执行结果"]
+    end
+
+    subgraph Client["Client（联网机）"]
+        C1["bifrost CLI / MCP Server<br/>序列化任务写入共享存储<br/>从共享存储取执行结果"]
+    end
+
+    subgraph SS["共享存储<br/>(GPFS 文件交换)"]
+        S1["任务实体 / 执行结果<br/>/ 控制指令"]
+    end
+
+    subgraph Server["Server（离线机执行程序）"]
+        R1["从共享存储反序列化任务实体<br/>执行命令<br/>将结果写回共享存储"]
+    end
+
+    subgraph Supervisor["Supervisor（守护进程）"]
+        V1["监控和管理<br/>Server 生命周期<br/>(崩溃自愈/重启/关闭)"]
+    end
+
+    Agent -->|"MCP 提交/查询"| Client
+    Client <-->|"读写"| SS
+    SS <-->|"反序列化执行/写回"| Server
+    Supervisor -->|"spawn / monitor / control"| Server
+```
+
+### 详细图（含共享存储与内部组件）
 
 ```mermaid
 flowchart TB
     subgraph Client["Client Machine (Online)"]
         CLI["bifrost CLI"]
-        DB["SQLite Index<br/>(TODO)"]
+        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>Agent 集成: Hermes/OpenCode/..."]
+        CTL["bifrost-ctl.sh<br/>(跨机器控制)"]
     end
     
     subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
@@ -106,16 +142,19 @@ flowchart TB
         RES["results/<br/>Result JSON files"]
         STA["status/<br/>Progress updates"]
         ART["artifacts/<br/>Execution outputs"]
-        HB["heartbeat.json<br/>(60s interval)"]
+        HB["heartbeat.json<br/>(daemon 心跳)"]
+        CTRL["control.json<br/>(supervisor 控制指令)"]
     end
     
     subgraph Daemon["Daemon Machine (Offline)"]
-        WT["File Watcher<br/>(notify, 500ms)"]
+        SUP["Supervisor<br/>(bifrost-supervisor.sh)<br/>崩溃自愈 + 信号控制"]
+        WT["File Watcher<br/>(inotify + fallback 100ms)"]
         EX["Executor<br/>(tokio async)"]
         LOG["Log Manager"]
     end
     
     CLI -->|"submit task"| CMD
+    MCP -->|"submit task"| CMD
     CMD -->|"detect new file"| WT
     WT -->|"execute"| EX
     EX -->|"write logs"| LOG
@@ -124,8 +163,12 @@ flowchart TB
     EX -->|"store artifacts"| ART
     EX -->|"heartbeat"| HB
     RES -->|"poll results"| CLI
+    RES -->|"poll results"| MCP
     HB -->|"check health"| CLI
-    DB -->|"index history"| CLI
+    CTL -->|"write control.json"| CTRL
+    CTRL -->|"read & execute<br/>(restart/stop/status)"| SUP
+    SUP -->|"spawn/monitor"| WT
+    SUP -->|"write status.json"| CTRL
 ```
 
 ## 🔄 Workflow
@@ -133,19 +176,26 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant C as Client (Online)
+    participant M as MCP Server (Agent)
     participant S as Shared Storage
+    participant V as Supervisor (Offline)
     participant D as Daemon (Offline)
     
     C->>S: Write task to commands/{task_id}.json
-    Note over D: File watcher detects (500ms)
+    M->>S: Write task to commands/{task_id}.json
+    Note over D: Watcher detects (inotify,<br/>fallback scan 100ms 兜底)
     D->>S: Update status/{task_id}.json (progress)
     D->>D: Execute command (timeout/retry)
     D->>S: Write logs/{task_id}/stdout.log, stderr.log
     D->>S: Write results/{task_id}_result.json
-    D->>S: Update heartbeat.json (every 60s)
-    Note over C: Poll for results (2s interval)
+    D->>S: Update heartbeat.json
+    Note over C: Poll result file (0.2s interval,<br/>GPFS stat 无子进程开销)
     C->>S: Read results/{task_id}_result.json
-    C->>C: Parse result, display to user
+    M->>S: Read results/{task_id}_result.json
+    Note over V: 每 2s 检查 server 存活<br/>崩溃自动拉起 (指数退避)
+    V->>S: 读 control.json (跨机器指令)
+    Note over V: restart/stop/status 指令执行
+    V->>S: 写 status.json (状态回写)
 ```
 
 ## 📁 Directory Structure
@@ -165,7 +215,12 @@ sequenceDiagram
 │       ├── stdout.log
 │       ├── stderr.log
 │       └── metadata.json
-└── heartbeat.json         # Daemon health status (60s update)
+├── heartbeat.json         # Daemon health status
+├── control.json           # 跨机器控制指令 (bifrost-ctl.sh 写, supervisor 读)
+├── status.json            # supervisor 状态回写 (bifrost-ctl.sh status 读)
+├── supervisor.pid         # supervisor 进程 PID
+├── server.pid             # daemon server 进程 PID
+└── server.log             # supervisor + server 日志
 ```
 
 ## 环境要求
