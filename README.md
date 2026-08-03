@@ -97,6 +97,38 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 
 ## 🏗️ Architecture
 
+### 简略图（四组件交互）
+
+```mermaid
+flowchart LR
+    subgraph Agent["Agent（AI Agent：Hermes/OpenCode/Claude…）"]
+        A1["通过 MCP 提交任务<br/>读取执行结果"]
+    end
+
+    subgraph Client["Client（联网机）"]
+        C1["bifrost CLI / MCP Server<br/>序列化任务写入共享存储<br/>从共享存储取执行结果"]
+    end
+
+    subgraph SS["共享存储<br/>(GPFS 文件交换)"]
+        S1["任务实体 / 执行结果<br/>/ 控制指令"]
+    end
+
+    subgraph Server["Server（离线机执行程序）"]
+        R1["从共享存储反序列化任务实体<br/>执行命令<br/>将结果写回共享存储"]
+    end
+
+    subgraph Supervisor["Supervisor（守护进程）"]
+        V1["监控和管理<br/>Server 生命周期<br/>(崩溃自愈/重启/关闭)"]
+    end
+
+    Agent -->|"MCP 提交/查询"| Client
+    Client <-->|"读写"| SS
+    SS <-->|"反序列化执行/写回"| Server
+    Supervisor -->|"spawn / monitor / control"| Server
+```
+
+### 详细图（含共享存储与内部组件）
+
 ```mermaid
 flowchart TB
     subgraph Client["Client Machine (Online)"]
