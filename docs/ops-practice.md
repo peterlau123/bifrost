@@ -167,4 +167,56 @@ daemon 被 kill 时若不清进程组，正在跑的 pytest 会孤儿化继续�
 
 ---
 
+## 6. GitHub 推送替代方案（git push 不通时）
+
+**场景**：本机到 GitHub 的 git 协议（ssh/https git）网络不通或超时，
+但 GitHub REST API（https api.github.com）是通的。此时无法 `git push`，
+可用 GitHub API 完成"推送 commit 到分支"。
+
+**前置**：需要 fine-grained PAT 且对目标仓库有 **Contents: Read/Write** 权限
+（只读 PAT 会 403 "Resource not accessible"）。
+
+**步骤**（全部用 curl + API）：
+
+```bash
+TOKEN=<PAT>; REPO=peterlau123/bifrost
+PARENT=<远程分支当前 sha>   # 从 GET /repos/$REPO/git/ref/heads/main 拿
+
+# 1. 每个改动文件创建 blob
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"content":"<base64文件内容>","encoding":"base64"}' \
+  https://api.github.com/repos/$REPO/git/blobs
+#    -> {"sha": "<blob_sha>"}
+
+# 2. 基于 parent tree 创建新 tree（替换改动的文件）
+#    GET /repos/$REPO/git/commits/$PARENT 拿 parent_tree
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"base_tree":"<parent_tree>","tree":[{"path":"src/x.rs","mode":"100644","type":"blob","sha":"<blob_sha>"}]}' \
+  https://api.github.com/repos/$REPO/git/trees
+#    -> {"sha": "<new_tree>"}
+
+# 3. 创建 commit
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"message":"commit msg","tree":"<new_tree>","parents":["<parent_sha>"]}' \
+  https://api.github.com/repos/$REPO/git/commits
+#    -> {"sha": "<new_commit>"}
+
+# 4. fast-forward 更新分支 ref
+curl -X PATCH -H "Authorization: token $TOKEN" \
+  -d '{"sha":"<new_commit>","force":false}' \
+  https://api.github.com/repos/$REPO/git/refs/heads/main
+```
+
+**注意**：
+- 必须 fast-forward（新 commit 的 parent 是远程分支当前 sha），否则 API 拒绝
+- `git push` 失败后本地 commit 不在远程，API 创建的是**新 commit 对象**，
+  本地和远程 commit sha 会不同（内容一致）。同步：`git fetch && git reset --hard origin/main`
+- 合并 PR：`PUT /repos/$REPO/pulls/<n>/merge`（需 Contents: Write）
+- 删分支：`DELETE /repos/$REPO/git/refs/heads/<branch>`
+
+**教训**：PR 合并的是**打开时的状态**，不是最新 push。若本地有 PR 打开后的
+新 commit，合并后需在 main 上重新应用（或先 push 到 PR 分支再合并）。
+
+---
+
 *Last updated: 2026-08-03*
