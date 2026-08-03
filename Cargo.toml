@@ -2,6 +2,9 @@
 name = "bifrost"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Offline machine command execution framework over shared storage (GPFS) with MCP server support"
+repository = "https://github.com/peterlau123/bifrost"
 
 [dependencies]
 # Core dependencies
@@ -22,6 +25,9 @@ serde_yaml = "0.9"
 humantime = "2.1"
 shell-words = "1.0"
 ctrlc = "3.4"
+libc = "0.2"
+rmcp = { version = "3.0", features = ["server", "transport-io", "macros"] }
+schemars = "1.2"
 
 # TODO: SQLite integration (task history persistence)
 

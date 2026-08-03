@@ -1,13 +1,13 @@
 // Heartbeat mechanism for daemon health monitoring
 use crate::core::error::{BifrostError, Result};
-use serde::{Serialize, Deserialize};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
+use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Heartbeat information for daemon monitoring
@@ -72,8 +72,7 @@ impl Heartbeat {
     /// Write heartbeat to file
     pub fn write_heartbeat(&self) -> Result<()> {
         let content = serde_json::to_string_pretty(&self.info)?;
-        fs::write(&self.heartbeat_file, content)
-            .map_err(BifrostError::IoError)?;
+        fs::write(&self.heartbeat_file, content).map_err(BifrostError::IoError)?;
         Ok(())
     }
 
@@ -118,8 +117,7 @@ impl Heartbeat {
 
     /// Read heartbeat from file
     pub fn read_heartbeat(path: &PathBuf) -> Result<HeartbeatInfo> {
-        let content = fs::read_to_string(path)
-            .map_err(BifrostError::IoError)?;
+        let content = fs::read_to_string(path).map_err(BifrostError::IoError)?;
         let info: HeartbeatInfo = serde_json::from_str(&content)?;
         Ok(info)
     }

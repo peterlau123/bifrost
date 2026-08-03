@@ -21,11 +21,11 @@ pub fn list_all_statuses(bridge: &dyn Bridge) -> Result<Vec<TaskStatusResponse>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
     use crate::core::protocol::Protocol;
-    use tempfile::TempDir;
-    use crate::core::models::{Task, TaskOutput, TaskStatus};
     use chrono::Utc;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_query_status_pending() {
@@ -33,7 +33,10 @@ mod tests {
         let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
         let bridge: &dyn Bridge = &protocol;
 
-        let task = Task::new("echo test".to_string(), crate::core::models::TaskType::Shell);
+        let task = Task::new(
+            "echo test".to_string(),
+            crate::core::models::TaskType::Shell,
+        );
         protocol.submit_task(&task).unwrap();
 
         let status = query_status(bridge, task.task_id).unwrap();
@@ -47,7 +50,10 @@ mod tests {
         let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
         let bridge: &dyn Bridge = &protocol;
 
-        let task = Task::new("echo test".to_string(), crate::core::models::TaskType::Shell);
+        let task = Task::new(
+            "echo test".to_string(),
+            crate::core::models::TaskType::Shell,
+        );
         protocol.submit_task(&task).unwrap();
 
         let results_dir = temp_dir.path().join("results");
@@ -63,6 +69,7 @@ mod tests {
             },
             start_time: Utc::now(),
             end_time: Utc::now(),
+            duration_ms: 0,
             retries_used: 0,
             artifacts: vec![],
             error_message: None,

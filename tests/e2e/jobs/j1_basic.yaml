@@ -1,0 +1,12 @@
+name: j1-basic
+description: "basic: ok + fail + sleep"
+tasks:
+  - name: echo-ok
+    command: "echo job-task-ok"
+    timeout: 30
+  - name: echo-fail
+    command: "sh -c 'exit 3'"
+    timeout: 30
+  - name: sleep-1
+    command: "sleep 1"
+    timeout: 30

@@ -1,7 +1,7 @@
 // File event watcher using notify library
 // Monitors commands/ directory for new task files with 500ms debounce
 
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
@@ -9,8 +9,8 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 // GpuTaskProcessor integration
 use super::gpu_task_processor::GpuTaskProcessor;
-use crate::daemon::executor::Executor;
 use crate::core::batch_tracker::BatchTracker;
+use crate::daemon::executor::Executor;
 
 /// File watcher for detecting new task files
 pub struct FileWatcher {
@@ -18,6 +18,9 @@ pub struct FileWatcher {
     event_receiver: Receiver<Result<Event, notify::Error>>,
     commands_dir: PathBuf,
     debounce_threshold: Duration,
+    /// Last processed file path (for per-path debounce)
+    last_path: Option<PathBuf>,
+    /// When the last event was processed
     last_event_time: Option<Instant>,
 }
 
@@ -26,7 +29,10 @@ impl FileWatcher {
     /// Returns a watcher instance and an async channel for task file notifications
     pub fn new(commands_dir: PathBuf) -> Result<Self, String> {
         if !commands_dir.exists() {
-            return Err(format!("Commands directory does not exist: {}", commands_dir.display()));
+            return Err(format!(
+                "Commands directory does not exist: {}",
+                commands_dir.display()
+            ));
         }
 
         // Create channel for notify events
@@ -40,7 +46,8 @@ impl FileWatcher {
                 }
             },
             notify::Config::default(),
-        ).map_err(|e| format!("Failed to create watcher: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
         let commands_dir_clone = commands_dir.clone();
         let mut watcher = Self {
@@ -48,11 +55,14 @@ impl FileWatcher {
             event_receiver: rx,
             commands_dir,
             debounce_threshold: Duration::from_millis(500),
+            last_path: None,
             last_event_time: None,
         };
 
         // Start watching the commands directory
-        watcher.watcher.watch(&commands_dir_clone, RecursiveMode::NonRecursive)
+        watcher
+            .watcher
+            .watch(&commands_dir_clone, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to start watching: {}", e))?;
 
         Ok(watcher)
@@ -72,21 +82,26 @@ impl FileWatcher {
                         Ok(event) => {
                             // Filter for file creation events
                             if self.is_new_json_file(&event) {
-                                // Apply debounce logic
-                                let now = Instant::now();
-
-                                if let Some(last_time) = self.last_event_time {
-                                    if now.duration_since(last_time) < self.debounce_threshold {
-                                        // Skip this event (within debounce window)
+                                // event.paths may contain multiple entries (e.g. the
+                                // temp file + renamed target from atomic_write), so
+                                // iterate to find the actual .json task file.
+                                for path in event.paths.iter() {
+                                    if !path.extension().map(|ext| ext == "json").unwrap_or(false) {
                                         continue;
                                     }
-                                }
+                                    // Per-path debounce: skip only if the SAME file was
+                                    // reported within the debounce window. Different files
+                                    // are never suppressed, so rapid task submissions
+                                    // (e.g. batch jobs) are all picked up.
+                                    let now = Instant::now();
+                                    let is_duplicate = matches!(&self.last_path, Some(last) if *last == *path)
+                                        && self.last_event_time.is_some_and(|t| {
+                                            now.duration_since(t) < self.debounce_threshold
+                                        });
 
-                                self.last_event_time = Some(now);
-
-                                // Extract the new file path
-                                if let Some(path) = event.paths.first() {
-                                    if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+                                    if !is_duplicate {
+                                        self.last_path = Some(path.clone());
+                                        self.last_event_time = Some(now);
                                         return Ok(Some(path.clone()));
                                     }
                                 }
@@ -111,21 +126,26 @@ impl FileWatcher {
 
     /// Check if event represents a new JSON file creation
     fn is_new_json_file(&self, event: &Event) -> bool {
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) => {
-                // Check if it's in commands directory and is a JSON file
-                event.paths.iter().any(|path| {
-                    path.starts_with(&self.commands_dir) &&
-                    path.extension().map(|ext| ext == "json").unwrap_or(false)
-                })
-            }
+        // Match Create/Modify events (rename targets arrive as Modify(Name(To))
+        // on GPFS inotify, which the broad Modify(_) arm already covers).
+        let is_file_event = match event.kind {
+            EventKind::Create(_) | EventKind::Modify(_) => true,
             _ => false,
+        };
+        if !is_file_event {
+            return false;
         }
+        // Check if it's in commands directory and is a JSON file
+        event.paths.iter().any(|path| {
+            path.starts_with(&self.commands_dir)
+                && path.extension().map(|ext| ext == "json").unwrap_or(false)
+        })
     }
 
     /// Stop watching
     pub fn stop(&mut self) -> Result<(), String> {
-        self.watcher.unwatch(&self.commands_dir)
+        self.watcher
+            .unwatch(&self.commands_dir)
             .map_err(|e| format!("Failed to stop watching: {}", e))?;
         Ok(())
     }
@@ -141,7 +161,10 @@ impl AsyncFileWatcher {
     /// Create a new async file watcher
     pub fn new(commands_dir: PathBuf) -> Result<Self, String> {
         if !commands_dir.exists() {
-            return Err(format!("Commands directory does not exist: {}", commands_dir.display()));
+            return Err(format!(
+                "Commands directory does not exist: {}",
+                commands_dir.display()
+            ));
         }
 
         Ok(Self {
@@ -160,40 +183,63 @@ impl AsyncFileWatcher {
         let debounce = self.debounce_threshold;
 
         tokio::spawn(async move {
-            // Run watcher in blocking context
+            // Run watcher in blocking context (std::thread::sleep and
+            // blocking_send must not run on an async worker thread).
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut watcher) = FileWatcher::new(commands_dir) {
-                    let mut last_time = None;
-
-                    loop {
-                        match watcher.wait_for_new_task() {
-                            Ok(Some(path)) => {
-                                // Apply additional debounce
-                                let now = Instant::now();
-                                if let Some(last) = last_time {
-                                    if now.duration_since(last) < debounce {
-                                        continue;
-                                    }
-                                }
-                                last_time = Some(now);
-
-                                // Send path through channel
-                                if tx.blocking_send(path).is_err() {
-                                    break;
-                                }
-                            }
-                            Ok(None) => {
-                                // No event, continue polling
-                                std::thread::sleep(Duration::from_millis(100));
-                            }
-                            Err(e) => {
-                                eprintln!("Watcher error: {}", e);
-                                break;
-                            }
+                // If FileWatcher::new fails (e.g. transient notify error),
+                // retry every 2s instead of giving up: a dead watcher must
+                // not turn the server into a zombie that stops consuming.
+                let mut watcher: Option<FileWatcher> = None;
+                while watcher.is_none() {
+                    match FileWatcher::new(commands_dir.clone()) {
+                        Ok(w) => watcher = Some(w),
+                        Err(e) => {
+                            eprintln!("Watcher init failed, retrying in 2s: {}", e);
+                            std::thread::sleep(Duration::from_secs(2));
                         }
                     }
                 }
-            }).await;
+                let mut watcher = watcher.unwrap();
+                let mut last_path: Option<PathBuf> = None;
+                let mut last_time: Option<Instant> = None;
+
+                loop {
+                    match watcher.wait_for_new_task() {
+                        Ok(Some(path)) => {
+                            // Per-path debounce (second layer): suppress only repeat
+                            // events for the same file within the window.
+                            let now = Instant::now();
+                            let is_duplicate = matches!(&last_path, Some(last) if *last == path)
+                                && last_time.is_some_and(|t| now.duration_since(t) < debounce);
+
+                            if is_duplicate {
+                                continue;
+                            }
+                            last_path = Some(path.clone());
+                            last_time = Some(now);
+
+                            // Send path through channel
+                            if tx.blocking_send(path).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            // No event, continue polling
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        Err(e) => {
+                            // Transient watcher error: log and keep polling.
+                            // Breaking here would close the channel and turn the
+                            // server into a zombie (alive but consuming nothing);
+                            // the runner's fallback scan covers missed tasks.
+                            eprintln!("Watcher error (continuing): {}", e);
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                    }
+                }
+            })
+            .await
+            .ok();
         });
 
         rx
@@ -217,7 +263,7 @@ impl AsyncFileWatcher {
 ///     let log_dir = PathBuf::from("/shared/logs");
 ///     let gpu_pool = vec![0, 1, 2, 3]; // 4 GPUs
 ///
-///     run_with_gpu_processor(commands_dir, log_dir, gpu_pool, false).await;
+///     run_with_gpu_processor(commands_dir, log_dir, gpu_pool, false, None).await;
 /// }
 /// ```
 pub async fn run_with_gpu_processor(
@@ -249,9 +295,9 @@ pub async fn run_with_gpu_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
     use std::io::Write;
+    use tempfile::TempDir;
 
     #[test]
     fn test_watcher_new() {

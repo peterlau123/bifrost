@@ -102,6 +102,9 @@ pub struct TaskResult {
     pub start_time: DateTime<Utc>,
     /// Execution end time
     pub end_time: DateTime<Utc>,
+    /// Execution duration in milliseconds (derived from start/end time)
+    #[serde(default)]
+    pub duration_ms: i64,
     /// Number of retries used
     pub retries_used: u8,
     /// Artifact paths generated
@@ -135,7 +138,7 @@ impl Task {
             timeout: 300,
             retry_count: 3,
             env_vars: HashMap::new(),
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            working_dir: PathBuf::from("."),
             artifacts_expected: Vec::new(),
             metadata: HashMap::new(),
             batch_id: None,
@@ -201,6 +204,17 @@ impl TaskResult {
     /// Get execution duration in seconds
     pub fn duration_secs(&self) -> i64 {
         (self.end_time - self.start_time).num_seconds()
+    }
+
+    /// Get execution duration in milliseconds.
+    /// Falls back to computing from start/end time when the field was not
+    /// populated (e.g. results written by older versions).
+    pub fn duration_ms(&self) -> i64 {
+        if self.duration_ms > 0 {
+            self.duration_ms
+        } else {
+            (self.end_time - self.start_time).num_milliseconds()
+        }
     }
 }
 
@@ -328,6 +342,7 @@ mod tests {
             },
             start_time: start,
             end_time: end,
+            duration_ms: 0,
             retries_used: 0,
             artifacts: Vec::new(),
             error_message: None,

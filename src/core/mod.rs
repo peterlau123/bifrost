@@ -1,6 +1,6 @@
 // Core module - data models, error types, and bridge abstraction
-pub mod bridge;
 pub mod batch_tracker;
+pub mod bridge;
 pub mod error;
 pub mod job;
 pub mod lock;

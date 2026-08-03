@@ -61,18 +61,25 @@ pub fn submit_batch_manifest(
             .with_timeout(task_item.timeout)
             .with_priority(task_item.priority)
             .with_working_dir(
-                task_item.working_dir.clone().unwrap_or_else(|| PathBuf::from(".")),
+                task_item
+                    .working_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(".")),
             )
             .with_batch_id(batch_id)
             .with_task_name(task_item.task_name.clone());
 
-        let task = task_item.env_vars.iter()
+        let task = task_item
+            .env_vars
+            .iter()
             .fold(task, |t, (k, v)| t.with_env_var(k.clone(), v.clone()));
 
         let task_id = task.task_id;
         bridge.submit_task(&task)?;
 
-        progress.submitted_tasks.push((index, task_id, task_item.task_name.clone()));
+        progress
+            .submitted_tasks
+            .push((index, task_id, task_item.task_name.clone()));
         progress.current_index = index + 1;
         progress.updated_at = Utc::now();
     }
@@ -80,7 +87,8 @@ pub fn submit_batch_manifest(
     progress.status = BatchStatus::Running;
     progress.updated_at = Utc::now();
 
-    batch_tracker.save_progress(&progress)
+    batch_tracker
+        .save_progress(&progress)
         .map_err(|e| BifrostError::ConfigInvalid(e.to_string()))?;
 
     Ok(batch_id)
@@ -105,15 +113,27 @@ mod tests {
             10,
             300,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!task_id.is_nil());
 
         let commands_dir = temp_dir.path().join("commands");
         let files: Vec<_> = std::fs::read_dir(&commands_dir)
-            .unwrap().filter_map(|e| e.ok()).collect();
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "json")
+                    .unwrap_or(false)
+            })
+            .collect();
         assert_eq!(files.len(), 1);
-        assert!(files[0].file_name().to_string_lossy().contains(&task_id.to_string()));
+        assert!(files[0]
+            .file_name()
+            .to_string_lossy()
+            .contains(&task_id.to_string()));
     }
 
     #[test]
@@ -126,9 +146,11 @@ mod tests {
             bridge,
             "pytest tests/".to_string(),
             TaskType::Pytest,
-            5, 600,
+            5,
+            600,
             Some(PathBuf::from("/workspace")),
-        ).unwrap();
+        )
+        .unwrap();
 
         let task = protocol.read_task(&task_id).unwrap();
         assert_eq!(task.working_dir, PathBuf::from("/workspace"));

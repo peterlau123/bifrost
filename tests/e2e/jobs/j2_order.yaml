@@ -1,0 +1,12 @@
+name: j2-order
+# J2 执行顺序验证: 3 任务顺序执行, 追加写 $BIFROST_ORDER_FILE (由测试脚本环境变量注入)
+tasks:
+  - name: first
+    command: "sh -c 'echo first >> $BIFROST_ORDER_FILE && cat $BIFROST_ORDER_FILE'"
+    timeout: 30
+  - name: second
+    command: "sh -c 'echo second >> $BIFROST_ORDER_FILE && cat $BIFROST_ORDER_FILE'"
+    timeout: 30
+  - name: third
+    command: "sh -c 'echo third >> $BIFROST_ORDER_FILE && cat $BIFROST_ORDER_FILE'"
+    timeout: 30

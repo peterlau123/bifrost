@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" width="800" height="340" role="img" aria-label="Bifrost - the rainbow bridge connecting online client and offline daemon">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a0e2a"/>
+      <stop offset="55%" stop-color="#16245c"/>
+      <stop offset="100%" stop-color="#2a4a7f"/>
+    </linearGradient>
+    <linearGradient id="cloud" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#c9d8ea"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#39d98a"/>
+      <stop offset="100%" stop-color="#0e6b4a"/>
+    </linearGradient>
+    <linearGradient id="mountain1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d5a80"/>
+      <stop offset="100%" stop-color="#1b2b45"/>
+    </linearGradient>
+    <linearGradient id="mountain2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#29395e"/>
+      <stop offset="100%" stop-color="#111b30"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 星空背景 -->
+  <rect width="800" height="340" fill="url(#sky)"/>
+  <g fill="#ffffff">
+    <circle cx="60" cy="45" r="1.6" opacity="0.9"/>
+    <circle cx="180" cy="28" r="1.2" opacity="0.6"/>
+    <circle cx="260" cy="70" r="1.4" opacity="0.8"/>
+    <circle cx="340" cy="22" r="1.1" opacity="0.5"/>
+    <circle cx="430" cy="60" r="1.5" opacity="0.7"/>
+    <circle cx="520" cy="18" r="1.2" opacity="0.6"/>
+    <circle cx="610" cy="48" r="1.5" opacity="0.8"/>
+    <circle cx="700" cy="30" r="1.3" opacity="0.7"/>
+    <circle cx="760" cy="80" r="1.1" opacity="0.5"/>
+    <circle cx="120" cy="120" r="1.2" opacity="0.5"/>
+    <circle cx="30" cy="170" r="1.3" opacity="0.6"/>
+    <circle cx="230" cy="140" r="1.1" opacity="0.4"/>
+    <circle cx="720" cy="140" r="1.2" opacity="0.5"/>
+    <circle cx="480" cy="110" r="1.1" opacity="0.4"/>
+    <circle cx="350" cy="110" r="1.3" opacity="0.6"/>
+  </g>
+  <!-- 月亮 -->
+  <circle cx="730" cy="55" r="22" fill="#f5f0d8" opacity="0.9"/>
+  <circle cx="738" cy="48" r="20" fill="#16245c"/>
+
+  <!-- 数据流轨迹 (桥上的虚线, 表示任务在传递) -->
+  <path d="M 130 330 A 270 270 0 0 1 492.3 76.2" stroke="#ffffff" stroke-width="3" stroke-dasharray="7 9" fill="none" opacity="0.45"/>
+
+  <!-- 彩虹桥: 6 条同心弧 (红橙黄绿蓝紫) -->
+  <path d="M 95 330 A 305 305 0 0 1 504.3 43.3" stroke="#ff5252" stroke-width="14" fill="none" opacity="0.92"/>
+  <path d="M 109 330 A 291 291 0 0 1 499.5 56.4" stroke="#ffab40" stroke-width="14" fill="none" opacity="0.92"/>
+  <path d="M 123 330 A 277 277 0 0 1 494.7 69.6" stroke="#ffd740" stroke-width="14" fill="none" opacity="0.92"/>
+  <path d="M 137 330 A 263 263 0 0 1 489.9 82.8" stroke="#69f0ae" stroke-width="14" fill="none" opacity="0.92"/>
+  <path d="M 151 330 A 249 249 0 0 1 485.2 96.0" stroke="#40c4ff" stroke-width="14" fill="none" opacity="0.92"/>
+  <path d="M 165 330 A 235 235 0 0 1 480.4 109.1" stroke="#b388ff" stroke-width="14" fill="none" opacity="0.92"/>
+
+  <!-- 桥上滑行的任务包 (放在彩虹带中间 r≈270 的弧上) -->
+  <g transform="translate(322, 68)">
+    <rect x="0" y="4" width="26" height="17" rx="3" fill="#ffd740" stroke="#b8860b" stroke-width="1.5"/>
+    <rect x="2" y="4" width="22" height="6" rx="2" fill="#ffe082"/>
+    <path d="M 13 4 L 13 21" stroke="#b8860b" stroke-width="1.5"/>
+    <path d="M 0 11 L 26 11" stroke="#b8860b" stroke-width="1"/>
+    <!-- 发光 -->
+    <circle cx="13" cy="12.5" r="16" fill="#ffd740" opacity="0.15"/>
+  </g>
+  <!-- 数据小圆点沿桥上行 (都在彩虹带内) -->
+  <circle cx="200" cy="155" r="3" fill="#ffffff" opacity="0.85"/>
+  <circle cx="260" cy="100" r="2.5" fill="#69f0ae" opacity="0.9"/>
+  <circle cx="420" cy="60" r="2.5" fill="#ffffff" opacity="0.85"/>
+
+  <!-- 左端: 云上的 Client (联网侧) -->
+  <g>
+    <ellipse cx="70" cy="296" rx="38" ry="20" fill="url(#cloud)"/>
+    <ellipse cx="112" cy="288" rx="42" ry="24" fill="url(#cloud)"/>
+    <ellipse cx="152" cy="298" rx="32" ry="18" fill="url(#cloud)"/>
+    <ellipse cx="112" cy="300" rx="55" ry="16" fill="#eef4fb"/>
+    <!-- 笔记本电脑 -->
+    <g transform="translate(92, 246)">
+      <rect x="0" y="0" width="42" height="28" rx="3" fill="#2f3542" stroke="#57606f" stroke-width="1.5"/>
+      <rect x="4" y="4" width="34" height="20" rx="2" fill="url(#screen)"/>
+      <rect x="14" y="28" width="14" height="3" rx="1" fill="#57606f"/>
+      <rect x="8" y="31" width="26" height="2.5" rx="1.2" fill="#57606f"/>
+      <!-- 屏幕上的代码行 -->
+      <rect x="7" y="8" width="20" height="2.5" rx="1" fill="#ffffff" opacity="0.8"/>
+      <rect x="7" y="13" width="14" height="2.5" rx="1" fill="#ffffff" opacity="0.55"/>
+      <rect x="7" y="18" width="24" height="2.5" rx="1" fill="#ffffff" opacity="0.7"/>
+      <circle cx="35" cy="12" r="3" fill="#69f0ae" opacity="0.9"/>
+    </g>
+    <text x="105" y="240" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="11" font-weight="bold" fill="#e8f0fb">CLIENT</text>
+  </g>
+
+  <!-- 右端: 山巅的 Daemon (离线侧) -->
+  <g>
+    <polygon points="540,330 652,118 800,330" fill="url(#mountain1)"/>
+    <polygon points="652,118 670,150 634,150" fill="#e8eef7" opacity="0.9"/>
+    <polygon points="660,330 742,168 800,330" fill="url(#mountain2)"/>
+    <polygon points="742,168 758,196 726,196" fill="#e8eef7" opacity="0.85"/>
+    <!-- 山巅服务器塔 (塔底在山尖 y=118 上) -->
+    <g transform="translate(641, 118)">
+      <rect x="0" y="0" width="22" height="36" rx="2" fill="#dfe6ee" stroke="#57606f" stroke-width="1.2"/>
+      <rect x="3" y="4" width="16" height="4" rx="1" fill="#2f3542"/>
+      <rect x="3" y="11" width="16" height="4" rx="1" fill="#2f3542"/>
+      <rect x="3" y="18" width="16" height="4" rx="1" fill="#2f3542"/>
+      <circle cx="16" cy="6" r="1.4" fill="#69f0ae"/>
+      <circle cx="16" cy="13" r="1.4" fill="#ffd740"/>
+      <circle cx="16" cy="20" r="1.4" fill="#40c4ff"/>
+      <!-- 天线 -->
+      <rect x="10" y="-12" width="2" height="12" fill="#57606f"/>
+      <circle cx="11" cy="-14" r="3" fill="#ff5252"/>
+      <!-- 信号波 -->
+      <path d="M 3 -18 A 9 9 0 0 1 19 -18" stroke="#ff5252" stroke-width="1.5" fill="none" opacity="0.8"/>
+      <path d="M 0 -23 A 14 14 0 0 1 22 -23" stroke="#ff5252" stroke-width="1.5" fill="none" opacity="0.5"/>
+    </g>
+    <text x="700" y="238" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="11" font-weight="bold" fill="#e8f0fb">DAEMON</text>
+  </g>
+
+  <!-- 标题 (拱门内底部) -->
+  <text x="400" y="308" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="30" font-weight="bold" fill="#ffffff" letter-spacing="6">BIFROST</text>
+  <text x="400" y="328" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="12" fill="#bcd4f0">the rainbow bridge · online client ⇄ offline daemon</text>
+</svg>

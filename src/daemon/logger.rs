@@ -1,9 +1,9 @@
 // Log file management for task execution
 // Creates logs/{task_id}/ directory structure for stdout/stderr
 
-use std::path::{Path, PathBuf};
-use std::fs;
 use chrono::{DateTime, Utc};
+use std::fs;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Log manager for task execution output
@@ -49,8 +49,7 @@ impl LogManager {
     pub fn write_stdout(&self, task_id: Uuid, content: &str) -> Result<PathBuf, String> {
         let (stdout_path, _) = self.get_log_paths(task_id)?;
 
-        fs::write(&stdout_path, content)
-            .map_err(|e| format!("Failed to write stdout: {}", e))?;
+        fs::write(&stdout_path, content).map_err(|e| format!("Failed to write stdout: {}", e))?;
 
         Ok(stdout_path)
     }
@@ -59,8 +58,7 @@ impl LogManager {
     pub fn write_stderr(&self, task_id: Uuid, content: &str) -> Result<PathBuf, String> {
         let (_, stderr_path) = self.get_log_paths(task_id)?;
 
-        fs::write(&stderr_path, content)
-            .map_err(|e| format!("Failed to write stderr: {}", e))?;
+        fs::write(&stderr_path, content).map_err(|e| format!("Failed to write stderr: {}", e))?;
 
         Ok(stderr_path)
     }
@@ -102,16 +100,14 @@ impl LogManager {
     pub fn read_stdout(&self, task_id: Uuid) -> Result<String, String> {
         let (stdout_path, _) = self.get_log_paths(task_id)?;
 
-        fs::read_to_string(&stdout_path)
-            .map_err(|e| format!("Failed to read stdout: {}", e))
+        fs::read_to_string(&stdout_path).map_err(|e| format!("Failed to read stdout: {}", e))
     }
 
     /// Read stderr log content
     pub fn read_stderr(&self, task_id: Uuid) -> Result<String, String> {
         let (_, stderr_path) = self.get_log_paths(task_id)?;
 
-        fs::read_to_string(&stderr_path)
-            .map_err(|e| format!("Failed to read stderr: {}", e))
+        fs::read_to_string(&stderr_path).map_err(|e| format!("Failed to read stderr: {}", e))
     }
 }
 
@@ -142,7 +138,10 @@ mod tests {
         assert!(task_log_dir.is_ok());
         let dir = task_log_dir.unwrap();
         assert!(dir.exists());
-        assert_eq!(dir.file_name().unwrap().to_string_lossy(), task_id.to_string());
+        assert_eq!(
+            dir.file_name().unwrap().to_string_lossy(),
+            task_id.to_string()
+        );
     }
 
     #[test]

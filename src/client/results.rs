@@ -3,9 +3,9 @@ use crate::core::bridge::Bridge;
 use crate::core::error::{BifrostError, Result};
 use crate::core::models::TaskResult;
 use crate::core::protocol::Protocol;
-use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Result response formats
 #[derive(Debug)]
@@ -32,17 +32,13 @@ pub fn get_result_formatted(
     let result = get_result(protocol, task_id)?;
 
     match format {
-        ResultFormat::Json => {
-            serde_json::to_string_pretty(&result)
-                .map_err(|e| BifrostError::SerializationError(e.to_string()))
-        }
+        ResultFormat::Json => serde_json::to_string_pretty(&result)
+            .map_err(|e| BifrostError::SerializationError(e.to_string())),
         ResultFormat::Yaml => {
             // YAML format (simplified - using debug format for now)
             Ok(format!("{:#?}", result))
         }
-        ResultFormat::Text => {
-            format_result_text(&result)
-        }
+        ResultFormat::Text => format_result_text(&result),
     }
 }
 
@@ -55,8 +51,8 @@ fn format_result_text(result: &TaskResult) -> Result<String> {
     output.push_str(&format!("Duration: {} seconds\n", result.duration_secs()));
     output.push_str(&format!("Retries: {}\n", result.retries_used));
 
-    if result.output.exit_code.is_some() {
-        output.push_str(&format!("Exit Code: {}\n", result.output.exit_code.unwrap()));
+    if let Some(code) = result.output.exit_code {
+        output.push_str(&format!("Exit Code: {}\n", code));
     }
 
     if !result.output.stdout.is_empty() {
@@ -86,15 +82,21 @@ fn format_result_text(result: &TaskResult) -> Result<String> {
 }
 
 /// Get artifact file path (with path traversal protection)
-pub fn get_artifact_path(protocol: &Protocol, task_id: Uuid, artifact_name: &str) -> Result<PathBuf> {
+pub fn get_artifact_path(
+    protocol: &Protocol,
+    task_id: Uuid,
+    artifact_name: &str,
+) -> Result<PathBuf> {
     // Validate artifact_name doesn't contain path separators, traversal sequences, or null bytes
     if artifact_name.contains('/')
         || artifact_name.contains('\\')
         || artifact_name.contains("..")
         || artifact_name.contains('\0')
-        || artifact_name.is_empty() {
+        || artifact_name.is_empty()
+    {
         return Err(BifrostError::ConfigInvalid(
-            "Invalid artifact name: contains path separators, traversal sequences, or null bytes".to_string()
+            "Invalid artifact name: contains path separators, traversal sequences, or null bytes"
+                .to_string(),
         ));
     }
 
@@ -111,14 +113,16 @@ pub fn get_artifact_path(protocol: &Protocol, task_id: Uuid, artifact_name: &str
     }
 
     // Effective path traversal check: canonicalize both paths and verify containment
-    let canonical_artifact = artifact_path.canonicalize()
+    let canonical_artifact = artifact_path
+        .canonicalize()
         .map_err(BifrostError::IoError)?;
-    let canonical_dir = artifacts_dir.canonicalize()
+    let canonical_dir = artifacts_dir
+        .canonicalize()
         .map_err(BifrostError::IoError)?;
 
     if !canonical_artifact.starts_with(&canonical_dir) {
         return Err(BifrostError::ConfigInvalid(
-            "Artifact path traversal detected".to_string()
+            "Artifact path traversal detected".to_string(),
         ));
     }
 
@@ -129,16 +133,15 @@ pub fn get_artifact_path(protocol: &Protocol, task_id: Uuid, artifact_name: &str
 pub fn read_artifact(protocol: &Protocol, task_id: Uuid, artifact_name: &str) -> Result<String> {
     let artifact_path = get_artifact_path(protocol, task_id, artifact_name)?;
 
-    fs::read_to_string(&artifact_path)
-        .map_err(BifrostError::IoError)
+    fs::read_to_string(&artifact_path).map_err(BifrostError::IoError)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    use crate::core::models::{Task, TaskOutput, TaskStatus};
+    use crate::core::models::{TaskOutput, TaskResult, TaskStatus};
     use chrono::Utc;
+    use tempfile::TempDir;
 
     fn create_test_result(task_id: Uuid) -> TaskResult {
         TaskResult {
@@ -151,6 +154,7 @@ mod tests {
             },
             start_time: Utc::now(),
             end_time: Utc::now(),
+            duration_ms: 0,
             retries_used: 0,
             artifacts: vec!["report.json".to_string()],
             error_message: None,
