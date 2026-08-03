@@ -79,17 +79,29 @@ stop_server() {
     local pid
     pid=$(server_pid)
     if [[ -n "$pid" ]]; then
-        log "stop server pid=$pid"
+        log "stop server pid=$pid (process group)"
+        # 任务子进程和 daemon 同进程组 (executor 用 process_group(0)),
+        # 必须杀整个进程组 (负 PID), 否则正在跑的 pytest 会孤儿化继续占 GPU。
+        # 先 TERM 进程组优雅退出, 5s 后 SIGKILL 进程组兜底。
+        kill -TERM -- -"$pid" 2>/dev/null
+        # 兜底: 直接 kill daemon 本身 (进程组信号可能被忽略)
         kill -TERM "$pid" 2>/dev/null
-        # 等最多 5s 优雅退出
         for _ in $(seq 1 10); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.5
         done
         if kill -0 "$pid" 2>/dev/null; then
-            log "server still alive after 5s, SIGKILL"
+            log "server still alive after 5s, SIGKILL process group"
+            kill -KILL -- -"$pid" 2>/dev/null
             kill -9 "$pid" 2>/dev/null
         fi
+    fi
+    # 清理残留的任务子进程 (保险: 万一进程组信号没送达)
+    local stray
+    stray=$(pgrep -f "docker exec.*v0.13.0_torch2.5.1_compile" 2>/dev/null || true)
+    if [[ -n "$stray" ]]; then
+        log "stray task processes (orphan cleanup): $stray"
+        pkill -9 -f "docker exec.*v0.13.0_torch2.5.1_compile" 2>/dev/null || true
     fi
     rm -f "$SERVER_PID_FILE"
 }
@@ -100,7 +112,10 @@ start_server() {
     wd=$(python3 -c "import json;print(json.load(open('$CONFIG'))['daemon'].get('working_dir','/tmp/bifrost/work'))" 2>/dev/null || echo "/tmp/bifrost/work")
     mkdir -p "$wd"
     log "start server: $BINARY server -c $CONFIG"
-    nohup "$BINARY" server -c "$CONFIG" >> "$LOG_FILE" 2>&1 &
+    # setsid: daemon 成为独立进程组 leader (pgid == pid),
+    # 这样 stop_server 的 kill -TERM -- -$pid 能杀整个进程组 (含任务子进程),
+    # 避免 pytest 孤儿化继续占 GPU。
+    setsid "$BINARY" server -c "$CONFIG" >> "$LOG_FILE" 2>&1 &
     echo $! > "$SERVER_PID_FILE"
     # 等就绪 (最多 5s)
     for _ in $(seq 1 10); do
@@ -222,6 +237,13 @@ case "${1:-}" in
     attach)
         # 前台常驻循环: server 崩溃自动拉起 (退避重试) + 轮询共享存储控制文件
         log "== supervisor attach (pid=$$) =="
+        # 启动前清理上次残留的任务进程 (防孤儿 pytest 占 GPU)
+        local stray
+        stray=$(pgrep -f "docker exec.*v0.13.0_torch2.5.1_compile" 2>/dev/null || true)
+        if [[ -n "$stray" ]]; then
+            log "startup: cleaning stale task processes: $stray"
+            pkill -9 -f "docker exec.*v0.13.0_torch2.5.1_compile" 2>/dev/null || true
+        fi
         start_server
         FAIL_COUNT=0
         rm -f "$CONTROL_FILE"
