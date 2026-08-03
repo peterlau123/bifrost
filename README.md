@@ -132,8 +132,8 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph Client["Client Machine (Online)"]
-        CLI["bifrost CLI"]
-        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>Agent 集成: Hermes/OpenCode/..."]
+        CLI["bifrost CLI<br/>(人/脚本手动使用)"]
+        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>Agent 集成: Hermes/OpenCode/...<br/>(内部复用 CLI 逻辑)"]
         CTL["bifrost-ctl.sh<br/>(跨机器控制)"]
     end
     
@@ -181,8 +181,9 @@ sequenceDiagram
     participant V as Supervisor (Offline)
     participant D as Daemon (Offline)
     
-    C->>S: Write task to commands/{task_id}.json
-    M->>S: Write task to commands/{task_id}.json
+    Note over C,M: 二选一: 人或脚本用 CLI, Agent 用 MCP。<br/>MCP Server 内部复用 Client 的提交/查询逻辑,<br/>两者不是并行角色。
+    C->>S: Write task to commands/{task_id}.json (CLI)
+    M->>S: Write task to commands/{task_id}.json (Agent 经 MCP)
     Note over D: Watcher detects (inotify,<br/>fallback scan 100ms 兜底)
     D->>S: Update status/{task_id}.json (progress)
     D->>D: Execute command (timeout/retry)
@@ -190,8 +191,8 @@ sequenceDiagram
     D->>S: Write results/{task_id}_result.json
     D->>S: Update heartbeat.json
     Note over C: Poll result file (0.2s interval,<br/>GPFS stat 无子进程开销)
-    C->>S: Read results/{task_id}_result.json
-    M->>S: Read results/{task_id}_result.json
+    C->>S: Read results/{task_id}_result.json (CLI)
+    M->>S: Read results/{task_id}_result.json (Agent 经 MCP)
     Note over V: 每 2s 检查 server 存活<br/>崩溃自动拉起 (指数退避)
     V->>S: 读 control.json (跨机器指令)
     Note over V: restart/stop/status 指令执行
