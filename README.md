@@ -33,6 +33,7 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
   - [Client Configuration](#client-configuration)
   - [Daemon Configuration](#daemon-configuration)
 - [Usage](#usage)
+- [运维实践（APMM UT 场景）](docs/ops-practice.md)
   - [Submit Tasks](#submit-tasks)
   - [Check Status](#check-status)
   - [Retrieve Results](#retrieve-results)
