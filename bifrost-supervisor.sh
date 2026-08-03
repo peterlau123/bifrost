@@ -226,9 +226,19 @@ case "${1:-}" in
         ;;
 
     status)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            kill -USR1 "$(cat "$PID_FILE")"
-            sleep 1
+        # 本地直接检查 (不依赖 supervisor 回显 - 它的 stdout 在 server.log)
+        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            SUP_PID=$(cat "$PID_FILE")
+            echo "supervisor:  running (pid=$SUP_PID)"
+            SRV_PID=$(server_pid)
+            if [[ -n "$SRV_PID" ]]; then
+                echo "bifrost server: running (pid=$SRV_PID)"
+                ps -o pid,lstart,cmd -p "$SRV_PID" | tail -1
+            else
+                echo "bifrost server: STOPPED"
+            fi
+            # 顺便触发 do_status 回写 status.json (供本机 bifrost-ctl.sh 读取)
+            kill -USR1 "$(cat "$PID_FILE")" 2>/dev/null
         else
             echo "supervisor: not running"
         fi
