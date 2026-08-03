@@ -33,6 +33,7 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
   - [Client Configuration](#client-configuration)
   - [Daemon Configuration](#daemon-configuration)
 - [Usage](#usage)
+- [部署全景与发布更新流程](#-部署全景与发布更新流程)
 - [运维实践（APMM UT 场景）](docs/ops-practice.md)
   - [Submit Tasks](#submit-tasks)
   - [Check Status](#check-status)
@@ -472,6 +473,64 @@ Install on offline machine or in container:
 ```bash
 pip install pytest pytest-json-report pytest-cov
 ```
+
+---
+
+## 🗺️ 部署全景与发布更新流程
+
+> 一个 bifrost 二进制，跑 4 类角色：**Client CLI**、**Daemon Server**、**MCP Server**、**Supervisor**。
+> 发布新版本时，不同角色的更新方式不同，下面统一交代。
+
+### 部署矩阵
+
+| 角色 | 跑在哪 | 谁启动 | 配置来源 | 是否需要"安装" |
+|---|---|---|---|---|
+| **Client CLI** | 联网机（本机）| 手动/脚本 | `BIFROST_CONFIG` 或 `~/.bifrost/settings.json` | 仅二进制在 GPFS，无需安装 |
+| **Daemon Server** | 离线机（H20）| Supervisor 或 systemd | `-c <config>` 或 `~/.bifrost/settings.json` | 二进制 + working_dir |
+| **MCP Server** | 联网机（Agent 侧）| Agent（Hermes/OpenCode…）自动拉起 | `BIFROST_CONFIG` 环境变量 | 无（Agent 配置指向二进制）|
+| **Supervisor** | 离线机（H20）| `bifrost-supervisor.sh start` 或 crontab @reboot | 内置路径常量 | 脚本 + 二进制 |
+
+### 发布流程（新版本）
+
+```bash
+# 1. 在联网机编译
+cd bifrost
+cargo build --release
+
+# 2. 二进制产物（GPFS 共享存储，两端都能访问）
+ls -lh target/release/bifrost
+#    -> /gpfs/gcsp/liuxin/bifrost/target/release/bifrost
+```
+
+### 发布后各角色更新方式
+
+| 角色 | 需要更新吗 | 怎么更新 | 说明 |
+|---|---|---|---|
+| **Client CLI** | ✅ | 无需操作 | 每次调用都重新 exec 二进制，自动用新版 |
+| **MCP Server** | ✅ | **必须 kill 旧 mcp-serve 进程** | 常驻进程，改 binary 后 Agent 不会自动重启；kill 后下次调用自动拉起新版（⚠️ 最常见遗漏点）|
+| **Daemon Server** | ✅ | `./bifrost-ctl.sh restart`（本机）或 `kill -HUP <supervisor_pid>`（H20）| Supervisor 负责 kill 旧 + 起新 |
+| **Supervisor** | ⚠️ 仅当脚本本身改了 | 重启 supervisor：`./bifrost-supervisor.sh restart` | 脚本更新才需要，binary 更新不需要动 supervisor |
+
+### 更新检查清单
+
+```
+编译新 binary 后：
+1. ✅ Client CLI    - 自动生效（无状态）
+2. ⚠️ MCP Server   - 必须 kill 旧 mcp-serve（Hermes: pkill -f "bifrost mcp-serve"）
+3. 🔄 Daemon Server - ./bifrost-ctl.sh restart（跨机器，无需 SSH）
+4. ⏹️ Supervisor    - 二进制更新无需动；脚本更新才 restart
+```
+
+### 跨机器控制（无需 SSH）
+
+```bash
+# 本机运行，通过 GPFS control.json 控制 H20 上的 server
+./bifrost-ctl.sh restart    # 重启 H20 daemon（编译后必做）
+./bifrost-ctl.sh status     # 查询状态（回写 status.json）
+./bifrost-ctl.sh stop       # 关闭
+```
+
+> 详细运维记录见 [docs/ops-practice.md](docs/ops-practice.md)。
 
 ---
 
