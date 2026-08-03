@@ -1,0 +1,35 @@
+# 并行测试 job: 4 个 kernel pytest 同时跑
+name: parallel-kernel-tests
+description: 4 个无模型依赖 kernel 测试并行执行, 验证 bifrost 并发
+tasks:
+  - name: merge_attn_states
+    command: >-
+      sudo -n docker exec -e HF_HUB_OFFLINE=1 -e HF_HOME=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub
+      -e HF_HUB_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      -e TRANSFORMERS_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      v0.13.0_torch2.5.1_compile bash -c 'cd /gpfs/gcsp/M2.7_verify/vllm && python3 -m pytest "tests/kernels/attention/test_merge_attn_states.py::test_merge_attn_states[output_dtype0-32-4-256]" -q --tb=short --no-header'
+    timeout: 300
+
+  - name: reshape_and_cache
+    command: >-
+      sudo -n docker exec -e HF_HUB_OFFLINE=1 -e HF_HOME=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub
+      -e HF_HUB_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      -e TRANSFORMERS_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      v0.13.0_torch2.5.1_compile bash -c 'cd /gpfs/gcsp/M2.7_verify/vllm && python3 -m pytest "tests/kernels/attention/test_cache.py::test_reshape_and_cache[fp8-cuda:0-0-dtype0-10000-8-64-8-42]" -q --tb=short --no-header'
+    timeout: 300
+
+  - name: merge_kernel
+    command: >-
+      sudo -n docker exec -e HF_HUB_OFFLINE=1 -e HF_HOME=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub
+      -e HF_HUB_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      -e TRANSFORMERS_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      v0.13.0_torch2.5.1_compile bash -c 'cd /gpfs/gcsp/M2.7_verify/vllm && python3 -m pytest "tests/kernels/attention/test_cascade_flash_attn.py::test_merge_kernel[dtype0-128-num_heads0-1]" -q --tb=short --no-header'
+    timeout: 300
+
+  - name: mha_attn_cpu
+    command: >-
+      sudo -n docker exec -e HF_HUB_OFFLINE=1 -e HF_HOME=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub
+      -e HF_HUB_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      -e TRANSFORMERS_CACHE=/gpfs/gcsp/M2.7_verify/pytorch_verify/2.5.1/ut/hf_hub/hub
+      v0.13.0_torch2.5.1_compile bash -c 'cd /gpfs/gcsp/M2.7_verify/vllm && python3 -m pytest "tests/kernels/attention/test_mha_attn.py::test_mha_attn_platform[cpu]" -q --tb=short --no-header'
+    timeout: 300

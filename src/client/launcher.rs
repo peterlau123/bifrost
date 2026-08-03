@@ -9,10 +9,20 @@ use uuid::Uuid;
 
 const POLL: Duration = Duration::from_secs(2);
 
-pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition) -> BifrostResult<JobResult> {
+pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition, parallel: bool) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
-    eprintln!("Job '{}' ({} tasks)", job.name, total);
+    eprintln!(
+        "Job '{}' ({} tasks, {})",
+        job.name,
+        total,
+        if parallel { "parallel" } else { "sequential" }
+    );
     let mut jr = JobResult::new(job.name.clone(), total);
+
+    if parallel {
+        return launch_job_parallel(bridge, &job, &mut jr);
+    }
+
     for (i, ti) in job.tasks.iter().enumerate() {
         let label = format!("[{}/{}] {}", i + 1, total, ti.name);
         eprintln!("{}", label);
@@ -86,6 +96,97 @@ pub fn launch_job(bridge: &dyn Bridge, job: JobDefinition) -> BifrostResult<JobR
         jr.completed_tasks, jr.failed_tasks, jr.total_duration_secs
     );
     Ok(jr)
+}
+
+/// Parallel job execution: submit ALL tasks first (daemon runs them
+/// concurrently up to max_concurrent), then poll all until each finishes.
+fn launch_job_parallel(
+    bridge: &dyn Bridge,
+    job: &JobDefinition,
+    jr: &mut JobResult,
+) -> BifrostResult<JobResult> {
+    // 1. Submit all tasks immediately
+    let mut pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
+    for (i, ti) in job.tasks.iter().enumerate() {
+        let mut task = Task::new(ti.command.clone(), TaskType::Custom)
+            .with_priority(ti.priority)
+            .with_timeout(ti.timeout)
+            .with_retry_count(0);
+        if let Some(wd) = &ti.working_dir {
+            task = task.with_working_dir(wd.clone());
+        }
+        for (k, v) in &ti.env_vars {
+            task = task.with_env_var(k.clone(), v.clone());
+        }
+        let tid = task.task_id;
+        bridge
+            .submit_task(&task)
+            .map_err(|e| BifrostError::ConfigInvalid(format!("submit[{}]: {}", ti.name, e)))?;
+        eprintln!("[submit] {} -> {}", ti.name, tid);
+        pending.push((i, ti.name.clone(), tid, Instant::now(), ti.timeout));
+    }
+
+    // 2. Poll all until every task reaches terminal state
+    let deadline_grace = 30u64;
+    while !pending.is_empty() {
+        std::thread::sleep(POLL);
+        let mut still_pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
+        for (i, name, tid, start, timeout) in pending.drain(..) {
+            let limit = Duration::from_secs(timeout + deadline_grace);
+            if start.elapsed() > limit {
+                jr.record_task(JobTaskResult {
+                    name: name.clone(),
+                    task_id: tid,
+                    exit_code: None,
+                    status: "Timeout".into(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_secs: start.elapsed().as_secs() as i64,
+                    error_message: Some(format!("timeout {}s", timeout)),
+                    artifacts: vec![],
+                });
+                eprintln!("[done] {} -> Timeout", name);
+                continue;
+            }
+            match crate::client::status::query_status(bridge, tid) {
+                Ok(s) => match s.status {
+                    TaskStatus::Pending | TaskStatus::Running => {
+                        still_pending.push((i, name, tid, start, timeout));
+                    }
+                    _ => {
+                        let r = fetch_result(bridge, &job.tasks[i], tid, start.elapsed());
+                        eprintln!("[done] {} -> {}", name, s.status);
+                        jr.record_task(r);
+                    }
+                },
+                Err(BifrostError::TaskNotFound(_)) => {
+                    still_pending.push((i, name, tid, start, timeout));
+                }
+                Err(e) => {
+                    jr.record_task(JobTaskResult {
+                        name: name.clone(),
+                        task_id: tid,
+                        exit_code: None,
+                        status: "Error".into(),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_secs: start.elapsed().as_secs() as i64,
+                        error_message: Some(format!("query: {}", e)),
+                        artifacts: vec![],
+                    });
+                    eprintln!("[done] {} -> Error({})", name, e);
+                }
+            }
+        }
+        pending = still_pending;
+    }
+
+    jr.finalize();
+    eprintln!(
+        "Done: {} ok, {} failed in {}s",
+        jr.completed_tasks, jr.failed_tasks, jr.total_duration_secs
+    );
+    Ok(jr.clone())
 }
 
 fn fetch_result(
@@ -203,7 +304,7 @@ mod tests {
             }],
         };
         let (bridge, submitted) = MockBridge::new();
-        let jr = launch_job(&bridge, job).unwrap();
+        let jr = launch_job(&bridge, job, false).unwrap();
         assert_eq!(jr.completed_tasks, 1);
         let t = submitted.lock().unwrap()[0].clone();
         assert_eq!(t.working_dir, PathBuf::from("/tmp"), "working_dir 必须传递");

@@ -67,6 +67,11 @@ enum ClientCommand {
         /// Working directory
         #[arg(short = 'w', long)]
         working_dir: Option<PathBuf>,
+
+        /// Run job tasks in parallel (submit all first, then poll all).
+        /// Only valid with --job. Default: sequential.
+        #[arg(long)]
+        parallel: bool,
     },
 
     /// Check task or job status
@@ -187,6 +192,7 @@ fn handle_client_mode(command: ClientCommand) {
             timeout,
             priority,
             working_dir,
+            parallel,
         } => {
             let protocol = Protocol::new(shared_storage).expect("Failed to create bridge");
             let bridge: &dyn Bridge = &protocol;
@@ -194,13 +200,15 @@ fn handle_client_mode(command: ClientCommand) {
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
-                    Ok(job_def) => match bifrost::client::launcher::launch_job(bridge, job_def) {
-                        Ok(job_result) => {
-                            println!();
-                            println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
+                    Ok(job_def) => {
+                        match bifrost::client::launcher::launch_job(bridge, job_def, parallel) {
+                            Ok(job_result) => {
+                                println!();
+                                println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
+                            }
+                            Err(e) => eprintln!("Job failed: {}", e),
                         }
-                        Err(e) => eprintln!("Job failed: {}", e),
-                    },
+                    }
                     Err(e) => eprintln!("Bad job file: {}", e),
                 }
             } else if let Some(cmd_str) = cmd {
@@ -413,6 +421,7 @@ mod tests {
                     timeout,
                     priority,
                     working_dir: _,
+                    parallel: _,
                 } => {
                     assert_eq!(cmd.unwrap(), "pytest tests/");
                     assert!(job.is_none());
