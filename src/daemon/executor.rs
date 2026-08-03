@@ -53,6 +53,7 @@ impl Executor {
                     start_time,
                     end_time,
                     output.exit_code,
+                    &task.command,
                 )?;
 
                 let status = if output.exit_code == Some(0) {
@@ -65,6 +66,7 @@ impl Executor {
                     task_id: task.task_id,
                     status,
                     output,
+                    command: task.command.clone(),
                     start_time,
                     end_time,
                     duration_ms: (end_time - start_time).num_milliseconds(),
@@ -82,8 +84,13 @@ impl Executor {
                     exit_code: None,
                 };
                 self.log_manager.write_stderr(task.task_id, &error_msg)?;
-                self.log_manager
-                    .write_metadata(task.task_id, start_time, end_time, None)?;
+                self.log_manager.write_metadata(
+                    task.task_id,
+                    start_time,
+                    end_time,
+                    None,
+                    &task.command,
+                )?;
 
                 TaskResult {
                     task_id: task.task_id,
@@ -93,6 +100,7 @@ impl Executor {
                         TaskStatus::Failed
                     },
                     output,
+                    command: task.command.clone(),
                     start_time,
                     end_time,
                     duration_ms: (end_time - start_time).num_milliseconds(),
@@ -147,10 +155,35 @@ impl Executor {
             .spawn()
             .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-        let wait_result = timeout(effective_timeout, child.wait()).await;
+        // Read stdout/stderr CONCURRENTLY with waiting for the child to exit.
+        // Reading only AFTER wait() deadlocks on >64KB output: the child
+        // blocks writing to a full pipe while we block waiting for exit.
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
 
-        let status = match wait_result {
-            Ok(res) => res.map_err(|e| format!("Failed to wait for process: {}", e))?,
+        let wait_result = timeout(effective_timeout, async {
+            let stdout_data = match stdout_pipe {
+                Some(p) => read_pipe_to_string(p, "stdout").await?,
+                None => String::new(),
+            };
+            let stderr_data = match stderr_pipe {
+                Some(p) => read_pipe_to_string(p, "stderr").await?,
+                None => String::new(),
+            };
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| format!("Failed to wait for process: {}", e))?;
+            Ok::<(std::process::ExitStatus, String, String), String>((
+                status,
+                stdout_data,
+                stderr_data,
+            ))
+        })
+        .await;
+
+        let (status, stdout_data, stderr_data) = match wait_result {
+            Ok(res) => res?,
             Err(_) => {
                 // Kill the whole process group: prevents orphaned grandchildren
                 // like `sh -c 'sleep 30'` whose sleep survives a plain child kill.
@@ -169,39 +202,18 @@ impl Executor {
             }
         };
 
-        let stdout_data = if let Some(mut stdout) = child.stdout.take() {
-            use tokio::io::AsyncReadExt;
-            let mut buffer = String::new();
-            stdout
-                .read_to_string(&mut buffer)
-                .await
-                .map_err(|e| format!("Failed to read stdout: {}", e))?;
-            buffer
-        } else {
-            String::new()
-        };
-
-        let stderr_data = if let Some(mut stderr) = child.stderr.take() {
-            use tokio::io::AsyncReadExt;
-            let mut buffer = String::new();
-            stderr
-                .read_to_string(&mut buffer)
-                .await
-                .map_err(|e| format!("Failed to read stderr: {}", e))?;
-            buffer
-        } else {
-            String::new()
-        };
-
-        // Truncate stdout to 1000 chars, safe at UTF-8 boundaries.
-        // A naive &stdout_data[..1000] panics when byte 1000 splits a
-        // multi-byte char (e.g. Chinese output) - which would lose the
-        // task result entirely.
-        let stdout_truncated = truncate_utf8(&stdout_data, 1000);
+        // Truncate stdout/stderr to 1MB, safe at UTF-8 boundaries.
+        // A naive &stdout_data[..N] panics when byte N splits a multi-byte
+        // char (e.g. Chinese output) - which would lose the task result
+        // entirely. 1MB holds full pytest output for normal runs while
+        // bounding result-file size against pathological output.
+        const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+        let stdout_truncated = truncate_utf8(&stdout_data, MAX_OUTPUT_BYTES);
+        let stderr_truncated = truncate_utf8(&stderr_data, MAX_OUTPUT_BYTES);
 
         Ok(TaskOutput {
             stdout: stdout_truncated,
-            stderr: stderr_data,
+            stderr: stderr_truncated,
             exit_code: status.code(),
         })
     }
@@ -233,6 +245,20 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}...", &s[..end])
+}
+
+/// Drain a child pipe (stdout/stderr) fully into a String.
+/// Generic over both ChildStdout and ChildStderr via AsyncRead.
+async fn read_pipe_to_string<R>(mut pipe: R, what: &str) -> Result<String, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf = String::new();
+    pipe.read_to_string(&mut buf)
+        .await
+        .map_err(|e| format!("Failed to read {}: {}", what, e))?;
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -320,8 +346,15 @@ mod tests {
         let result = executor.execute(&task).await;
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.output.stdout.len() <= 1003);
-        assert!(result.output.stdout.ends_with("..."));
+        // 2000 chars well under the 1MB cap: kept in full, no truncation
+        assert!(
+            result.output.stdout.contains("AAAA"),
+            "stdout 应保留完整内容"
+        );
+        assert!(
+            !result.output.stdout.ends_with("..."),
+            "1MB 上限下 2000 字符不应截断"
+        );
     }
 
     #[tokio::test]
@@ -341,11 +374,12 @@ mod tests {
         assert!(result.is_ok(), "中文超长输出不应 panic");
         let result = result.unwrap();
         assert_eq!(result.status, TaskStatus::Completed);
+        // 1500 chars well under the 1MB cap: kept in full
         assert!(
-            result.output.stdout.len() <= 1003,
-            "截断后不超过 1000 字节 + ..."
+            result.output.stdout.contains("你好"),
+            "中文输出应保留完整内容"
         );
-        assert!(result.output.stdout.ends_with("..."));
+        assert!(!result.output.stdout.ends_with("..."));
         // 输出必须仍是合法 UTF-8 (没有半截字符)
         assert!(std::str::from_utf8(result.output.stdout.as_bytes()).is_ok());
     }
@@ -363,6 +397,34 @@ mod tests {
         assert!(std::str::from_utf8(t.as_bytes()).is_ok());
         // 精确对齐边界时 (1000 = 333*3 + 1 → 回退到 999 = 333 个字符)
         assert!(t.starts_with(&"你".repeat(333)));
+    }
+
+    #[tokio::test]
+    async fn test_stdout_truncation_over_1mb() {
+        // 超出 1MB 上限时仍应安全截断 (不 panic, 合法 UTF-8)
+        let temp_dir = TempDir::new().unwrap();
+        let log_root = temp_dir.path().join("logs");
+        let executor = Executor::new(log_root, Duration::from_secs(60)).unwrap();
+        let task = Task::new(
+            "python3 -u -c \"import sys; sys.stdout.write('A' * 1100000)\"".to_string(),
+            crate::core::models::TaskType::Shell,
+        )
+        .with_timeout(60);
+
+        let result = executor.execute(&task).await;
+        assert!(result.is_ok(), "1MB 超长输出不应 panic");
+        let result = result.unwrap();
+        assert!(
+            result.output.stdout.len() <= 1024 * 1024 + 4,
+            "截断到 1MB 上限附近, 实际长度: {}",
+            result.output.stdout.len()
+        );
+        assert!(
+            result.output.stdout.ends_with("..."),
+            "超限应截断, 实际长度: {}",
+            result.output.stdout.len()
+        );
+        assert!(std::str::from_utf8(result.output.stdout.as_bytes()).is_ok());
     }
 
     #[tokio::test]

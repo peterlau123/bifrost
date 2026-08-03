@@ -200,6 +200,7 @@ async fn process_one(p: &Protocol, ex: &Executor, path: &std::path::Path) -> Res
                         stderr: e.clone(),
                         exit_code: None,
                     },
+                    command: task.command.clone(),
                     start_time: chrono::Utc::now(),
                     end_time: chrono::Utc::now(),
                     duration_ms: 0,
@@ -248,6 +249,7 @@ fn write_failed_result(p: &Protocol, path: &std::path::Path, error: &str) {
             stderr: error.to_string(),
             exit_code: None,
         },
+        command: String::new(), // task file unparseable, no command available
         start_time: chrono::Utc::now(),
         end_time: chrono::Utc::now(),
         duration_ms: 0,
