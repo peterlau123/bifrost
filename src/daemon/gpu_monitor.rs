@@ -62,34 +62,6 @@ impl GpuMonitor {
         .await
         .unwrap_or(false)
     }
-
-    /// Query nvidia-smi to check GPU utilization
-    ///
-    /// A GPU is considered idle if utilization is below 10%
-    fn check_gpu_utilization(&self, gpu_id: u32) -> bool {
-        let output = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=utilization.gpu",
-                "--format=csv,noheader,nounits",
-                "-i",
-                &gpu_id.to_string(),
-            ])
-            .output();
-
-        match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                match stdout.trim().parse::<u32>() {
-                    Ok(utilization) => utilization < 10,
-                    Err(_) => false, // Failed to parse, assume busy
-                }
-            }
-            _ => {
-                // nvidia-smi failed, assume GPU is busy
-                false
-            }
-        }
-    }
 }
 
 #[cfg(test)]

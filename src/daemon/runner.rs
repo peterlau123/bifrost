@@ -21,7 +21,7 @@ use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Fallback scan interval: catches tasks inotify missed (watcher death,
 /// event overflow, pre-server submissions). GPFS inotify is unreliable for
@@ -129,7 +129,6 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         );
     }
 
-    let mut last_scan = Instant::now();
     loop {
         if sd.load(Ordering::Relaxed) {
             break;
@@ -137,31 +136,6 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         tokio::select! {
             Some(path) = rx.recv() => {
                 spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path);
-            }
-            _ = tokio::time::sleep(FALLBACK_SCAN_INTERVAL) => {
-                // Fallback scan: self-healing against watcher death and
-                // missed events. Cheap (readdir) and runs at most once
-                // per FALLBACK_SCAN_INTERVAL.
-                if last_scan.elapsed() >= FALLBACK_SCAN_INTERVAL {
-                    last_scan = Instant::now();
-                    // ponytail: readdir on GPFS is a blocking syscall — running it
-                    // inline starves the async workers (heartbeat + task futures)
-                    // under high concurrency (observed: daemon "freezes" with 8+
-                    // concurrent batches). Move it to the blocking pool.
-                    let cd2 = cd.clone();
-                    let p2 = p.clone();
-                    let ex2 = ex.clone();
-                    let sem2 = sem.clone();
-                    let ac2 = active_count.clone();
-                    tokio::spawn(async move {
-                        let paths = tokio::task::spawn_blocking(move || scan_pending(&cd2))
-                            .await
-                            .unwrap_or_default();
-                        for path in paths {
-                            spawn_task(p2.clone(), ex2.clone(), sem2.clone(), ac2.clone(), path);
-                        }
-                    });
-                }
             }
         }
     }
