@@ -80,6 +80,36 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     // 并发执行: 尊重 max_concurrent 配置 (README 示例默认 10)
     let mc = s.daemon.max_concurrent.unwrap_or(10).clamp(1, 100);
     let sem = Arc::new(tokio::sync::Semaphore::new(mc));
+
+    // 2026-08-08 深修: fallback scan 从 tokio::select + tokio::time::sleep 改为
+    // 独立 std::thread (与心跳线程同机制)。根因: H20 (VM) 时钟漂移下
+    // tokio time driver 的 sleep 永不触发 → scan 分支死 → 新任务不消费 (假活,
+    // 心跳独立线程正常)。std::thread::sleep 实测正常 (心跳 60s 持续更新)。
+    // scan 线程负责: 周期扫描 commands/ + spawn 任务 (通过 tokio Handle)。
+    {
+        let cd_s = cd.clone();
+        let p_s = p.clone();
+        let ex_s = ex.clone();
+        let sem_s = sem.clone();
+        let ac_s = active_count.clone();
+        let sd_s = sd.clone();
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            while !sd_s.load(Ordering::Relaxed) {
+                std::thread::sleep(FALLBACK_SCAN_INTERVAL);
+                let paths = scan_pending(&cd_s);
+                for path in paths {
+                    let p2 = p_s.clone();
+                    let ex2 = ex_s.clone();
+                    let sem2 = sem_s.clone();
+                    let ac2 = ac_s.clone();
+                    let h = handle.clone();
+                    // spawn_task 内部有 semaphore acquire + tokio::spawn
+                    h.spawn(async move { spawn_task(p2, ex2, sem2, ac2, path); });
+                }
+            }
+        });
+    }
     println!(
         "Server ready, watching {} (max_concurrent={}, fallback scan {}s)",
         cd.display(),
