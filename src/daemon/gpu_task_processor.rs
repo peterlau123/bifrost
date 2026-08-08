@@ -78,6 +78,7 @@ impl GpuTaskProcessor {
         let (scheduled_task, gpu_id) = self
             .gpu_scheduler
             .schedule_next()
+            .await
             .ok_or("No available GPU for task execution")?;
 
         let gpu_guard = GpuGuard::new(&mut self.gpu_scheduler, gpu_id, task_id);
@@ -142,7 +143,7 @@ impl GpuTaskProcessor {
                 Ok(task) => {
                     self.gpu_scheduler.enqueue(task);
 
-                    while let Some((scheduled_task, gpu_id)) = self.gpu_scheduler.schedule_next() {
+                    while let Some((scheduled_task, gpu_id)) = self.gpu_scheduler.schedule_next().await {
                         let task_id = scheduled_task.task_id;
                         let executor = self.executor.clone();
                         let mut gpu_scheduler = self.gpu_scheduler.clone();
