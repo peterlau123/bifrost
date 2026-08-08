@@ -86,6 +86,10 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     // tokio time driver 的 sleep 永不触发 → scan 分支死 → 新任务不消费 (假活,
     // 心跳独立线程正常)。std::thread::sleep 实测正常 (心跳 60s 持续更新)。
     // scan 线程负责: 周期扫描 commands/ + spawn 任务 (通过 tokio Handle)。
+    //
+    // 2026-08-08 彻底修复: std::thread::sleep 在 H20 时钟冻结时也会永久卡住
+    // (nanosleep deadline 依赖 CLOCK_MONOTONIC, VM 时钟冻结后不返回)
+    // → scan 线程死亡 → 假活复发。改忙轮询 + yield (不依赖时钟, 永不卡死)。
     {
         let cd_s = cd.clone();
         let p_s = p.clone();
@@ -95,18 +99,23 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         let sd_s = sd.clone();
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
+            let mut tick = 0u32;
             while !sd_s.load(Ordering::Relaxed) {
-                std::thread::sleep(FALLBACK_SCAN_INTERVAL);
-                let paths = scan_pending(&cd_s);
-                for path in paths {
-                    let p2 = p_s.clone();
-                    let ex2 = ex_s.clone();
-                    let sem2 = sem_s.clone();
-                    let ac2 = ac_s.clone();
-                    let h = handle.clone();
-                    // spawn_task 内部有 semaphore acquire + tokio::spawn
-                    h.spawn(async move { spawn_task(p2, ex2, sem2, ac2, path); });
+                tick = tick.wrapping_add(1);
+                // 降频: 每 10000 次 yield (~10ms) scan 一次 — 无 sleep 无时钟依赖
+                if tick % 10_000 == 0 {
+                    let paths = scan_pending(&cd_s);
+                    for path in paths {
+                        let p2 = p_s.clone();
+                        let ex2 = ex_s.clone();
+                        let sem2 = sem_s.clone();
+                        let ac2 = ac_s.clone();
+                        let h = handle.clone();
+                        // spawn_task 内部有 semaphore acquire + tokio::spawn
+                        h.spawn(async move { spawn_task(p2, ex2, sem2, ac2, path); });
+                    }
                 }
+                std::thread::yield_now();
             }
         });
     }
