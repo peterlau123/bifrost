@@ -158,11 +158,16 @@ impl SshBridge {
     }
 
     /// Delete every file under `remote_dir/<subdir>` whose name contains the task id.
+    /// 与 Protocol::remove_task 同规则：**不删 .processing claim marker**——
+    /// 它是 daemon 处理任务的领取标记，误删会让 watcher/scan 双通道的
+    /// 第二个事件重新 claim 成功，读已删的 .json 失败覆盖已完成结果。
+    /// 注意：`\"$f\"` 的值是 `"$f"`（shell 双引号展开）；写成 `\\\"` 会变成
+    /// 字面引号字符导致 rm 删不到文件（2026-08-24 修复）。
     fn remove_remote_matching(&self, subdir: &str, task_id: &Uuid) -> Result<()> {
         let base = sh_quote(&self.remote_dir.join(subdir).to_string_lossy());
         let id = task_id.to_string();
         let cmd = format!(
-            "ls {base} 2>/dev/null | grep {id} | while read f; do rm -f {base}/\"$f\"; done",
+            "ls {base} 2>/dev/null | grep {id} | grep -v '\\.processing$' | while read f; do rm -f {base}/\"$f\"; done",
             base = base,
             id = sh_quote(&id)
         );
@@ -496,6 +501,31 @@ mod tests {
         b.submit_task(&task).unwrap();
         b.remove_task(&task.task_id).unwrap();
         assert!(b.read_task(&task.task_id).is_err());
+    }
+
+    /// 与共享存储 remove_task 同规则：.processing claim marker 必须保留
+    /// （双通道竞态修复的 SSH 侧一致性回归测试）。
+    #[test]
+    fn test_remove_task_keeps_processing_marker() {
+        let tmp = TempDir::new().unwrap();
+        let b = local_bridge(&tmp);
+        let task = Task::new("echo hi".into(), TaskType::Shell);
+        b.submit_task(&task).unwrap();
+        // 模拟 daemon 已创建 claim marker（文件名与任务文件同前缀）
+        let fname = format!(
+            "{}_{}.processing",
+            task.timestamp.format("%Y%m%d_%H%M%S"),
+            task.task_id
+        );
+        let marker = tmp.path().join("commands").join(&fname);
+        std::fs::write(&marker, "").unwrap();
+        assert!(marker.exists(), "测试前置: claim marker 应存在");
+
+        b.remove_task(&task.task_id).unwrap();
+        assert!(
+            marker.exists(),
+            "remove_task 不应删除 .processing claim marker"
+        );
     }
 
     #[test]
