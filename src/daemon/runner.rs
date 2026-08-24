@@ -103,7 +103,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             while !sd_s.load(Ordering::Relaxed) {
                 tick = tick.wrapping_add(1);
                 // 降频: 每 10000 次 yield (~10ms) scan 一次 — 无 sleep 无时钟依赖
-                if tick % 10_000 == 0 {
+                if tick.is_multiple_of(10_000) {
                     let paths = scan_pending(&cd_s);
                     for path in paths {
                         let p2 = p_s.clone();
@@ -112,7 +112,9 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                         let ac2 = ac_s.clone();
                         let h = handle.clone();
                         // spawn_task 内部有 semaphore acquire + tokio::spawn
-                        h.spawn(async move { spawn_task(p2, ex2, sem2, ac2, path); });
+                        h.spawn(async move {
+                            spawn_task(p2, ex2, sem2, ac2, path);
+                        });
                     }
                 }
                 std::thread::yield_now();
@@ -208,6 +210,15 @@ async fn process_one(
                 "cannot parse task file (after {} retries)",
                 MAX_READ_RETRIES
             );
+            // 双通道竞态防线：watcher 事件 + fallback scan 都可能把同一
+            // 任务提交给 spawn_task。第一个处理者完成后 claim marker
+            // (.processing) 被删除，排队中的第二个事件会重新 claim 成功，
+            // 但任务文件已被 remove_task 消费——此时若写 Failed result
+            // 会**覆盖已完成的结果**（2026-08-24 e2e job J1/J4 根因）。
+            // 文件不存在 = 已被消费，静默跳过；文件存在但解析失败才写 Failed。
+            if !path.exists() {
+                return Ok(());
+            }
             write_failed_result(p, path, &err).await;
             return Ok(()); // handled: Failed result written
         }
@@ -456,5 +467,35 @@ mod tests {
         std::fs::write(&path, "{ not valid json").unwrap();
         let t = read_task_retry(&path).await;
         assert!(t.is_none(), "坏 JSON 重试后应返回 None");
+    }
+
+    /// 双通道竞态回归：任务文件已被第一个处理者消费（删除），第二个
+    /// 处理者 claim 成功但 read 失败——**不得写 Failed result 覆盖已完成
+    /// 的结果**（2026-08-24 e2e job J1/J4 Failed parse 根因）。
+    #[tokio::test]
+    async fn test_process_one_skips_missing_task_file() {
+        let tmp = TempDir::new().unwrap();
+        let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
+        let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(60)).unwrap();
+
+        // 任务文件已被消费（不存在）——process_one 必须静默跳过
+        let tid = uuid::Uuid::new_v4();
+        let path = tmp
+            .path()
+            .join("commands")
+            .join(format!("20260731_103000_{}.json", tid));
+        // 不写文件，模拟"已被删除"
+
+        let r = process_one(&p, &ex, &path).await;
+        assert!(r.is_ok(), "缺失任务文件应静默返回 Ok");
+        // 绝不能写 Failed result
+        let result_file = tmp
+            .path()
+            .join("results")
+            .join(format!("{}_result.json", tid));
+        assert!(
+            !result_file.exists(),
+            "任务文件已被消费时不得写 Failed result 覆盖已完成结果"
+        );
     }
 }

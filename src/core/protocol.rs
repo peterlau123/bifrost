@@ -142,9 +142,12 @@ impl Protocol {
             .map_err(BifrostError::IoError)?
             .filter_map(|e| e.ok())
             .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains(&task_id.to_string())
+                let name = e.file_name().to_string_lossy().to_string();
+                // 只删 .json 命令文件 + .lock 伴生文件；**绝不删 .processing**
+                // claim marker——否则 watcher/scan 双通道的第二次 claim 会
+                // 成功 → 读已删的 .json 失败 → write_failed_result 覆盖
+                // 已完成的结果（2026-08-24 e2e job J1/J4 Failed parse 根因）。
+                name.contains(&task_id.to_string()) && !name.ends_with(".processing")
             })
             .collect();
 
@@ -217,11 +220,9 @@ impl Protocol {
         }
         for entry in fs::read_dir(&self.commands_dir).map_err(BifrostError::IoError)? {
             let entry = entry.map_err(BifrostError::IoError)?;
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .contains(&task_id.to_string())
-            {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 与 remove_task 同规则：不删 .processing claim marker
+            if name.contains(&task_id.to_string()) && !name.ends_with(".processing") {
                 fs::remove_file(entry.path()).map_err(BifrostError::IoError)?;
             }
         }
@@ -339,5 +340,68 @@ impl Bridge for Protocol {
 
     fn remove_task(&self, task_id: &Uuid) -> Result<()> {
         Protocol::remove_task(self, task_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn ts_prefix(tid: &Uuid) -> String {
+        format!("20260824_120000_{}", tid)
+    }
+
+    /// remove_task 必须删除 .json + .lock 伴生文件，但**绝不删 .processing**
+    /// claim marker——否则 watcher/scan 双通道第二次 claim 成功会覆盖结果
+    /// （2026-08-24 e2e job J1/J4 Failed parse 根因回归测试）。
+    #[test]
+    fn test_remove_task_keeps_processing_marker() {
+        let tmp = TempDir::new().unwrap();
+        let p = Protocol::new(tmp.path().to_path_buf()).unwrap();
+        let tid = Uuid::new_v4();
+        let base = tmp.path().join("commands").join(ts_prefix(&tid));
+
+        std::fs::write(base.with_extension("json"), "{}").unwrap();
+        std::fs::write(base.with_extension("lock"), "").unwrap();
+        std::fs::write(base.with_extension("processing"), "").unwrap();
+
+        p.remove_task(&tid).unwrap();
+
+        let remaining: Vec<String> = fs::read_dir(tmp.path().join("commands"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![format!("{}.processing", ts_prefix(&tid))],
+            "remove_task 只应删除 .json/.lock，.processing claim marker 必须保留"
+        );
+    }
+
+    /// remove_command_file 同规则。
+    #[test]
+    fn test_remove_command_file_keeps_processing_marker() {
+        let tmp = TempDir::new().unwrap();
+        let p = Protocol::new(tmp.path().to_path_buf()).unwrap();
+        let tid = Uuid::new_v4();
+        let base = tmp.path().join("commands").join(ts_prefix(&tid));
+
+        std::fs::write(base.with_extension("json"), "{}").unwrap();
+        std::fs::write(base.with_extension("processing"), "").unwrap();
+
+        p.remove_command_file(&tid).unwrap();
+
+        let remaining: Vec<String> = fs::read_dir(tmp.path().join("commands"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![format!("{}.processing", ts_prefix(&tid))],
+            "remove_command_file 不应删 .processing claim marker"
+        );
     }
 }
