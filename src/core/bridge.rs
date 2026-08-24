@@ -11,8 +11,9 @@
 
 use uuid::Uuid;
 
-use crate::core::error::Result;
+use crate::core::error::{BifrostError, Result};
 use crate::core::models::{Task, TaskResult, TaskStatus};
+use crate::core::settings::BifrostSettings;
 
 /// Status of a task, returned by [`Bridge::query_status`]
 #[derive(Debug, Clone)]
@@ -20,6 +21,27 @@ pub struct TaskStatusResponse {
     pub task_id: Uuid,
     pub status: TaskStatus,
     pub message: Option<String>,
+}
+
+/// Create the bridge configured by the given settings.
+///
+/// - `transport: "shared"` (default) → shared-storage [`Protocol`]
+/// - `transport: "ssh"` → [`SshBridge`] reaching the target over SSH
+///
+/// The daemon on the target machine always uses the shared-storage
+/// bridge (it operates on the local directories); the SSH bridge is for
+/// clients that have no shared filesystem with the target but can SSH.
+pub fn create_bridge(settings: &BifrostSettings) -> Result<Box<dyn Bridge>> {
+    if settings.transport.is_ssh() {
+        let ssh = settings.ssh.as_ref().ok_or_else(|| {
+            BifrostError::ConfigInvalid("transport=ssh but no ssh section".into())
+        })?;
+        Ok(Box::new(crate::core::ssh_bridge::SshBridge::new(ssh)?))
+    } else {
+        Ok(Box::new(crate::core::protocol::Protocol::new(
+            settings.shared_storage.clone(),
+        )?))
+    }
 }
 
 /// Transport-agnostic bridge between source and target machines.

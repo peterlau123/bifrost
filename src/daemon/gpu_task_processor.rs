@@ -143,7 +143,9 @@ impl GpuTaskProcessor {
                 Ok(task) => {
                     self.gpu_scheduler.enqueue(task);
 
-                    while let Some((scheduled_task, gpu_id)) = self.gpu_scheduler.schedule_next().await {
+                    while let Some((scheduled_task, gpu_id)) =
+                        self.gpu_scheduler.schedule_next().await
+                    {
                         let task_id = scheduled_task.task_id;
                         let executor = self.executor.clone();
                         let mut gpu_scheduler = self.gpu_scheduler.clone();

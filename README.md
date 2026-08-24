@@ -81,7 +81,7 @@ When dealing with air-gapped machines (no network access), traditional remote ex
 
 ### Key Features
 
-- **Bridge abstraction** - Transport-agnostic communication (shared storage implemented, SSH extensible)
+- **Bridge abstraction** - Transport-agnostic communication: shared storage (GPFS/NFS) **and SSH** implemented
 - **Unified settings** - ~/.bifrost/settings.json, init via CLI
 - **Air-gapped operation** - Complete separation between client and server
 - **Security hardened** - Command injection prevention, path traversal protection
@@ -433,8 +433,32 @@ bifrost server --init  # generate default settings
 | Field | Client | Server | Description |
 |-------|--------|--------|-------------|
 | shared_storage | Yes | Yes | Root directory for commands/results/logs |
+| transport | Yes | -- | Bridge type: `"shared"` (default) or `"ssh"` |
+| ssh | Yes | -- | SSH bridge config (host/remote_dir/...) — required when transport=ssh |
 | client.* | Yes | -- | Poll interval, heartbeat timeout |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
+
+### SSH Bridge (transport = "ssh")
+
+当 Client 与目标机**没有共享文件系统**、但可通过 SSH 访问时，用 SSH 作为传输层：Client 通过 ssh 读写目标机的 `commands/ results/ status/ artifacts/` 目录，目标机上的 daemon 依旧用本地 Protocol 消费任务——两端目录语义完全一致，daemon 无需改动。
+
+```json
+{
+  "shared_storage": "/tmp/bifrost",            // daemon 侧仍用它定位本地目录
+  "transport": "ssh",
+  "ssh": {
+    "host": "target-machine.example.com",      // 必填
+    "user": "bifrost",                          // 可选，默认当前用户
+    "remote_dir": "/gpfs/bifrost",              // 必填：目标机上充当 shared_storage 的目录
+    "port": 22,                                 // 可选，默认 22
+    "connect_timeout": "10s"                    // 可选，每次 ssh 连接超时（默认 10s）
+  },
+  "client": {},
+  "daemon": {}
+}
+```
+
+要求：本机可 `ssh <host>` 免密登录（`BatchMode=yes`）。文件内容经 ssh stdin 传输（`cat >` + 原子 `mv`），路径经 shell 转义，无注入风险。
 
 ## 🚀 Usage
 

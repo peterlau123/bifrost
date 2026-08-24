@@ -163,10 +163,9 @@ fn handle_mcp_serve(config: Option<PathBuf>) {
 
 /// Handle client mode operations
 fn handle_client_mode(command: ClientCommand) {
-    use bifrost::core::bridge::Bridge;
+    use bifrost::core::bridge::create_bridge;
     use bifrost::core::job::load_job;
     use bifrost::core::models::TaskType;
-    use bifrost::core::protocol::Protocol;
     use bifrost::core::settings;
 
     // Same config resolution as MCP server: BIFROST_CONFIG env > ~/.bifrost/settings.json
@@ -194,14 +193,13 @@ fn handle_client_mode(command: ClientCommand) {
             working_dir,
             parallel,
         } => {
-            let protocol = Protocol::new(shared_storage).expect("Failed to create bridge");
-            let bridge: &dyn Bridge = &protocol;
+            let bridge = create_bridge(&settings).expect("Failed to create bridge");
 
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
                     Ok(job_def) => {
-                        match bifrost::client::launcher::launch_job(bridge, job_def, parallel) {
+                        match bifrost::client::launcher::launch_job(&*bridge, job_def, parallel) {
                             Ok(job_result) => {
                                 println!();
                                 println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
@@ -221,7 +219,7 @@ fn handle_client_mode(command: ClientCommand) {
 
                 let submit_start = std::time::Instant::now();
                 match bifrost::client::submit::submit_task(
-                    bridge,
+                    &*bridge,
                     cmd_str,
                     task_type,
                     priority,
@@ -250,11 +248,10 @@ fn handle_client_mode(command: ClientCommand) {
         ClientCommand::Status { id } => {
             use uuid::Uuid;
 
-            let protocol = Protocol::new(shared_storage).expect("Failed to create bridge");
-            let bridge: &dyn Bridge = &protocol;
+            let bridge = create_bridge(&settings).expect("Failed to create bridge");
 
             match Uuid::parse_str(&id) {
-                Ok(parsed_id) => match bifrost::client::status::query_status(bridge, parsed_id) {
+                Ok(parsed_id) => match bifrost::client::status::query_status(&*bridge, parsed_id) {
                     Ok(status_resp) => {
                         println!("Task status for: {}", id);
                         println!("  Status: {}", status_resp.status);

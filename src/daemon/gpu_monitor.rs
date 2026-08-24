@@ -38,7 +38,6 @@ impl GpuMonitor {
         }
 
         // Query nvidia-smi for GPU utilization (spawn_blocking 避免阻塞 runtime)
-        let gpu_id = gpu_id;
         tokio::task::spawn_blocking(move || {
             let output = Command::new("nvidia-smi")
                 .args([

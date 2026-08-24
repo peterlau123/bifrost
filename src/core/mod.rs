@@ -6,6 +6,7 @@ pub mod job;
 pub mod lock;
 pub mod models;
 pub mod protocol;
+pub mod ssh_bridge;
 pub use batch_tracker::BatchTracker;
 pub use bridge::{Bridge, TaskStatusResponse};
 pub mod settings;
