@@ -101,8 +101,14 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     // Use unique temp file to avoid collisions
     let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
 
-    // Write to temp file
-    std::fs::write(&temp_path, content).map_err(BifrostError::IoError)?;
+    // Write + fsync: GPFS 跨节点可见性 — 无 fsync 时数据块可能未落盘,
+    // daemon(另一节点) 读到旧/半截 → "cannot parse task file" (2026-08-08 根因)
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&temp_path).map_err(BifrostError::IoError)?;
+        f.write_all(content).map_err(BifrostError::IoError)?;
+        f.sync_all().map_err(BifrostError::IoError)?;
+    }
 
     // Rename is atomic on most filesystems
     let rename_result = std::fs::rename(&temp_path, path);

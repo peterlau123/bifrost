@@ -353,6 +353,5 @@ parallel_tasks:
 
 ## See Also
 
-- [Deployment Guide](DEPLOYMENT.md) - Production deployment
-- [Architecture Guide](ARCHITECTURE.md) - System architecture
-- [Configuration Reference](CONFIGURATION.md) - Complete configuration
+- [Deployment Guide](deployment.md) - Production deployment
+- [README](../README.md) - Project overview

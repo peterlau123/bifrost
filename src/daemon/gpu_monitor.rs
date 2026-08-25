@@ -25,7 +25,9 @@ impl GpuMonitor {
     ///
     /// In simulation mode, always returns true.
     /// In real mode, queries nvidia-smi to check GPU utilization.
-    pub fn is_gpu_idle(&self, gpu_id: u32) -> bool {
+    /// Check if a GPU is idle (async: nvidia-smi 移到 spawn_blocking,
+    /// 避免同步阻塞占死 tokio runtime worker — 2026-08-08 假活根因修复)
+    pub async fn is_gpu_idle(&self, gpu_id: u32) -> bool {
         // Validate GPU is in pool
         if !self.gpu_pool.contains(&gpu_id) {
             return false;
@@ -35,36 +37,29 @@ impl GpuMonitor {
             return true;
         }
 
-        // Query nvidia-smi for GPU utilization
-        self.check_gpu_utilization(gpu_id)
-    }
-
-    /// Query nvidia-smi to check GPU utilization
-    ///
-    /// A GPU is considered idle if utilization is below 10%
-    fn check_gpu_utilization(&self, gpu_id: u32) -> bool {
-        let output = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=utilization.gpu",
-                "--format=csv,noheader,nounits",
-                "-i",
-                &gpu_id.to_string(),
-            ])
-            .output();
-
-        match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                match stdout.trim().parse::<u32>() {
-                    Ok(utilization) => utilization < 10,
-                    Err(_) => false, // Failed to parse, assume busy
+        // Query nvidia-smi for GPU utilization (spawn_blocking 避免阻塞 runtime)
+        tokio::task::spawn_blocking(move || {
+            let output = Command::new("nvidia-smi")
+                .args([
+                    "--query-gpu=utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                    "-i",
+                    &gpu_id.to_string(),
+                ])
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    match stdout.trim().parse::<u32>() {
+                        Ok(utilization) => utilization < 10,
+                        Err(_) => false, // Failed to parse, assume busy
+                    }
                 }
+                _ => false, // nvidia-smi failed, assume busy
             }
-            _ => {
-                // nvidia-smi failed, assume GPU is busy
-                false
-            }
-        }
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 
@@ -79,7 +74,8 @@ mod tests {
 
         // In simulation mode, all GPUs should be idle
         for gpu_id in gpu_pool {
-            assert!(monitor.is_gpu_idle(gpu_id));
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            assert!(rt.block_on(monitor.is_gpu_idle(gpu_id)));
         }
     }
 
@@ -89,6 +85,7 @@ mod tests {
         let monitor = GpuMonitor::new(gpu_pool.clone(), false);
 
         // GPU not in pool should not be idle
-        assert!(!monitor.is_gpu_idle(99));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt.block_on(monitor.is_gpu_idle(99)));
     }
 }

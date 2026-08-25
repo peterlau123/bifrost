@@ -38,10 +38,54 @@ fn ser_duration<S: serde::Serializer>(v: &Option<Duration>, s: S) -> Result<S::O
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BifrostSettings {
     pub shared_storage: PathBuf,
+    /// Transport type: "shared" (default) or "ssh".
+    #[serde(default)]
+    pub transport: Transport,
+    /// SSH transport config (required when transport == "ssh").
+    #[serde(default)]
+    pub ssh: Option<SshSection>,
     #[serde(default)]
     pub client: ClientSection,
     #[serde(default)]
     pub daemon: DaemonSection,
+}
+
+/// Transport selection for the bridge.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// Shared-storage bridge (GPFS/NFS): both sides read/write the same dirs.
+    #[default]
+    Shared,
+    /// SSH bridge: client reaches the target machine's dirs over SSH.
+    Ssh,
+}
+
+impl Transport {
+    pub fn is_ssh(&self) -> bool {
+        matches!(self, Transport::Ssh)
+    }
+}
+
+/// SSH bridge configuration (used when `transport == "ssh"`).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct SshSection {
+    /// Target hostname or IP (required).
+    pub host: Option<String>,
+    /// SSH user (default: current user).
+    pub user: Option<String>,
+    /// Remote directory on the target machine that plays the role of
+    /// shared_storage: commands/ results/ status/ artifacts/ live under it.
+    pub remote_dir: Option<PathBuf>,
+    /// SSH port (default: 22).
+    pub port: Option<u16>,
+    /// Connect timeout for each ssh invocation (default: 10s).
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration"
+    )]
+    pub connect_timeout: Option<Duration>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -89,6 +133,8 @@ impl BifrostSettings {
     pub fn defaults() -> Self {
         Self {
             shared_storage: dirs().join("data"),
+            transport: Transport::Shared,
+            ssh: None,
             client: ClientSection::default(),
             daemon: DaemonSection::default(),
         }
@@ -110,6 +156,18 @@ impl BifrostSettings {
                 return Err(SettingsError::Duration {
                     value: c.to_string(),
                     reason: "max_concurrent must be 1-100".into(),
+                });
+            }
+        }
+        if self.transport.is_ssh() {
+            let ssh = self.ssh.as_ref().ok_or_else(|| SettingsError::Duration {
+                value: "ssh".into(),
+                reason: "transport=ssh requires an 'ssh' config section".into(),
+            })?;
+            if ssh.host.is_none() || ssh.remote_dir.is_none() {
+                return Err(SettingsError::Duration {
+                    value: "ssh".into(),
+                    reason: "ssh config requires 'host' and 'remote_dir'".into(),
                 });
             }
         }
@@ -180,5 +238,66 @@ mod tests {
             r#"{"shared_storage":"/t","client":{"poll_interval":"blargh"},"daemon":{}}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_transport_defaults_to_shared() {
+        let s: BifrostSettings = serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap();
+        assert_eq!(s.transport, Transport::Shared);
+        assert!(s.ssh.is_none());
+    }
+
+    #[test]
+    fn test_transport_ssh_parse() {
+        let s: BifrostSettings = serde_json::from_str(
+            r#"{"shared_storage":"/t","transport":"ssh","ssh":{"host":"h1","remote_dir":"/r"}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.transport, Transport::Ssh);
+        assert!(s.transport.is_ssh());
+        let ssh = s.ssh.unwrap();
+        assert_eq!(ssh.host.as_deref(), Some("h1"));
+        assert_eq!(ssh.remote_dir.unwrap(), std::path::PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn test_transport_ssh_unknown_falls_back_shared() {
+        // Unknown transport value: serde errors (no silent fallback).
+        assert!(serde_json::from_str::<BifrostSettings>(
+            r#"{"shared_storage":"/t","transport":"carrier-pigeon"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_validate_ssh_requires_section_and_fields() {
+        let no_section = BifrostSettings {
+            transport: Transport::Ssh,
+            ssh: None,
+            ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
+        };
+        assert!(no_section.validate().is_err());
+
+        let no_host = BifrostSettings {
+            transport: Transport::Ssh,
+            ssh: Some(SshSection {
+                host: None,
+                remote_dir: Some(std::path::PathBuf::from("/r")),
+                ..SshSection::default()
+            }),
+            ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
+        };
+        assert!(no_host.validate().is_err());
+
+        let ok = BifrostSettings {
+            transport: Transport::Ssh,
+            ssh: Some(SshSection {
+                host: Some("h1".into()),
+                remote_dir: Some(std::path::PathBuf::from("/r")),
+                ..SshSection::default()
+            }),
+            ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
+        };
+        assert!(ok.validate().is_ok());
     }
 }

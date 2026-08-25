@@ -49,7 +49,7 @@ Bifrost 是一个**通用框架**，用于在网络隔离的机器间下发并�
 
 ### 环境要求
 
-- **Rust**: 1.70+ (2021 edition)
+- **Rust**: 1.87+ (2021 edition, CI 用 stable 工具链；`is_multiple_of` 需 1.87)
 - **共享存储**: 源机器 和 目标机器 都能访问的 GPFS 共享目录（也支持 NFS/Lustre 等 POSIX 文件系统）
 
 ### 构建
@@ -131,7 +131,7 @@ bifrost/
 ├── config/                 # 配置模板
 ├── examples/               # YAML Job 示例 (pytest, benchmark, smoke)
 ├── scripts/                # 部署脚本
-├── docs/                   # ADAPTER_GUIDE.md, DEPLOYMENT.md
+├── docs/                   # adapter-guide.md, deployment.md, ops-practice.md
 └── adapters/               # pytest_template.yaml
 ```
 

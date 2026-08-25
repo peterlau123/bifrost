@@ -50,7 +50,7 @@ impl GpuScheduler {
     /// Get the next available idle GPU using round-robin allocation
     ///
     /// Returns the next idle GPU in round-robin order to ensure fair distribution
-    fn get_next_idle_gpu(&mut self) -> Option<u32> {
+    async fn get_next_idle_gpu(&mut self) -> Option<u32> {
         let pool_size = self.gpu_pool.len();
         if pool_size == 0 {
             return None;
@@ -61,7 +61,7 @@ impl GpuScheduler {
             let idx = (self.last_assigned_index + i) % pool_size;
             let gpu_id = self.gpu_pool[idx];
             if let Some(tasks) = self.active_tasks.get(&gpu_id) {
-                if tasks.is_empty() && self.monitor.is_gpu_idle(gpu_id) {
+                if tasks.is_empty() && self.monitor.is_gpu_idle(gpu_id).await {
                     // Update last_assigned_index for next iteration
                     self.last_assigned_index = (idx + 1) % pool_size;
                     return Some(gpu_id);
@@ -97,12 +97,12 @@ impl GpuScheduler {
     ///
     /// Returns Some((task, gpu_id)) if a task was scheduled,
     /// or None if no tasks are pending or no GPUs are available
-    pub fn schedule_next(&mut self) -> Option<(Task, u32)> {
+    pub async fn schedule_next(&mut self) -> Option<(Task, u32)> {
         if self.pending_queue.is_empty() {
             return None;
         }
 
-        let gpu_id = self.get_next_idle_gpu()?;
+        let gpu_id = self.get_next_idle_gpu().await?;
         let task = self.pending_queue.pop_front()?;
 
         // Add task to active tasks for this GPU
@@ -134,7 +134,8 @@ mod tests {
         let monitor = GpuMonitor::new(gpu_pool.clone(), true);
         let mut scheduler = GpuScheduler::new(gpu_pool, monitor);
 
-        let result = scheduler.schedule_next();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(scheduler.schedule_next());
         assert!(result.is_none());
     }
 }

@@ -155,6 +155,8 @@ daemon 被 kill 时若不清进程组，正在跑的 pytest 会孤儿化继续�
 
 ## 5. 性能验证数据
 
+### 5.1 单任务开销（串行逐个提交）
+
 | 测试 | e2e | daemon 执行 | 开销占比 |
 |---|---|---|---|
 | test_merge_attn_states | 11.5s | 10.9s | 5% |
@@ -164,6 +166,89 @@ daemon 被 kill 时若不清进程组，正在跑的 pytest 会孤儿化继续�
 | test_mha_attn_platform | 10.9s | 10.3s | 6% |
 
 同一测试连跑 3 次：11.5 / 11.9 / 11.5s（稳定）。
+
+> 说明：单任务 e2e ≈ daemon 执行时间 + ~0.5s（4-6% 开销），
+> 开销 = submit(~30ms) + daemon 消费(~400ms) + 终态发现(~200ms)。
+
+### 5.2 并行 job 性能（`--parallel`）
+
+4 个 kernel pytest 通过 `bifrost client submit --job <yaml> --parallel` 提交
+（daemon max_concurrent=10，任务全部同时下发）：
+
+| 指标 | 串行（逐个提交）| 并行（--parallel）| 提升 |
+|---|---|---|---|
+| **总耗时** | ~50.5s | **14s** | **3.6x 加速（72%）** |
+| 任务执行方式 | 依次跑完（~12s/个）| 4 任务同秒启动并发跑 | - |
+| 结果 | 4 ok | 4 ok, 0 failed | - |
+
+**并行时间线**（4 任务同秒启动，00:59:10）：
+
+| 任务 | start | end | 耗时 |
+|---|---|---|---|
+| merge_attn_states | 00:59:10 | 00:59:22 | 11.9s |
+| reshape_and_cache | 00:59:10 | 00:59:23 | 12.3s |
+| merge_kernel | 00:59:10 | 00:59:21 | 11.1s |
+| mha_attn_cpu | 00:59:10 | 00:59:22 | 11.2s |
+
+### 5.3 串并行对比结论
+
+- **并行总耗时 ≈ 单个任务耗时**（14s vs 单任务 ~12s），不是任务数 × 单任务耗时
+- 4 任务加速比 3.6x，接近理论极限 4x（固定开销：提交 + 统一轮询 ~2s）
+- **对 Phase 2 重试的意义**：727 个 timeout batch 串行 ~2.4h → 并行（并发 10）~15min
+- 并行度由 GPU 空闲数动态决定（`probe_gpus()` → `compute_parallelism()`），
+  8 卡全空闲时并行度 8，GPU 忙时自动降并发
+
+---
+
+## 6. GitHub 推送替代方案（git push 不通时）
+
+**场景**：本机到 GitHub 的 git 协议（ssh/https git）网络不通或超时，
+但 GitHub REST API（https api.github.com）是通的。此时无法 `git push`，
+可用 GitHub API 完成"推送 commit 到分支"。
+
+**前置**：需要 fine-grained PAT 且对目标仓库有 **Contents: Read/Write** 权限
+（只读 PAT 会 403 "Resource not accessible"）。
+
+**步骤**（全部用 curl + API）：
+
+```bash
+TOKEN=<PAT>; REPO=peterlau123/bifrost
+PARENT=<远程分支当前 sha>   # 从 GET /repos/$REPO/git/ref/heads/main 拿
+
+# 1. 每个改动文件创建 blob
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"content":"<base64文件内容>","encoding":"base64"}' \
+  https://api.github.com/repos/$REPO/git/blobs
+#    -> {"sha": "<blob_sha>"}
+
+# 2. 基于 parent tree 创建新 tree（替换改动的文件）
+#    GET /repos/$REPO/git/commits/$PARENT 拿 parent_tree
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"base_tree":"<parent_tree>","tree":[{"path":"src/x.rs","mode":"100644","type":"blob","sha":"<blob_sha>"}]}' \
+  https://api.github.com/repos/$REPO/git/trees
+#    -> {"sha": "<new_tree>"}
+
+# 3. 创建 commit
+curl -X POST -H "Authorization: token $TOKEN" \
+  -d '{"message":"commit msg","tree":"<new_tree>","parents":["<parent_sha>"]}' \
+  https://api.github.com/repos/$REPO/git/commits
+#    -> {"sha": "<new_commit>"}
+
+# 4. fast-forward 更新分支 ref
+curl -X PATCH -H "Authorization: token $TOKEN" \
+  -d '{"sha":"<new_commit>","force":false}' \
+  https://api.github.com/repos/$REPO/git/refs/heads/main
+```
+
+**注意**：
+- 必须 fast-forward（新 commit 的 parent 是远程分支当前 sha），否则 API 拒绝
+- `git push` 失败后本地 commit 不在远程，API 创建的是**新 commit 对象**，
+  本地和远程 commit sha 会不同（内容一致）。同步：`git fetch && git reset --hard origin/main`
+- 合并 PR：`PUT /repos/$REPO/pulls/<n>/merge`（需 Contents: Write）
+- 删分支：`DELETE /repos/$REPO/git/refs/heads/<branch>`
+
+**教训**：PR 合并的是**打开时的状态**，不是最新 push。若本地有 PR 打开后的
+新 commit，合并后需在 main 上重新应用（或先 push 到 PR 分支再合并）。
 
 ---
 

@@ -67,6 +67,7 @@ mod tests {
                 stderr: "".to_string(),
                 exit_code: Some(0),
             },
+            command: task.command.clone(),
             start_time: Utc::now(),
             end_time: Utc::now(),
             duration_ms: 0,

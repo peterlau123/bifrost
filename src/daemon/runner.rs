@@ -21,7 +21,7 @@ use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Fallback scan interval: catches tasks inotify missed (watcher death,
 /// event overflow, pre-server submissions). GPFS inotify is unreliable for
@@ -50,7 +50,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let p = Arc::new(Protocol::new(ss.clone()).map_err(|e| format!("p: {}", e))?);
     let to = s.daemon.task_timeout.unwrap_or(Duration::from_secs(300));
     let ex = Executor::new(ld, to).map_err(|e| format!("e: {}", e))?;
-    let mut hb = Heartbeat::new(ss.clone()).map_err(|e| format!("hb: {}", e))?;
+    let mut hb = Heartbeat::new(ss.clone()).map_err(|e| format!("hb: {}\n", e))?;
     let hi = s
         .daemon
         .heartbeat_interval
@@ -58,16 +58,18 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let hbs = sd.clone();
     let active_count = Arc::new(AtomicUsize::new(0));
     let hb_active = active_count.clone();
-    tokio::spawn(async move {
-        loop {
-            if hbs.load(Ordering::Relaxed) {
-                break;
-            }
-            hb.update_status(crate::daemon::heartbeat::DaemonStatus::Running);
-            hb.update_task_counts(hb_active.load(Ordering::Relaxed), 0);
-            let _ = hb.write_heartbeat();
-            tokio::time::sleep(hi).await;
+    // ponytail: heartbeat 用独立 std::thread 而非 tokio::spawn —
+    // write_heartbeat 是 GPFS 同步写 (fs::write), 放在 tokio worker 上
+    // 会被高并发任务饥饿 (阻塞 syscall 占满 worker), 表现为心跳停更。
+    // 独立线程与任务线程池隔离, 心跳永远按时写。
+    std::thread::spawn(move || loop {
+        if hbs.load(Ordering::Relaxed) {
+            break;
         }
+        hb.update_status(crate::daemon::heartbeat::DaemonStatus::Running);
+        hb.update_task_counts(hb_active.load(Ordering::Relaxed), 0);
+        let _ = hb.write_heartbeat();
+        std::thread::sleep(hi);
     });
 
     let mut rx = AsyncFileWatcher::new(cd.clone())
@@ -78,6 +80,47 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     // 并发执行: 尊重 max_concurrent 配置 (README 示例默认 10)
     let mc = s.daemon.max_concurrent.unwrap_or(10).clamp(1, 100);
     let sem = Arc::new(tokio::sync::Semaphore::new(mc));
+
+    // 2026-08-08 深修: fallback scan 从 tokio::select + tokio::time::sleep 改为
+    // 独立 std::thread (与心跳线程同机制)。根因: H20 (VM) 时钟漂移下
+    // tokio time driver 的 sleep 永不触发 → scan 分支死 → 新任务不消费 (假活,
+    // 心跳独立线程正常)。std::thread::sleep 实测正常 (心跳 60s 持续更新)。
+    // scan 线程负责: 周期扫描 commands/ + spawn 任务 (通过 tokio Handle)。
+    //
+    // 2026-08-08 彻底修复: std::thread::sleep 在 H20 时钟冻结时也会永久卡住
+    // (nanosleep deadline 依赖 CLOCK_MONOTONIC, VM 时钟冻结后不返回)
+    // → scan 线程死亡 → 假活复发。改忙轮询 + yield (不依赖时钟, 永不卡死)。
+    {
+        let cd_s = cd.clone();
+        let p_s = p.clone();
+        let ex_s = ex.clone();
+        let sem_s = sem.clone();
+        let ac_s = active_count.clone();
+        let sd_s = sd.clone();
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let mut tick = 0u32;
+            while !sd_s.load(Ordering::Relaxed) {
+                tick = tick.wrapping_add(1);
+                // 降频: 每 10000 次 yield (~10ms) scan 一次 — 无 sleep 无时钟依赖
+                if tick.is_multiple_of(10_000) {
+                    let paths = scan_pending(&cd_s);
+                    for path in paths {
+                        let p2 = p_s.clone();
+                        let ex2 = ex_s.clone();
+                        let sem2 = sem_s.clone();
+                        let ac2 = ac_s.clone();
+                        let h = handle.clone();
+                        // spawn_task 内部有 semaphore acquire + tokio::spawn
+                        h.spawn(async move {
+                            spawn_task(p2, ex2, sem2, ac2, path);
+                        });
+                    }
+                }
+                std::thread::yield_now();
+            }
+        });
+    }
     println!(
         "Server ready, watching {} (max_concurrent={}, fallback scan {}s)",
         cd.display(),
@@ -97,7 +140,6 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         );
     }
 
-    let mut last_scan = Instant::now();
     loop {
         if sd.load(Ordering::Relaxed) {
             break;
@@ -105,17 +147,6 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         tokio::select! {
             Some(path) = rx.recv() => {
                 spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path);
-            }
-            _ = tokio::time::sleep(FALLBACK_SCAN_INTERVAL) => {
-                // Fallback scan: self-healing against watcher death and
-                // missed events. Cheap (readdir) and runs at most once
-                // per FALLBACK_SCAN_INTERVAL.
-                if last_scan.elapsed() >= FALLBACK_SCAN_INTERVAL {
-                    last_scan = Instant::now();
-                    for path in scan_pending(&cd) {
-                        spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path.clone());
-                    }
-                }
             }
         }
     }
@@ -136,14 +167,21 @@ fn spawn_task(
         let _permit = sem.acquire().await;
         // Claim marker: atomic create_new - whoever creates it first owns
         // the task. .processing is excluded from scans, so no re-entry.
+        // ponytail: create_new on GPFS is a blocking syscall; run in the
+        // blocking pool so a slow GPFS open can't stall async workers.
         let marker = path.with_extension("processing");
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(_) => {}
-            Err(_) => return, // already claimed by another event/scan
+        let marker_for_claim = marker.clone();
+        let claimed = tokio::task::spawn_blocking(move || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker_for_claim)
+                .is_ok()
+        })
+        .await
+        .unwrap_or(false);
+        if !claimed {
+            return; // already claimed by another event/scan
         }
 
         active.fetch_add(1, Ordering::Relaxed);
@@ -160,7 +198,11 @@ fn spawn_task(
 /// Read, parse, execute one task file and write the result back.
 /// Never leaves a task in a forever-Pending state: parse failures and
 /// executor errors both produce a Failed TaskResult.
-async fn process_one(p: &Protocol, ex: &Executor, path: &std::path::Path) -> Result<(), String> {
+async fn process_one(
+    p: &Arc<Protocol>,
+    ex: &Executor,
+    path: &std::path::Path,
+) -> Result<(), String> {
     let task = match read_task_retry(path).await {
         Some(t) => t,
         None => {
@@ -168,63 +210,105 @@ async fn process_one(p: &Protocol, ex: &Executor, path: &std::path::Path) -> Res
                 "cannot parse task file (after {} retries)",
                 MAX_READ_RETRIES
             );
-            write_failed_result(p, path, &err);
+            // 双通道竞态防线：watcher 事件 + fallback scan 都可能把同一
+            // 任务提交给 spawn_task。第一个处理者完成后 claim marker
+            // (.processing) 被删除，排队中的第二个事件会重新 claim 成功，
+            // 但任务文件已被 remove_task 消费——此时若写 Failed result
+            // 会**覆盖已完成的结果**（2026-08-24 e2e job J1/J4 根因）。
+            // 文件不存在 = 已被消费，静默跳过；文件存在但解析失败才写 Failed。
+            if !path.exists() {
+                return Ok(());
+            }
+            write_failed_result(p, path, &err).await;
             return Ok(()); // handled: Failed result written
         }
     };
 
     let tid = task.task_id;
-    let _ = p.write_status(&tid, &TaskStatus::Running, Some("executing"));
+    let p1 = p.clone();
+    let _ = blocking_write(move || p1.write_status(&tid, &TaskStatus::Running, Some("executing")))
+        .await;
     match ex.execute(&task).await {
         Ok(r) => {
             let m = match r.status {
                 TaskStatus::Completed => Some("ok"),
                 _ => None,
             };
-            let _ = p.write_result(&tid, &r);
-            let _ = p.write_status(&tid, &r.status, m);
-            let _ = p.remove_task(&tid);
-            println!("  {}: {} ({}ms)", tid, r.status, r.duration_ms());
+            let r_status = r.status.clone();
+            let r_dur = r.duration_ms();
+            println!("  {}: {} ({}ms)", tid, r_status, r_dur);
+            // ponytail: result/status/remove 都是 GPFS atomic_write (flock +
+            // write + rename), 阻塞 syscall 移到 blocking pool, 避免高并发
+            // 时占满 async worker 导致心跳/其他任务饥饿。
+            let p2 = p.clone();
+            let _ = blocking_write(move || p2.write_result(&tid, &r)).await;
+            let p3 = p.clone();
+            let _ = blocking_write(move || p3.write_status(&tid, &r_status, m)).await;
+            let p4 = p.clone();
+            let _ = blocking_write(move || p4.remove_task(&tid)).await;
         }
         Err(e) => {
             // Executor error (spawn failure etc.): write a Failed result
             // so the client sees a terminal state, not a forever Pending.
             eprintln!("exec {}: {}", tid, e);
-            let _ = p.write_result(
-                &tid,
-                &TaskResult {
-                    task_id: tid,
-                    status: TaskStatus::Failed,
-                    output: TaskOutput {
-                        stdout: String::new(),
-                        stderr: e.clone(),
-                        exit_code: None,
+            let p5 = p.clone();
+            let _ = blocking_write(move || {
+                p5.write_result(
+                    &tid,
+                    &TaskResult {
+                        task_id: tid,
+                        status: TaskStatus::Failed,
+                        output: TaskOutput {
+                            stdout: String::new(),
+                            stderr: e.clone(),
+                            exit_code: None,
+                        },
+                        command: task.command.clone(),
+                        start_time: chrono::Utc::now(),
+                        end_time: chrono::Utc::now(),
+                        duration_ms: 0,
+                        retries_used: 0,
+                        artifacts: Vec::new(),
+                        error_message: Some(e.clone()),
                     },
-                    start_time: chrono::Utc::now(),
-                    end_time: chrono::Utc::now(),
-                    duration_ms: 0,
-                    retries_used: 0,
-                    artifacts: Vec::new(),
-                    error_message: Some(e),
-                },
-            );
-            let _ = p.write_status(&tid, &TaskStatus::Failed, Some("executor error"));
-            let _ = p.remove_task(&tid);
+                )
+            })
+            .await;
+            let p6 = p.clone();
+            let _ = blocking_write(move || {
+                p6.write_status(&tid, &TaskStatus::Failed, Some("executor error"))
+            })
+            .await;
+            let p7 = p.clone();
+            let _ = blocking_write(move || p7.remove_task(&tid)).await;
         }
     }
     Ok(())
 }
 
+/// Run a blocking Protocol/GPFS write on the blocking pool.
+async fn blocking_write<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
 /// Read + parse a task file with retries. Returns None when it still fails.
 async fn read_task_retry(path: &std::path::Path) -> Option<Task> {
     for attempt in 0..MAX_READ_RETRIES {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                if let Ok(t) = serde_json::from_str::<Task>(&content) {
-                    return Some(t);
-                }
+        // ponytail: fs::read_to_string on GPFS is a blocking syscall; run in
+        // the blocking pool so a slow read can't stall async workers.
+        let p = path.to_path_buf();
+        let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(&p))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        if let Some(content) = content {
+            if let Ok(t) = serde_json::from_str::<Task>(&content) {
+                return Some(t);
             }
-            Err(_) => { /* file may still be being written; retry below */ }
         }
         if attempt + 1 < MAX_READ_RETRIES {
             tokio::time::sleep(RETRY_BACKOFF).await;
@@ -235,7 +319,7 @@ async fn read_task_retry(path: &std::path::Path) -> Option<Task> {
 
 /// Write a minimal Failed result for a task that could not even be parsed.
 /// task_id is extracted from the filename ({timestamp}_{uuid}.json).
-fn write_failed_result(p: &Protocol, path: &std::path::Path, error: &str) {
+async fn write_failed_result(p: &Arc<Protocol>, path: &std::path::Path, error: &str) {
     let Some(tid) = task_id_from_path(path) else {
         eprintln!("cannot extract task id from {}", path.display());
         return;
@@ -248,6 +332,7 @@ fn write_failed_result(p: &Protocol, path: &std::path::Path, error: &str) {
             stderr: error.to_string(),
             exit_code: None,
         },
+        command: String::new(), // task file unparseable, no command available
         start_time: chrono::Utc::now(),
         end_time: chrono::Utc::now(),
         duration_ms: 0,
@@ -255,9 +340,13 @@ fn write_failed_result(p: &Protocol, path: &std::path::Path, error: &str) {
         artifacts: Vec::new(),
         error_message: Some(error.to_string()),
     };
-    let _ = p.write_result(&tid, &result);
-    let _ = p.write_status(&tid, &TaskStatus::Failed, Some("parse error"));
-    let _ = p.remove_task(&tid);
+    let p1 = p.clone();
+    let _ = blocking_write(move || p1.write_result(&tid, &result)).await;
+    let p2 = p.clone();
+    let _ = blocking_write(move || p2.write_status(&tid, &TaskStatus::Failed, Some("parse error")))
+        .await;
+    let p3 = p.clone();
+    let _ = blocking_write(move || p3.remove_task(&tid)).await;
 }
 
 /// List pending task files (.json only - .lock/.tmp/.processing excluded).
@@ -378,5 +467,35 @@ mod tests {
         std::fs::write(&path, "{ not valid json").unwrap();
         let t = read_task_retry(&path).await;
         assert!(t.is_none(), "坏 JSON 重试后应返回 None");
+    }
+
+    /// 双通道竞态回归：任务文件已被第一个处理者消费（删除），第二个
+    /// 处理者 claim 成功但 read 失败——**不得写 Failed result 覆盖已完成
+    /// 的结果**（2026-08-24 e2e job J1/J4 Failed parse 根因）。
+    #[tokio::test]
+    async fn test_process_one_skips_missing_task_file() {
+        let tmp = TempDir::new().unwrap();
+        let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
+        let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(60)).unwrap();
+
+        // 任务文件已被消费（不存在）——process_one 必须静默跳过
+        let tid = uuid::Uuid::new_v4();
+        let path = tmp
+            .path()
+            .join("commands")
+            .join(format!("20260731_103000_{}.json", tid));
+        // 不写文件，模拟"已被删除"
+
+        let r = process_one(&p, &ex, &path).await;
+        assert!(r.is_ok(), "缺失任务文件应静默返回 Ok");
+        // 绝不能写 Failed result
+        let result_file = tmp
+            .path()
+            .join("results")
+            .join(format!("{}_result.json", tid));
+        assert!(
+            !result_file.exists(),
+            "任务文件已被消费时不得写 Failed result 覆盖已完成结果"
+        );
     }
 }

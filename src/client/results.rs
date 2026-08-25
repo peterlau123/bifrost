@@ -152,6 +152,7 @@ mod tests {
                 stderr: "".to_string(),
                 exit_code: Some(0),
             },
+            command: "test command".to_string(),
             start_time: Utc::now(),
             end_time: Utc::now(),
             duration_ms: 0,

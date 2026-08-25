@@ -70,12 +70,14 @@ impl LogManager {
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
         exit_code: Option<i32>,
+        command: &str,
     ) -> Result<PathBuf, String> {
         let task_log_dir = self.create_task_log_dir(task_id)?;
         let metadata_path = task_log_dir.join("metadata.json");
 
         let metadata = serde_json::json!({
             "task_id": task_id.to_string(),
+            "command": command,
             "start_time": start_time.to_rfc3339(),
             "end_time": end_time.to_rfc3339(),
             "duration_secs": (end_time - start_time).num_seconds(),
@@ -188,7 +190,7 @@ mod tests {
         let start = Utc::now();
         let end = start + chrono::Duration::seconds(5);
 
-        let metadata_path = manager.write_metadata(task_id, start, end, Some(0));
+        let metadata_path = manager.write_metadata(task_id, start, end, Some(0), "echo test");
         assert!(metadata_path.is_ok());
 
         // Read and verify metadata

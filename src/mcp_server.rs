@@ -22,9 +22,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::core::bridge::Bridge;
+use crate::core::bridge::{create_bridge, Bridge};
 use crate::core::models::TaskType;
-use crate::core::protocol::Protocol;
 use crate::core::settings::BifrostSettings;
 
 /// MCP server state: shared storage path + settings
@@ -46,12 +45,19 @@ impl McpServer {
         }
     }
 
-    fn bridge(&self) -> Protocol {
-        Protocol::new(self.settings.shared_storage.clone()).expect("failed to create bridge")
+    fn bridge(&self) -> Box<dyn Bridge> {
+        create_bridge(&self.settings).expect("failed to create bridge")
     }
 
     /// Server's own process group id is never negative; -pgid kills the group
     fn heartbeat_age_secs(&self) -> Option<u64> {
+        if self.settings.transport.is_ssh() {
+            // heartbeat.json lives on the target machine; stat it over ssh
+            // (both date and stat run there, so no clock skew).
+            let ssh = self.settings.ssh.as_ref()?;
+            let b = crate::core::ssh_bridge::SshBridge::new(ssh).ok()?;
+            return b.heartbeat_age_secs();
+        }
         let hb = self.settings.shared_storage.join("heartbeat.json");
         let meta = std::fs::metadata(&hb).ok()?;
         let modified = meta.modified().ok()?;
@@ -72,7 +78,8 @@ impl McpServer {
         &self,
         Parameters(req): Parameters<SubmitRequest>,
     ) -> Result<String, String> {
-        let bridge: &dyn Bridge = &self.bridge();
+        let binding = self.bridge();
+        let bridge: &dyn Bridge = binding.as_ref();
         let task_type = if req.command.trim_start().starts_with("pytest") {
             TaskType::Pytest
         } else {
@@ -102,7 +109,8 @@ impl McpServer {
     ) -> Result<String, String> {
         use uuid::Uuid;
         let tid = Uuid::parse_str(&req.task_id).map_err(|e| format!("invalid task_id: {}", e))?;
-        let bridge: &dyn Bridge = &self.bridge();
+        let binding = self.bridge();
+        let bridge: &dyn Bridge = binding.as_ref();
         let resp = crate::client::status::query_status(bridge, tid)
             .map_err(|e| format!("status query failed: {}", e))?;
         Ok(serde_json::json!({
@@ -125,7 +133,8 @@ impl McpServer {
     ) -> Result<String, String> {
         use uuid::Uuid;
         let tid = Uuid::parse_str(&req.task_id).map_err(|e| format!("invalid task_id: {}", e))?;
-        let bridge: &dyn Bridge = &self.bridge();
+        let binding = self.bridge();
+        let bridge: &dyn Bridge = binding.as_ref();
         let r = crate::client::results::get_result(bridge, tid)
             .map_err(|e| format!("result fetch failed: {}", e))?;
         Ok(serde_json::json!({
@@ -211,6 +220,8 @@ mod tests {
     fn test_settings(tmp: &TempDir) -> BifrostSettings {
         BifrostSettings {
             shared_storage: tmp.path().to_path_buf(),
+            transport: crate::core::settings::Transport::Shared,
+            ssh: None,
             client: crate::core::settings::ClientSection {
                 poll_interval: None,
                 heartbeat_timeout: Some(std::time::Duration::from_secs(180)),

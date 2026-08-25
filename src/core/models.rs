@@ -98,6 +98,9 @@ pub struct TaskResult {
     pub status: TaskStatus,
     /// Task output
     pub output: TaskOutput,
+    /// The original command that produced this result (for traceability)
+    #[serde(default)]
+    pub command: String,
     /// Execution start time
     pub start_time: DateTime<Utc>,
     /// Execution end time
@@ -340,6 +343,7 @@ mod tests {
                 stderr: String::new(),
                 exit_code: Some(0),
             },
+            command: "echo test".to_string(),
             start_time: start,
             end_time: end,
             duration_ms: 0,
