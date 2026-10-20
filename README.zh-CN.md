@@ -388,7 +388,7 @@ journalctl -u bifrost -f
 
 > 共享盘布局（如 H200 的 `/data/...`）不适用仓库根目录那份 unit —— 用
 > `scripts/install-systemd.sh --storage <dir>` 按实际布局渲染，再用
-> `scripts/deploy-h200.sh` 安装并重启。详见 [docs/deployment.md](docs/deployment.md)。
+> `scripts/deploy-h200.sh` 安装并重启。详见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
 
 #### 手动启动守护进程（调试用）
 
@@ -1059,7 +1059,7 @@ bifrost/
 ## 文档
 
 - [Adapter 指南](docs/adapter-guide.md) —— 自定义任务 adapter
-- [部署指南](docs/deployment.md) —— 生产部署、systemd、容器构建→宿主安装链路
+- [部署指南](docs/deployment.zh-CN.md) —— 生产部署、systemd、容器构建→宿主安装链路
 - [运维实践](docs/ops-practice.md) —— 真实运维记录
 - [MCP 接入指南](MCP.md) —— 通用于 OpenCode / Claude Code / Cline / Cursor / Hermes
 - [测试报告](test.md) —— 性能、超时与 job 工作流测试报告

@@ -1,5 +1,18 @@
 # Deployment Guide
 
+**English** | [简体中文](deployment.zh-CN.md)
+
+> **This guide covers two deployment models.**
+>
+> - **Shared-storage deployment** (H200 / NFS / GPFS) — what production actually uses today; it is the
+>   last section: build in a container → install on the host, `install-systemd.sh`, `deploy-h200.sh`,
+>   plus the measured numbers.
+> - **Local private layout** (`/var/lib/bifrost` + `/etc/bifrost`, unit shipped in the repo root) — the
+>   classic model behind `scripts/systemd-setup.sh`. Parts of this half describe behaviour the current
+>   release does **not** implement: the Prometheus `metrics:` block in settings.json, and
+>   `/usr/local/bin/bifrost-health-check.sh` (the repo ships `scripts/health-check.sh`, and
+>   `systemd-setup.sh` does not install it). Treat them as a template, not as shipped features.
+
 This guide covers production deployment of Bifrost using systemd.
 
 ## Overview
@@ -10,9 +23,6 @@ Bifrost is designed for production deployment with:
 - Log management
 - Resource limits
 - Security hardening
-
-## Quick Start
-
 
 ## Prerequisites
 
@@ -71,7 +81,7 @@ sudo tee /etc/bifrost/settings.json >/dev/null <<'JSON'
 }
 JSON
 
-# 4.1 自检（必须在 server 端；有阻断项退出码 1）
+# 4.1 Pre-flight self-check (must run on the server side; exits 1 on blocking findings)
 sudo bifrost warmup --config /etc/bifrost/settings.json
 
 
@@ -473,22 +483,24 @@ bifrost-health-check.sh heartbeat
 - [README.md](../README.md) - Project overview
 - [Adapter Guide](adapter-guide.md) - Task adapters
 
+
 ## Shared-directory deployment (H200 / non-GPFS)
 
-bifrost 只要求两端可读写的 POSIX 目录，GPFS 不是必需项。H200 上用宿主机共享的
-`/data` 即可（容器内常挂成 `/workspace`）。
+Bifrost only requires a POSIX directory both sides can read and write; GPFS is not mandatory.
+On H200 the host's shared `/data` is enough (inside containers it is often mounted as `/workspace`).
 
 ```bash
-# ── H200（server 端）──────────────────────────────────────────────
-cd /data/liuxin/Ax/bifrost            # 仓库已在共享盘上
+# ---- H200 (server side) -----------------------------------------
+cd /data/liuxin/Ax/bifrost            # the repo already lives on shared storage
 
-# 方式 A：直接用仓库里预编译好的静态二进制（推荐，免工具链）
-#   dist/bifrost-linux-x86_64 是 musl 静态链接，glibc 2.35 的宿主实测可跑
+# Option A: use the prebuilt static binary in the repo (recommended, no toolchain needed)
+#   dist/bifrost-linux-x86_64 is musl-static; verified to run on a glibc 2.35 host
 sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
-# 方式 B：本机编译（宿主没有 Rust 工具链时不可用，见下节）
-#   cargo build --release            # gnu 产物 target/release/bifrost，只适合 glibc>=2.39 的目标机
-#   scripts/find-binary.sh release   # 让 cargo 报告真实路径
-#   ⚠ 目标机 glibc 更旧时，gnu 产物仍可能起来（weak version 只警告），别靠 --version 判断
+# Option B: build on the host (unavailable when the host has no Rust toolchain - see the next section)
+#   cargo build --release            # gnu artifact target/release/bifrost, only for glibc>=2.39 targets
+#   scripts/find-binary.sh release   # let cargo report the real path
+#   Note: on an older-glibc target the gnu artifact may still start (weak version only warns),
+#   so do not rely on `--version` to decide
 
 bifrost warmup --storage /data/liuxin/bifrost
 #   ✓ shared storage is writable
@@ -498,138 +510,147 @@ bifrost warmup --storage /data/liuxin/bifrost
 bifrost server --storage /data/liuxin/bifrost
 ```
 
-### 从开发容器构建 → 在宿主机安装（宿主无 Rust 工具链）
+### Building in the dev container → installing on the host
 
-实测 H200 宿主（Ubuntu 22.04，glibc 2.35）**没有** cargo/rustc：`command -v cargo` 空，
-`find / -maxdepth 4 -name cargo` 也空。而开发容器（Debian 13，glibc 2.41）里
-`cargo build --release` 的 gnu 产物引用 `GLIBC_2.39`。
+Measured on the H200 host (Ubuntu 22.04, glibc 2.35) there is **no** cargo/rustc: `command -v cargo`
+is empty, and `find / -maxdepth 4 -name cargo` finds nothing. Meanwhile the dev container (Debian 13,
+glibc 2.41) produces a gnu artifact that references `GLIBC_2.39`.
 
-这个坑比看起来隐蔽：**宿主跑它不会立刻失败**，只打一行
-"weak version 'GLIBC_2.39' not found"，然后照常启动、照常执行任务——因为被引用的是
-weak 符号，动态链接器只警告不报错。所以「`--version` 返回 0」根本不能证明产物匹配，
-要等某天走到真正用到该符号的代码路径才炸。部署政策因此固定为**只装 musl 静态产物**：
+This pitfall is sneakier than it looks: **the host does not fail immediately** — it prints a single
+line, "weak version 'GLIBC_2.39' not found", and then starts and executes tasks as usual, because the
+symbol in question is a *weak* reference and the dynamic linker only warns. So "`--version` returned 0"
+proves nothing; it blows up the day some code path actually calls that symbol. The deployment policy is
+therefore fixed: **install only musl-static artifacts**.
 
 ```
-# ── 开发容器（有 Rust 工具链）────────────────────────────────────
+# ---- dev container (has a Rust toolchain) -------------------------
 cd /workspace/Ax/bifrost
 cargo build --release --target x86_64-unknown-linux-musl --bin bifrost
 cp target/x86_64-unknown-linux-musl/release/bifrost dist/bifrost-linux-x86_64
 
-# ── 宿主（root）：安装 + 重启，一条命令，失败自动回滚 ──────────────
-# setsid 必须加：daemon 退出时会清理任务进程组，不脱离会把部署脚本自己杀掉
+# ---- host (root): install + restart in one command, auto-rollback on failure ----
+# setsid is required: the daemon kills task process groups when it exits, and without
+# detaching it would kill the deploy script itself
 bifrost client submit --storage /data/liuxin/bifrost \
   --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy-h200.sh >/dev/null 2>&1 &'
 ```
 
-`scripts/deploy-h200.sh` 的三道门槛，全部在**碰 `/usr/local/bin` 之前**跑，任一道
-不过就直接退出、旧 daemon 不受影响：
+`scripts/deploy-h200.sh` has three gates, all evaluated **before touching `/usr/local/bin`**; any
+failure exits immediately and the running daemon is untouched:
 
-1. `ldd` 必须显示 `statically linked`（拦住 gnu 动态产物；`--allow-dynamic` 可放行）
-2. 候选二进制 `--version` 退出 0 **且输出里没有 glibc 版本告警**（`weak version` 也算）
-3. 候选二进制 `warmup --storage <dir>` 退出 0 —— 顺带把"环境能不能上线"一起验了：
-   存储可写、文件系统类型（缓存型会提示 inotify 不可靠）、时钟不自旋、
-   `nvidia-smi` 可见卡数、`gpu_pool` 与实际卡数是否一致
+1. `ldd` must report `statically linked` (blocks gnu dynamic artifacts; `--allow-dynamic` bypasses it)
+2. the candidate's `--version` exits 0 **and its output carries no glibc version warning** (`weak version` counts)
+3. the candidate itself runs `warmup --storage <dir>` and exits 0 — which also validates "can this
+   environment go live": storage writability, filesystem type (cache-coherent types warn that inotify is
+   unreliable), a clock that does not spin, `nvidia-smi` GPU count, and whether `gpu_pool` matches reality
 
-过了门槛才备份 `.old` → `install` + `mv` 原子替换 → 重启（有 unit 走
-`systemctl restart`，它自己会阻塞到 `READY=1`）→ 等心跳比本次启动更新（`Type=simple`
-或无 systemd 时的兜底）→ 用 `client submit` 真跑一条任务做 smoke（过了才算部署成功，
-否则自动回滚）。
-日志：`/tmp/bifrost-deploy.log`、`/tmp/bifrost-daemon.log`。
+Only after the gates does it back up `.old` → `install` + `mv` atomically → restart (via
+`systemctl restart` when a unit exists, which itself blocks until `READY=1`) → wait for a heartbeat
+newer than this start (the fallback for `Type=simple` or no systemd) → run one real task through
+`client submit` as a smoke test (passing it is what counts as success, otherwise it rolls back).
+Logs: `/tmp/bifrost-deploy.log`, `/tmp/bifrost-daemon.log`.
 
-GPU 池默认自动探测本机全部卡；要限制范围用 `--gpus 0,1`，要关闭用 `--gpus ""`
-（或在 settings.json 写 `"gpu_pool": []`）。
+The GPU pool auto-detects every card on the machine; restrict it with `--gpus 0,1`, disable it with
+`--gpus ""` (or `"gpu_pool": []` in settings.json).
 
 ```bash
-# ── client 端（同机器或任何能访问该目录的机器）────────────────────
+# ---- client side (same machine, or any machine that can see the directory) ----
 bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
 bifrost client status --storage /data/liuxin/bifrost <TASK_ID>
 ```
 
-### 部署时必须指定共享目录吗？
+### Must the shared directory be specified at deploy time?
 
-**是。** 默认值是 `~/.bifrost/data`（本机私有目录），client 和 daemon 看不到同一份
-数据，任务永远 Pending。三种指定方式（优先级从高到低）：
+**Yes.** The default is `~/.bifrost/data` (a machine-local directory), so the client and the daemon
+never see the same data and tasks stay Pending forever. Three ways to set it (highest priority first):
 
-1. 命令行：`bifrost server --storage /data/liuxin/bifrost`（全局参数，client 同样可用）
-2. 环境变量：`export BIFROST_CONFIG=/etc/bifrost/settings.json`
-3. 配置文件：`~/.bifrost/settings.json` 或 `--config` 指定的文件里的 `shared_storage`
+1. Command line: `bifrost server --storage /data/liuxin/bifrost` (a global flag, also available to the client)
+2. Environment variable: `export BIFROST_CONFIG=/etc/bifrost/settings.json`
+3. Config file: `shared_storage` in `~/.bifrost/settings.json` or in the file given to `--config`
 
-指定后目录会自动创建：`commands/ results/ status/ artifacts/ logs/ cancel/`，
-以及 `heartbeat.json`（daemon 存活）和 `scan.json`（兜底扫描存活）。
+Once set, the directories are created automatically: `commands/ results/ status/ artifacts/ logs/ cancel/`,
+plus `heartbeat.json` (daemon liveness) and `scan.json` (fallback-scan liveness).
 
-### 目录权限
+### Directory permissions
 
-daemon 用户与 client 用户都要能读写同一个目录。容器场景下两边 uid 可能不同
-（例如 uid 10000 与 root），最省事的做法：
+The daemon user and the client user must both be able to read and write the same directory. In container
+setups the two uids often differ (e.g. uid 10000 versus root); the least effort:
 
 ```bash
 sudo chown -R <daemon_uid>:<client_gid> /data/liuxin/bifrost
-# 或
+# or
 sudo setfacl -R -m u:10000:rwX /data/liuxin/bifrost
 sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
 ```
 
-### 装成 systemd 服务（推荐，别用手起的 daemon）
+### Run it as a systemd service (recommended over a hand-started daemon)
 
-手起的 `sudo bifrost server` 挂在用户 login session 的 scope 里（实测
-`/user.slice/user-1000.slice/session-1356.scope`）：SSH 一断，logind 可能顺手清掉它，
-而且没有 `Restart=` 兜底。用例：
+A hand-started `sudo bifrost server` lives in the user login session's scope (measured:
+`/user.slice/user-1000.slice/session-1356.scope`): when SSH drops, logind may sweep it away, and there
+is no `Restart=` to bring it back. Usage:
 
 ```bash
 sudo scripts/install-systemd.sh --storage /data/liuxin/bifrost
 #   OK: bifrost.service active (728908), heartbeat fresh
-systemctl status bifrost          # active + enabled（开机自启）
-journalctl -u bifrost -f          # 日志（含每次启动的 warmup 自检）
+systemctl status bifrost          # active + enabled (starts on boot)
+journalctl -u bifrost -f          # logs (including the warmup self-check on every start)
 ```
 
-仓库根的 `bifrost.service` 是**本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`）的
-模板，直接套共享盘布局会启动失败（WorkingDirectory 和 `--config` 都不存在）。所以用
-`install-systemd.sh` 按 `--storage` 现场渲染，unit 里几个刻意的选择：
+The `bifrost.service` in the repo root is a template for the **local private layout**
+(`/var/lib/bifrost` + `/etc/bifrost`) and fails to start on a shared-storage layout (neither
+WorkingDirectory nor `--config` exists there). Hence `install-systemd.sh` renders one for the actual
+`--storage` value. A few deliberate choices in that unit:
 
-- `Type=notify` + `NotifyAccess=main` + `TimeoutStartSec=60`，`ExecStart` 带 `--systemd`：
-  daemon 在**真正就绪**时（目录建好、时钟探过、扫描循环起来、`Server ready` 打完）
-  发 `READY=1` + `STATUS=...`，所以 `systemctl restart` 返回 = 已经能收任务。
-  实测 `restart_ms=563`，返回那一刻 `heartbeat_age=0s`、`StatusText` 已是
-  `watching /data/liuxin/bifrost/commands (max_concurrent=8, ...)`。
-  对比 `Type=simple`：返回只代表 fork 成功，调用方得自己轮询心跳猜就绪。
-  启动卡死由 `TimeoutStartSec=60` 兜住；停止时 daemon 发 `STOPPING=1`，
-  systemd 不会把它记成 failed。
-- `KillSignal=SIGTERM` + `KillMode=mixed`：只给主进程发 SIGTERM，让 daemon 自己先杀
-  干净所有任务的进程组，超时才整组 SIGKILL（默认 control-group 会先打任务）。
-- `Restart=on-failure` + `RestartSec=5`：实测 `kill -9` 主进程后 5s 由 systemd 拉起来，
-  `NRestarts` 递增。
-- `TasksMax=4096`、**不设** `MemoryMax`：2TB 内存 / 192 核的机器，模板里的
-  `MemoryMax=8G` 会把并发 benchmark 打成 OOM。
-- **不启用** `ProtectSystem` / `NoNewPrivileges` / `PrivateTmp`：这台机器的用途就是以
-  root 跑任意命令，硬化只会制造"昨天能跑的脚本今天 permission denied"。
+- `Type=notify` + `NotifyAccess=main` + `TimeoutStartSec=60`, with `--systemd` in `ExecStart`:
+  the daemon reports `READY=1` + `STATUS=...` when it is **truly ready** (directories created, clock
+  probed, scan loop running, `Server ready` printed), so `systemctl restart` returning means "it can
+  accept tasks now". Measured `restart_ms=563`, and at that instant `heartbeat_age=0s` with `StatusText`
+  already reading `watching /data/liuxin/bifrost/commands (max_concurrent=8, ...)`.
+  Compare `Type=simple`: returning only means "forked", and the caller has to poll the heartbeat to guess
+  readiness. A hung start is caught by `TimeoutStartSec=60`; on stop the daemon sends `STOPPING=1`, so
+  systemd does not record it as failed.
+- `KillSignal=SIGTERM` + `KillMode=mixed`: SIGTERM goes only to the main process so the daemon can clean
+  up every task's process group first; only on timeout is the whole group SIGKILLed (the default
+  control-group mode would hit the tasks first).
+- `Restart=on-failure` + `RestartSec=5`: measured — after `kill -9` of the main process systemd brings it
+  back within 5s and `NRestarts` increments.
+- `TasksMax=4096` and **no** `MemoryMax`: on a 2TB / 192-core machine the template's `MemoryMax=8G` would
+  OOM-kill concurrent benchmarks.
+- `ProtectSystem` / `NoNewPrivileges` / `PrivateTmp` are **not** enabled: this machine's whole purpose is
+  running arbitrary commands as root; hardening only produces "the script that worked yesterday gets
+  permission denied today".
 
-有 unit 之后 `deploy-h200.sh` 会走 `systemctl restart`（而不是 pkill+setsid）。注意它
-会先用 `systemd-run` 把自己搬进一个 transient unit：否则脚本作为任务跑在 daemon 的
-cgroup 里，`systemctl restart` 会把部署脚本自己一起杀掉 —— setsid 挡得住 daemon 的
-进程组清理，挡不住 cgroup kill（这个坑实测撞过：连写日志的 helper 都没活下来）。
+With a unit in place, `deploy-h200.sh` restarts through `systemctl restart` instead of pkill+setsid. Note
+that it first moves itself into a transient unit with `systemd-run`: otherwise the script runs as a task
+inside the daemon's cgroup and `systemctl restart` kills the deploy script along with it — setsid
+survives the daemon's process-group cleanup but not a cgroup kill (hit this in practice: even a
+log-writing helper died).
 
-副作用：部署任务本身可能**没有结果文件**（写结果前 daemon 已被重启），以
-`/tmp/bifrost-deploy.log` 和 `journalctl -u bifrost-deploy-*` 为准。
+Side effect: the deploy task itself may produce **no result file** (the daemon is restarted before the
+result is written) — trust `/tmp/bifrost-deploy.log` and `journalctl -u bifrost-deploy-*` instead.
 
-### 停止 / 重启
+### Stop / restart
 
 ```bash
-# 有 systemd：优先用 systemctl（会走上面的 KillSignal / KillMode）
-systemctl restart bifrost         # 换二进制请用 scripts/deploy-h200.sh（含校验与回滚）
-# 无 systemd：前台 Ctrl+C 一次优雅退出（<1s），再按一次强制退出；后台 kill -TERM <pid>
+# With systemd: prefer systemctl (it honours the KillSignal / KillMode above)
+systemctl restart bifrost         # to swap binaries use scripts/deploy-h200.sh (validation + rollback)
+# Without systemd: Ctrl+C once for a graceful exit (<1s), again to force; or kill -TERM <pid> in the background
 ```
 
-退出时会先杀掉所有在跑任务的进程组，避免 benchmark 变成孤儿进程继续占用 GPU。
+On exit it kills every running task's process group first, so a benchmark cannot survive as an orphan
+still holding the GPUs.
 
-### 运行期自愈
+### Runtime self-healing
 
 ```bash
-# 可选：外部看门狗（cron 每 2 分钟），心跳或扫描信标过期就重启 daemon
+# Optional: external watchdog (cron, every 2 minutes) restarts the daemon when the heartbeat
+# or the scan beacon goes stale
 */2 * * * * /data/liuxin/Ax/bifrost/scripts/watchdog.sh \
     --storage /data/liuxin/bifrost --restart 'systemctl restart bifrost' \
     >> /var/log/bifrost-watchdog.log 2>&1
 ```
 
-装了 systemd unit 之后 `Restart=on-failure` 已经是第一层自愈，下面的外部看门狗只作为
-**没有 systemd 时**的兜底（或想额外覆盖"进程活着但卡死"的场景）；两者同时开不会打架，
-但要记得看门狗也是 `systemctl restart` 同一套动作。
+With a systemd unit installed, `Restart=on-failure` is already the first layer of self-healing; the
+external watchdog above is only a fallback for **systems without systemd** (or to additionally cover
+"process alive but wedged"). Running both is harmless — just remember the watchdog performs the same
+`systemctl restart`.
