@@ -1,7 +1,7 @@
 // MCP (Model Context Protocol) server for bifrost
 //
 // Exposes bifrost as structured tools so agents can submit tasks to the
-// offline H20 node reliably: schema-validated args, structured errors,
+// offline node reliably: schema-validated args, structured errors,
 // and a health check that prevents the classic "submitted before server
 // was ready → task lost" failure mode.
 //
@@ -72,7 +72,7 @@ impl McpServer {
     /// Example command: "sh -c 'echo hello'" (shell features need sh -c wrapping).
     #[tool(
         name = "bifrost_submit",
-        description = "Submit a command task to the offline H20 node. Returns task_id as JSON. Complex commands (redirects, &&, $VAR, background &) must be wrapped in sh -c '...'."
+        description = "Submit a command task to the offline node (the daemon machine). Returns task_id as JSON. Complex commands (redirects, &&, $VAR, background &) must be wrapped in sh -c '...'."
     )]
     pub async fn submit(
         &self,
