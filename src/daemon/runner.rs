@@ -73,7 +73,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         .unwrap_or_else(|| default_timeout.saturating_mul(2));
     let use_shell = s.daemon.use_shell.unwrap_or(true);
     let cancel_poll = s.daemon.cancel_poll.unwrap_or(Duration::from_secs(1));
-    let log_max_bytes = s.daemon.log_max_bytes.unwrap_or(64 * 1024 * 1024);
+    let log_max_bytes = crate::daemon::executor::DEFAULT_LOG_MAX_BYTES;
     let log_backups = s.daemon.log_backups.unwrap_or(1);
 
     // 启动自检：只有确认单调时钟不可靠才背 busy-poll 的 CPU 成本。
@@ -85,8 +85,10 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         ScanMode::Auto => clock_probe::probe(),
     };
     let spin = matches!(scan_mode, ScanMode::Spin) || health.is_frozen();
-    // Retries are opt-in: 0 here means a task's retry_count is ignored.
-    let max_retries = s.daemon.max_retries.unwrap_or(0);
+    // Retries are opt-in per task (Task.retry_count defaults to 0). This is
+    // only a ceiling: unset means "no cap", not "no retries", so
+    // `client submit --retries N` works without daemon-side config.
+    let max_retries = s.daemon.max_retries.unwrap_or(u8::MAX);
     let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
     // Keepalive must fire well inside the stale window, otherwise a running
     // task can be mistaken for a crashed one.

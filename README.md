@@ -469,11 +469,11 @@ bifrost server --init  # generate default settings
 | use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行。单个任务可用 `shell: false` 覆盖（YAML 里给字面量 `$`/`*` 的任务用） |
 | scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU；扫描线程每秒写 `scan.json`（ticks/scanned_at），可据此判断兜底扫描是否还活着 |
 | stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收。回收前校验归属：marker 内记录了 host/pid/task，本机存活进程或本进程正在跑的任务一律跳过；keepalive 自动取 `min(60s, 该值/3)` |
-| max_retries | 0 | 任务重试次数上限（任务侧 `retry_count` 取更小值）。**默认关闭**，需显式开启：`client submit --retries 2` 或 YAML `retries: 2`。只对非零退出重试，超时/取消不重试；每次尝试的日志单独保存为 `stdout.attemptN.log` |
+| max_retries | 不限制 | 任务重试次数的**上限**（不配 = 不设上限）。重试本身是任务侧 opt-in：`client submit --retries 2` 或 YAML `retries: 2`，不写就是跑一次。只对非零退出重试，超时/取消不重试；每次尝试日志单独保存为 `stdout.attemptN.log` |
 | gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则该 id 占租约，不覆盖值）。并发上限自动取 `min(max_concurrent, 卡数)` |
 | cancel_poll | 1s | 运行中任务检查 cancel 请求的间隔。1s 是可取消性与元数据开销的折中；30s 意味着跑飞的 benchmark 要空转半分钟才被杀 |
-| log_max_bytes | 64MB | 单流日志超过该值即轮转：`stdout.log` → `stdout.log.1` → … ；0 关闭轮转。结果载荷另有 8MB 上限（头 4MB + 尾 4MB） |
-| log_backups | 1 | 保留几个轮转备份（`.1`..`.N`，上限 9）。磁盘占用上限 ≈ `log_max_bytes × (log_backups + 1)`，最新内容始终在 `stdout.log` |
+| log_backups | 1 | 保留几个轮转备份（`.1`..`.N`，上限 9）。单流日志固定 64MB 转一次，磁盘占用上界 ≈ `64MB × (log_backups+1)`；最新内容始终在 `stdout.log` |
+| — | 固定 | 结果载荷上限 64MB（头 16MB 上下文 + 尾 48MB 汇总）——benchmark summary 在流尾，尾部权重更大；完整日志另存 `logs/<id>/` |
 
 **超时语义**：`client submit --timeout 0`（默认）= 用 daemon 的 `task_timeout`；传具体秒数则任务自己的值生效，daemon 不再钳制。
 
@@ -528,6 +528,13 @@ bifrost client submit --command "make build" --working-dir /workspace/project --
 # 提交 YAML Job（多步骤顺序执行）
 bifrost client submit --job examples/quick_start.yaml
 ```
+
+### Warmup（上线前自检）
+
+```bash
+bifrost warmup                     # 或 bifrost --warmup
+```
+检查共享存储可写性/文件系统类型、时钟自检（是否会 sleep 卡死）、现有 daemon 心跳、GPU 可见性。有阻断项时退出码 1，可直接接到部署脚本里。
 
 ### Check Status
 

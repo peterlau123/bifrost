@@ -35,6 +35,13 @@ enum Mode {
         systemd: bool,
     },
 
+    /// Pre-flight environment check (storage / clock / daemon / GPU)
+    Warmup {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
+
     /// MCP server mode - expose bifrost as MCP tools over stdio
     McpServe {
         /// Configuration file path
@@ -107,7 +114,13 @@ enum ClientCommand {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // `bifrost --warmup` 是 `bifrost warmup` 的等价写法（按用户习惯保留）
+    let mut argv: Vec<String> = std::env::args().collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--warmup") {
+        argv.remove(pos);
+        argv.insert(1, "warmup".to_string());
+    }
+    let cli = Cli::parse_from(argv);
 
     match cli.mode {
         Mode::Client { command } => handle_client_mode(command),
@@ -124,6 +137,23 @@ fn main() {
                 return;
             }
             handle_server_mode(config, systemd);
+        }
+        Mode::Warmup { config } => {
+            let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
+            let settings = match config {
+                Some(p) => match std::fs::read_to_string(&p) {
+                    Ok(c) => serde_json::from_str(&c).unwrap_or_else(|e| {
+                        eprintln!("Bad config {}: {}", p.display(), e);
+                        bifrost::core::settings::BifrostSettings::defaults()
+                    }),
+                    Err(e) => {
+                        eprintln!("Cannot read {}: {}", p.display(), e);
+                        bifrost::core::settings::BifrostSettings::defaults()
+                    }
+                },
+                None => bifrost::core::settings::load(),
+            };
+            std::process::exit(bifrost::core::warmup::run(&settings));
         }
         Mode::McpServe { config } => handle_mcp_serve(config),
     }

@@ -10,3 +10,4 @@ pub mod ssh_bridge;
 pub use batch_tracker::BatchTracker;
 pub use bridge::{Bridge, TaskStatusResponse};
 pub mod settings;
+pub mod warmup;

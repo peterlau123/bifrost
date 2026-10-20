@@ -140,6 +140,8 @@ pub struct DaemonSection {
         serialize_with = "ser_duration"
     )]
     pub task_timeout: Option<Duration>,
+    /// Ceiling for per-task retries. Unset = no cap (the task's own
+    /// `retry_count` decides; it defaults to 0, i.e. run once).
     pub max_retries: Option<u8>,
     #[serde(
         default,
@@ -186,11 +188,9 @@ pub struct DaemonSection {
     /// timer-driven scanning; `spin` forces busy-polling.
     #[serde(default)]
     pub scan_mode: ScanMode,
-    /// Rotate a per-task log file past this size. Default 64MB;
-    /// 0 disables rotation.
-    #[serde(default)]
-    pub log_max_bytes: Option<u64>,
     /// How many rotated files to keep (`.1` .. `.N`). Default 1, max 9.
+    /// Rotate size is fixed at 64MB per stream (summaries live in the result,
+    /// not in the rotation budget).
     #[serde(default)]
     pub log_backups: Option<usize>,
 }

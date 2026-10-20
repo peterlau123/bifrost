@@ -17,9 +17,9 @@ use uuid::Uuid;
 use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
 use crate::daemon::logger::LogManager;
 
-/// Result-file output cap (head + tail together). Full output goes to
-/// logs/<task_id>/stdout.log while the task runs.
-pub const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Result-file output cap (head + tail together). Benchmark summaries land at
+/// the end of the stream, so the tail gets 3/4 of the budget.
+pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 /// Daemon-wide default when neither the task nor settings specify a timeout.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5400;
 /// Default cancel poll interval. 1s keeps cancel latency human-scale while
@@ -27,7 +27,7 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5400;
 /// benchmark burn half a minute of GPU time before dying).
 const DEFAULT_CANCEL_POLL: Duration = Duration::from_secs(1);
 /// Default per-stream log size before rotation.
-const DEFAULT_LOG_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_LOG_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Default number of rotated backups kept (stdout.log.1 ... stdout.log.N).
 const DEFAULT_LOG_BACKUPS: usize = 1;
 /// How long to wait for the reaper / pipe drain after SIGKILL.
@@ -93,7 +93,8 @@ struct Capture {
 impl Capture {
     fn push(&mut self, chunk: &[u8], limit: usize) {
         self.total += chunk.len() as u64;
-        let half = limit / 2;
+        // Head keeps 1/4 (context), tail keeps 3/4 (the summary).
+        let half = limit / 4;
         let keep = limit - half;
         if !self.truncated {
             self.buf.extend_from_slice(chunk);
@@ -1118,29 +1119,27 @@ mod tests {
         assert!(std::str::from_utf8(result.output.stdout.as_bytes()).is_ok());
     }
 
-    /// 修复项 9：超过 8MB 才截断，且保留尾部（benchmark 汇总在末尾）。
-    #[tokio::test]
-    async fn test_stdout_truncation_over_8mb_keeps_tail() {
-        let temp_dir = TempDir::new().unwrap();
-        let executor = executor(&temp_dir);
-        let task = Task::new(
-            "python3 -u -c \"import sys; sys.stdout.write('A' * 9000000); sys.stdout.write('TAILMARK')\""
-                .to_string(),
-            crate::core::models::TaskType::Shell,
-        )
-        .with_timeout(120);
+    /// 载荷超过上限时保留头部上下文 + 尾部汇总。
+    #[test]
+    fn test_capture_keeps_tail_beyond_cap() {
+        let limit = 1000;
+        let mut cap = Capture::default();
+        cap.push(&vec![b'A'; 600], limit);
+        cap.push(&vec![b'B'; 600], limit); // 越过上限，切成 head+tail
+        cap.push(b"TAILMARK", limit);
 
-        let result = executor.execute(&task).await.unwrap();
-        assert!(
-            result.output.stdout.len() <= MAX_OUTPUT_BYTES + 100,
-            "载荷应有上限，实际 {}",
-            result.output.stdout.len()
-        );
-        assert!(result.output.stdout.contains("bytes omitted"));
-        assert!(
-            result.output.stdout.contains("TAILMARK"),
-            "尾部必须保留（benchmark 汇总在最后）"
-        );
+        let s = cap.render();
+        assert!(s.contains("bytes omitted"), "超限应有省略标记");
+        assert!(s.ends_with("TAILMARK"), "尾部（summary）必须保留: {}", s);
+        assert!(s.len() <= limit + 100, "载荷应有界，实际 {}", s.len());
+    }
+
+    /// 小样本不截断、不加标记。
+    #[test]
+    fn test_capture_small_output_intact() {
+        let mut cap = Capture::default();
+        cap.push(b"hello world", MAX_OUTPUT_BYTES);
+        assert_eq!(cap.render(), "hello world");
     }
 
     /// 完整输出必须落在日志文件里（不被截断）。
@@ -1163,18 +1162,19 @@ mod tests {
         assert_eq!(std::fs::metadata(&log).unwrap().len(), 9_000_000);
     }
 
-    /// 1MB~8MB 之间的输出不再被截断（旧版本会丢）。
+    /// 9MB 输出全部保留（上限已提到 64MB）。
     #[tokio::test]
-    async fn test_2mb_output_not_truncated() {
+    async fn test_9mb_output_not_truncated() {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -u -c \"import sys; sys.stdout.write('B' * 2000000)\"".to_string(),
+            "python3 -u -c \"import sys; sys.stdout.write('B' * 9000000)\"".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(120);
         let r = executor.execute(&task).await.unwrap();
-        assert_eq!(r.output.stdout.len(), 2_000_000);
+        assert_eq!(r.output.stdout.len(), 9_000_000);
+        assert!(!r.output.stdout.contains("bytes omitted"));
     }
 
     /// 子进程往 stderr 灌大输出时不能死锁（旧的串行读管道会卡住）。
