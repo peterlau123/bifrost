@@ -249,6 +249,18 @@ env_vars:
 
 ## Installation
 
+Deployment is scripted — two commands, one per machine. The scripts live under
+`scripts/{build,deploy,validate,ops,examples}/`; the manual steps below are exactly what they do,
+so you only need them when you want to understand or deviate from the automation.
+
+```bash
+# target machine (daemon side, root)
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
+
+# online machine (client side)
+scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
+```
+
 ### Build
 
 The one-step path is `scripts/build/build.sh` (add `--static` for the musl artifact that the daemon
@@ -282,12 +294,16 @@ ls -lh target/release/bifrost
 
 The client machine issues commands and queries results; it only needs the CLI binary and a settings file.
 
+Scripted: `scripts/deploy/deploy-client.sh --storage <shared-dir>` installs the binary, runs
+`bifrost client init` and reports whether the daemon is already alive
+(`--binary --config --prefix --skip-build --force` optional).
+
 ```bash
 # 1. Copy the binary
 sudo cp target/release/bifrost /usr/local/bin/
 
-# 2. Initialize the settings file (writes ~/.bifrost/settings.json)
-bifrost server --init
+# 2. Initialize the client-side settings (writes ~/.bifrost/settings.json)
+bifrost client init --storage /mnt/gpfs/bifrost
 
 # 3. Edit it and point shared_storage at the shared directory
 vim ~/.bifrost/settings.json
@@ -323,6 +339,12 @@ The daemon machine is network-isolated: it receives commands and returns results
 
 Both machines mount the same shared directory (GPFS today; NFS, Lustre and other POSIX filesystems also work), so the compiled binary can be picked up directly on the daemon side.
 
+**Scripted (recommended):** `sudo scripts/deploy/deploy-server.sh --storage <shared-dir>` runs, in order:
+candidate-binary gates (static link → `--version` → `warmup`) → `bifrost server init` → install + restart
+(systemd, or `--no-systemd`) → wait for a fresh heartbeat → run one real task as a smoke test, rolling
+back on failure. Optional flags: `--binary --config --prefix --service-name --gpus --skip-build
+--skip-warmup --skip-smoke --allow-dynamic --force --log`.
+
 ```bash
 # ---- Client side: write the build into the shared directory ----
 cp target/release/bifrost /mnt/gpfs/bifrost/bin/
@@ -332,9 +354,8 @@ cp target/release/bifrost /mnt/gpfs/bifrost/bin/
 sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
 
-# Initialize the settings file
-mkdir -p ~/.bifrost
-bifrost server --init
+# Initialize the daemon-side settings
+bifrost server init --storage /mnt/gpfs/bifrost
 ```
 
 #### Configure shared storage on the daemon
@@ -429,7 +450,7 @@ bifrost client status <TASK_ID>
 `~/.bifrost/settings.json`:
 
 ```bash
-bifrost server --init  # generate default settings
+bifrost server init --storage /mnt/gpfs/bifrost  # generate daemon-side settings
 ```
 
 ```json
@@ -964,39 +985,6 @@ bifrost/
 ├── scripts/            # Build / deploy / validation scripts
 └── docs/               # Documentation
 ```
-
-## Scripts
-
-Deployment is scripted end to end — you should not have to type the individual commands. Everything
-lives under `scripts/`, grouped by purpose:
-
-```
-scripts/
-├── build/     build.sh (--static / --target / --profile / --dist), find-binary.sh
-├── deploy/    deploy-server.sh (--storage required), deploy-client.sh, install-systemd.sh,
-│              deploy-h200.sh (H200 preset)
-├── validate/  remote-validate.sh (10 end-to-end checks), h200-smoke.sh, health-check.sh
-├── ops/       watchdog.sh（systemd 之外的兜底自愈，可选）
-└── examples/  quickstart.sh (a runnable usage sample)
-```
-
-The three flows you actually need:
-
-```bash
-# daemon side (target machine, root)
-scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
-
-# client side (online machine)
-scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
-
-# usage sample against a running daemon
-scripts/examples/quickstart.sh --storage /data/liuxin/bifrost
-```
-
-`deploy-server.sh` runs, in order: candidate-binary gates (static link → `--version` → `warmup`) →
-`bifrost server init` → install + restart (systemd, or `--no-systemd`) → wait for a fresh heartbeat →
-run one real task as a smoke test, rolling back on failure. Full parameter list:
-`--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --allow-dynamic --force --log`.
 
 ## Documentation
 

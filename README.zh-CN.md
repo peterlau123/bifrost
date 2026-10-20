@@ -249,6 +249,17 @@ env_vars:
 
 ## 安装
 
+部署是全脚本化的：两台机器各一条命令。脚本在 `scripts/{build,deploy,validate,ops,examples}/` 下，
+下面的手工步骤就是它们做的事——只有想理解或改流程时才需要手敲。
+
+```bash
+# 目标机（daemon 侧，root）
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
+
+# 联网机（client 侧）
+scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
+```
+
 ### 编译
 
 一条命令走完：`scripts/build/build.sh`（部署到 daemon 侧要加 `--static` 产 musl，加 `--dist` 顺手复制到
@@ -281,12 +292,15 @@ ls -lh target/release/bifrost
 
 源机器负责下发命令和查询结果，只需要 CLI 二进制和配置文件。
 
+脚本方式：`scripts/deploy/deploy-client.sh --storage <共享目录>` 会装二进制、跑 `bifrost client init`，
+并顺带报一下 daemon 是否已经在线（可选 `--binary --config --prefix --skip-build --force`）。
+
 ```bash
 # 1. 复制二进制
 sudo cp target/release/bifrost /usr/local/bin/
 
-# 2. 初始化配置（生成 ~/.bifrost/settings.json）
-bifrost server --init
+# 2. 初始化 client 侧配置（生成 ~/.bifrost/settings.json）
+bifrost client init --storage /mnt/gpfs/bifrost
 
 # 3. 编辑配置，指定共享存储路径
 vim ~/.bifrost/settings.json
@@ -322,6 +336,11 @@ bifrost client status <TASK_ID>
 
 两台机器挂载同一共享目录（当前使用 GPFS，也支持 NFS、Lustre 等 POSIX 文件系统），编译好的二进制可以直接被目标机器访问。
 
+**脚本方式（推荐）**：`sudo scripts/deploy/deploy-server.sh --storage <共享目录>` 依次做：候选二进制门槛
+（静态链接 → `--version` → `warmup`）→ `bifrost server init` → 安装并重启（systemd，或 `--no-systemd`）
+→ 等心跳刷新 → 真跑一条任务做 smoke，失败自动回滚。可选参数：`--binary --config --prefix
+--service-name --gpus --skip-build --skip-warmup --skip-smoke --allow-dynamic --force --log`。
+
 ```bash
 # ---- 源机器端：编译后写入 GPFS 共享目录 ----
 cp target/release/bifrost /mnt/gpfs/bifrost/bin/
@@ -331,9 +350,8 @@ cp target/release/bifrost /mnt/gpfs/bifrost/bin/
 sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
 
-# 初始化配置
-mkdir -p ~/.bifrost
-bifrost server --init
+# 初始化 daemon 侧配置
+bifrost server init --storage /mnt/gpfs/bifrost
 ```
 
 #### 目标机器配置 shared storage
@@ -427,7 +445,7 @@ bifrost client status <TASK_ID>
 `~/.bifrost/settings.json`：
 
 ```bash
-bifrost server --init  # 生成默认配置
+bifrost server init --storage /mnt/gpfs/bifrost  # 生成 daemon 侧配置
 ```
 
 ```json
@@ -961,37 +979,6 @@ bifrost/
 ├── scripts/            # 构建/部署/验证脚本
 └── docs/               # 文档
 ```
-
-## 脚本
-
-部署是全脚本化的，不需要一条条敲命令。所有脚本都在 `scripts/` 下，按用途分子目录：
-
-```
-scripts/
-├── build/     build.sh（--static / --target / --profile / --dist）、find-binary.sh
-├── deploy/    deploy-server.sh（必选 --storage）、deploy-client.sh、install-systemd.sh、
-│              deploy-h200.sh（H200 预设）
-├── validate/  remote-validate.sh（10 项端到端校验）、h200-smoke.sh、health-check.sh
-├── ops/       watchdog.sh（systemd 之外的兜底自愈，可选）
-└── examples/  quickstart.sh（可跑通的用法样例）
-```
-
-实际会用到的三条命令：
-
-```bash
-# 目标机（daemon 侧，root）
-scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
-
-# 联网机（client 侧）
-scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
-
-# 对着已运行的 daemon 跑一遍用法样例
-scripts/examples/quickstart.sh --storage /data/liuxin/bifrost
-```
-
-`deploy-server.sh` 依次做：候选二进制门槛（静态链接 → `--version` → `warmup`）→ `bifrost server init`
-→ 安装并重启（systemd，或 `--no-systemd`）→ 等心跳刷新 → 真跑一条任务做 smoke；失败自动回滚。
-全部参数：`--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --allow-dynamic --force --log`。
 
 ## 文档
 
