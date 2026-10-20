@@ -264,8 +264,11 @@ env_vars:
 
 ### Build
 
+The one-step path is `scripts/build/build.sh` (add `--static` for the musl artifact that the daemon
+needs, `--dist` to drop a copy in `dist/`). The manual commands below are what it wraps.
+
 > The build output location can be changed by `CARGO_TARGET_DIR` or a `target-dir` setting.
-> Scripts must resolve the real path through `scripts/find-binary.sh [release|debug]` instead of
+> Scripts must resolve the real path through `scripts/build/find-binary.sh [release|debug]` instead of
 > hardcoding `target/release/bifrost`: it asks cargo to report the artifact
 > (`--message-format=json`). `deploy.sh` / `restart_server.sh` / `systemd-setup.sh` already do this.
 
@@ -306,7 +309,6 @@ vim ~/.bifrost/settings.json
 ```json
 {
   "shared_storage": "/mnt/gpfs/bifrost",
-  "database": "/mnt/gpfs/bifrost/bifrost.db",
   "client": {
     "poll_interval": "2s",
     "heartbeat_timeout": "180s"
@@ -370,6 +372,17 @@ vim ~/.bifrost/settings.json
 
 > **Important:** `shared_storage` must resolve to the same physical directory on the client and on the daemon.
 
+#### Pre-flight self-check (every deployment, any filesystem)
+
+`bifrost warmup` is a required step before the daemon goes live — it does not matter whether the
+shared directory is GPFS, NFS, or a plain local path. It checks that the storage is writable, reports
+the filesystem type, probes the clock, reads the existing heartbeat and lists the visible GPUs; it
+exits 1 on blocking findings, so it can gate a deploy script.
+
+```bash
+bifrost warmup --storage /mnt/gpfs/bifrost
+```
+
 #### Register the systemd service (recommended for production)
 
 ```bash
@@ -387,8 +400,8 @@ journalctl -u bifrost -f
 ```
 
 > For a shared-storage layout (e.g. H200's `/data/...`) the bundled unit does not fit — use
-> `scripts/install-systemd.sh --storage <dir>` to render one for the actual layout, then
-> `scripts/deploy-h200.sh` to install and restart. See [docs/deployment.md](docs/deployment.md).
+> `scripts/deploy/install-systemd.sh --storage <dir>` to render one for the actual layout, then
+> `scripts/deploy/deploy-h200.sh` to install and restart. See [docs/deployment.md](docs/deployment.md).
 
 #### Run the daemon manually (debugging)
 
@@ -494,7 +507,7 @@ Some virtualised environments (observed on H20) freeze `CLOCK_MONOTONIC`: `sleep
 | `sleep` | Force timer-driven scanning (lowest CPU), for machines known to be healthy |
 | `spin` | Force busy-poll (~1 core), only for machines that really have a clock problem |
 
-The self-check result is printed in the startup log: `clock: ok (sleep-driven scan)` or `WARNING: ... busy-poll`. If you still suspect a stall at runtime, use the external watchdog `scripts/watchdog.sh` (reads the age of `heartbeat.json` / `scan.json` and restarts past a threshold) — it runs from cron or a systemd timer, so it does not share a failure domain with the daemon.
+The self-check result is printed in the startup log: `clock: ok (sleep-driven scan)` or `WARNING: ... busy-poll`. If you still suspect a stall at runtime, use the external watchdog `scripts/ops/watchdog.sh` (reads the age of `heartbeat.json` / `scan.json` and restarts past a threshold) — it runs from cron or a systemd timer, so it does not share a failure domain with the daemon.
 
 ### SSH Bridge
 
@@ -523,6 +536,9 @@ Requirements: passwordless `ssh <host>` from the client (`BatchMode=yes`). File 
 ### Shared storage that is not GPFS
 
 Bifrost only requires **a POSIX directory both sides can read and write**; it is not tied to GPFS. A typical H200 setup:
+
+Whichever filesystem you end up with, `bifrost warmup` is step one — see [Warmup](#warmup). The block
+below just keeps it next to the H200-specific flags.
 
 ```bash
 # ---- on the H200 (server side) ----
@@ -566,6 +582,10 @@ bifrost client submit --job examples/quick_start.yaml
 - On exit it **SIGKILLs the process group of every running task**, so benchmarks cannot survive as orphans still holding the GPUs
 
 ### Warmup
+
+**Step one of every deployment, regardless of filesystem** — GPFS, NFS, Lustre or a local directory all
+go through it. The systemd unit also runs it on every start (`ExecStartPost`), but running it once by
+hand before the first launch is what catches a bad path or a frozen clock early.
 
 ```bash
 # Run this on the target machine (the one that will run the daemon)
@@ -695,8 +715,8 @@ ls -lh target/release/bifrost
 |---|---|---|---|
 | **Client CLI** | ✅ | Nothing to do | Every invocation re-execs the binary, so it picks up the new build |
 | **MCP Server** | ✅ | **You must kill the old mcp-serve process** | Long-running process; changing the binary does not restart it, and the agent will not do it for you. Kill it and the next call spawns the new build (⚠️ the most commonly missed step) |
-| **Daemon Server** | ✅ | `./bifrost-ctl.sh restart` (local) or `kill -HUP <supervisor_pid>` (remote) | The supervisor kills the old process and starts the new one |
-| **Supervisor** | ⚠️ Only if the script itself changed | Restart the supervisor: `./bifrost-supervisor.sh restart` | Only script changes need this; binary updates do not |
+| **Daemon Server** | ✅ | `scripts/ops/bifrost-ctl.sh restart` (local) or `kill -HUP <supervisor_pid>` (remote) | The supervisor kills the old process and starts the new one |
+| **Supervisor** | ⚠️ Only if the script itself changed | Restart the supervisor: `scripts/ops/bifrost-supervisor.sh restart` | Only script changes need this; binary updates do not |
 
 ### Update checklist
 
@@ -704,7 +724,7 @@ ls -lh target/release/bifrost
 After building a new binary:
 1. ✅ Client CLI    - automatic (stateless)
 2. ⚠️ MCP Server   - must kill the old mcp-serve (Hermes: pkill -f "bifrost mcp-serve")
-3. 🔄 Daemon Server - ./bifrost-ctl.sh restart (cross-machine, no SSH needed)
+3. 🔄 Daemon Server - scripts/ops/bifrost-ctl.sh restart (cross-machine, no SSH needed)
 4. ⏹️ Supervisor    - untouched for binary updates; restart only when the script changes
 ```
 
@@ -712,9 +732,9 @@ After building a new binary:
 
 ```bash
 # Run locally; controls the remote server through control.json on shared storage
-./bifrost-ctl.sh restart    # restart the remote daemon (do this after every build)
-./bifrost-ctl.sh status     # query state (writes back status.json)
-./bifrost-ctl.sh stop       # shut down
+scripts/ops/bifrost-ctl.sh restart    # restart the remote daemon (do this after every build)
+scripts/ops/bifrost-ctl.sh status     # query state (writes back status.json)
+scripts/ops/bifrost-ctl.sh stop       # shut down
 ```
 
 > Detailed operational notes live in [docs/ops-practice.md](docs/ops-practice.md).
@@ -740,14 +760,14 @@ The supervisor is a daemon script that runs on the **offline (daemon) machine** 
 cd /gpfs/gcsp/liuxin/bifrost
 
 # 1. Start the supervisor (background, nohup, survives SSH disconnect)
-./bifrost-supervisor.sh start
+scripts/ops/bifrost-supervisor.sh start
 #   output: supervisor pid: <PID>  (log: .../server.log)
 
 # 2. Optional: auto-start on boot
-./install-supervisor-cron.sh
+scripts/ops/install-supervisor-cron.sh
 
 # 3. Verify
-./bifrost-supervisor.sh status
+scripts/ops/bifrost-supervisor.sh status
 #   supervisor:  running (pid=<PID>)
 #   bifrost server: running (pid=<PID>)
 ```
@@ -756,9 +776,9 @@ cd /gpfs/gcsp/liuxin/bifrost
 
 ```bash
 # Send commands to the remote supervisor through control.json (effective within 2s)
-./bifrost-ctl.sh restart    # restart the remote daemon (do this after building a new binary)
-./bifrost-ctl.sh status     # query state (the supervisor writes status.json back)
-./bifrost-ctl.sh stop       # stop server + supervisor
+scripts/ops/bifrost-ctl.sh restart    # restart the remote daemon (do this after building a new binary)
+scripts/ops/bifrost-ctl.sh status     # query state (the supervisor writes status.json back)
+scripts/ops/bifrost-ctl.sh stop       # stop server + supervisor
 ```
 
 ### Local signal control (on the offline machine)
@@ -784,7 +804,7 @@ kill -USR1 <supervisor_pid>   # print status
 ### Uninstall
 
 ```bash
-./bifrost-supervisor.sh stop
+scripts/ops/bifrost-supervisor.sh stop
 # If you installed auto-start, remove the crontab line:
 # crontab -e and delete the line containing bifrost-supervisor
 ```
@@ -1055,6 +1075,40 @@ bifrost/
 ├── scripts/            # Build / deploy / validation scripts
 └── docs/               # Documentation
 ```
+
+## Scripts
+
+Deployment is scripted end to end — you should not have to type the individual commands. Everything
+lives under `scripts/`, grouped by purpose:
+
+```
+scripts/
+├── build/     build.sh (--static / --target / --profile / --dist), find-binary.sh
+├── deploy/    deploy-server.sh (--storage required), deploy-client.sh, install-systemd.sh,
+│              deploy-h200.sh (H200 preset), systemd-setup.sh (legacy local layout), release.sh
+├── validate/  remote-validate.sh (10 end-to-end checks), h200-smoke.sh, health-check.sh
+├── ops/       watchdog.sh, bifrost-supervisor.sh, bifrost-ctl.sh,
+│              install-supervisor-cron.sh, restart_server.sh
+└── examples/  quickstart.sh (a runnable usage sample)
+```
+
+The three flows you actually need:
+
+```bash
+# daemon side (target machine, root)
+scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
+
+# client side (online machine)
+scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
+
+# usage sample against a running daemon
+scripts/examples/quickstart.sh --storage /data/liuxin/bifrost
+```
+
+`deploy-server.sh` runs, in order: candidate-binary gates (static link → `--version` → `warmup`) →
+`bifrost server init` → install + restart (systemd, or `--no-systemd`) → wait for a fresh heartbeat →
+run one real task as a smoke test, rolling back on failure. Full parameter list:
+`--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --allow-dynamic --force --log`.
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 # 注意：这是「本地私有布局」版本（WorkingDirectory=/var/lib/bifrost + --config
 # /etc/bifrost/settings.json）。共享盘布局（如 H200 的 /data/liuxin）请用
-# scripts/install-systemd.sh --storage <dir> 现场渲染，或照它改本文件。
+# scripts/deploy/install-systemd.sh --storage <dir> 现场渲染，或照它改本文件。
 [Unit]
 Description=Bifrost - Offline Machine Command Execution Server
 Documentation=https://github.com/your-org/bifrost

@@ -14,9 +14,10 @@
 # 硬化只会制造"昨天能跑的脚本今天 permission denied"。要收紧请针对具体任务做。
 set -uo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STORAGE="/data/liuxin/bifrost"
 INSTALL="/usr/local/bin/bifrost"
+CONFIG=""
 SERVICE="bifrost.service"
 UNIT_PATH="/etc/systemd/system/$SERVICE"
 DRY_RUN=0
@@ -25,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --storage) STORAGE="$2"; shift 2 ;;
         --install) INSTALL="$2"; shift 2 ;;
+        --config)  CONFIG="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
@@ -35,6 +37,12 @@ if [[ "$DRY_RUN" != "1" ]]; then
     [[ "$(id -u)" == "0" ]] || { echo "必须以 root 运行（--dry-run 可免）" >&2; exit 1; }
     [[ -x "$INSTALL" ]] || { echo "$INSTALL 不存在或不可执行" >&2; exit 1; }
     command -v systemctl >/dev/null || { echo "没有 systemctl，本机不是 systemd 系统" >&2; exit 1; }
+fi
+
+if [[ -n "$CONFIG" ]]; then
+    EXEC_TARGET="--config $CONFIG"
+else
+    EXEC_TARGET="--storage $STORAGE"
 fi
 
 render_unit() {
@@ -54,9 +62,9 @@ TimeoutStartSec=60
 User=root
 # 任务默认 cwd 由此决定（daemon.working_dir 可覆盖）
 WorkingDirectory=$STORAGE
-ExecStart=$INSTALL server --storage $STORAGE --systemd
+ExecStart=$INSTALL server ${EXEC_TARGET} --systemd
 # 上线自检：结果进 journal，不阻断启动（就绪之后跑）
-ExecStartPost=-$INSTALL warmup --storage $STORAGE
+ExecStartPost=-$INSTALL warmup ${EXEC_TARGET}
 
 # SIGTERM → daemon 自己杀干净所有任务的进程组，再退出
 KillSignal=SIGTERM
@@ -108,6 +116,7 @@ fi
 #    unit 已经在跑时跳过：那个进程是 systemd 的，杀掉会被 Restart= 立刻拉起来，
 #    再叠加下面的 systemctl restart 等于白重启一次。
 PATTERN="bifrost server --storage $STORAGE"
+PATTERN_CFG="bifrost server --config $CONFIG"
 if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
     echo "unit $SERVICE 已在跑，跳过 pkill（交给 systemctl restart）"
 elif pgrep -f "$PATTERN" >/dev/null; then

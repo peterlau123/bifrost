@@ -11,7 +11,7 @@
 # 退出码 0 = 全过。
 set -uo pipefail
 
-ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(cd "$(dirname "$0")/../.." && pwd)
 STORAGE=""
 BINARY=""
 

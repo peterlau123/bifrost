@@ -33,7 +33,7 @@ enum Mode {
 
     /// Server mode - execute tasks from shared storage
     Server {
-        /// Initialize settings then exit
+        /// Deprecated: use `bifrost server init`
         #[arg(long)]
         init: bool,
 
@@ -44,6 +44,9 @@ enum Mode {
         /// Run as systemd service
         #[arg(long)]
         systemd: bool,
+
+        #[command(subcommand)]
+        command: Option<ServerCommand>,
     },
 
     /// Pre-flight environment check (storage / clock / daemon / GPU)
@@ -61,9 +64,35 @@ enum Mode {
     },
 }
 
+/// Server-side subcommands
+#[derive(Subcommand, Debug)]
+enum ServerCommand {
+    /// Generate ~/.bifrost/settings.json for the daemon side and exit
+    Init {
+        /// Where to write settings.json (default: ~/.bifrost/settings.json)
+        #[arg(long, value_name = "FILE")]
+        path: Option<PathBuf>,
+
+        /// Overwrite an existing settings.json
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 /// Client commands
 #[derive(Subcommand, Debug)]
 enum ClientCommand {
+    /// Generate ~/.bifrost/settings.json for the client side and exit
+    Init {
+        /// Where to write settings.json (default: ~/.bifrost/settings.json)
+        #[arg(long, value_name = "FILE")]
+        path: Option<PathBuf>,
+
+        /// Overwrite an existing settings.json
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Submit a task or job for execution
     Submit {
         /// Command to execute (shell command)
@@ -145,12 +174,36 @@ fn main() {
             init,
             config,
             systemd,
+            command,
         } => {
+            // 两种写法等价：`bifrost server init`（推荐）与旧的 `bifrost server --init`
+            let init_req = match command {
+                Some(ServerCommand::Init { path, force }) => Some((path, force)),
+                None => None,
+            };
+            if let Some((path, force)) = init_req {
+                report_init(
+                    bifrost::core::settings::init_for(
+                        bifrost::core::settings::InitRole::Server,
+                        storage.clone(),
+                        path,
+                        force,
+                    ),
+                    "server",
+                    storage.is_some(),
+                );
+                return;
+            }
             if init {
-                match bifrost::core::settings::init() {
-                    Ok(p) => println!("Settings saved to {}", p.display()),
-                    Err(e) => eprintln!("{}", e),
-                }
+                eprintln!("note: `bifrost server --init` is deprecated, use `bifrost server init`");
+                report_init(
+                    bifrost::core::settings::init().map(|p| bifrost::core::settings::InitOutcome {
+                        path: p,
+                        created: true,
+                    }),
+                    "server",
+                    true, // 旧写法不接 --storage，保持安静
+                );
                 return;
             }
             handle_server_mode(config, systemd, storage, gpus);
@@ -227,11 +280,71 @@ fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>, gpus: Opt
 }
 
 /// Handle client mode operations
+/// Print the outcome of an init and the natural next step for that role.
+fn report_init(
+    res: Result<
+        bifrost::core::settings::InitOutcome,
+        bifrost::core::settings::SettingsError,
+    >,
+    role: &str,
+    storage_given: bool,
+) {
+    match res {
+        Ok(o) => {
+            if o.created {
+                println!("{} settings written to {}", role, o.path.display());
+            } else {
+                println!(
+                    "{} settings already exist at {} (left untouched; use --force to overwrite)",
+                    role,
+                    o.path.display()
+                );
+            }
+            if o.path != bifrost::core::settings::BifrostSettings::path() {
+                println!("  point clients/servers at it with: export BIFROST_CONFIG={}", o.path.display());
+            }
+            if !storage_given {
+                eprintln!(
+                    "warning: --storage was not given, so shared_storage is {} (machine-local).\n                     \x20        client and daemon will not see the same data and tasks stay Pending.\n                     \x20        re-run with: bifrost {} init --storage <shared-dir> --force",
+                    bifrost::core::settings::BifrostSettings::path()
+                        .parent()
+                        .map(|d| d.join("data").display().to_string())
+                        .unwrap_or_else(|| "~/.bifrost/data".to_string()),
+                    role
+                );
+            }
+            match role {
+                "server" => println!("  next: bifrost warmup   then   bifrost server"),
+                _ => println!("  next: bifrost client submit --command 'hostname'"),
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>, gpus: Option<Vec<u32>>) {
     use bifrost::core::bridge::create_bridge;
     use bifrost::core::job::load_job;
     use bifrost::core::models::TaskType;
     use bifrost::core::settings;
+
+    // `client init` 要能在"还没有 settings.json"的机器上跑通，所以放在加载配置之前。
+    if let ClientCommand::Init { path, force } = &command {
+        report_init(
+            settings::init_for(
+                settings::InitRole::Client,
+                storage.clone(),
+                path.clone(),
+                *force,
+            ),
+            "client",
+            storage.is_some(),
+        );
+        return;
+    }
 
     // Same config resolution as MCP server: BIFROST_CONFIG env > ~/.bifrost/settings.json
     let settings = match std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from) {
@@ -257,6 +370,9 @@ fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>, gpus: Op
     let shared_storage = settings.shared_storage.clone();
 
     match command {
+        // init 已在函数开头处理完并 return
+        ClientCommand::Init { .. } => unreachable!("handled before settings load"),
+
         ClientCommand::Submit {
             command: cmd,
             job,
@@ -667,6 +783,7 @@ mod tests {
                 init,
                 config,
                 systemd,
+                command: _,
             } => {
                 assert!(!init);
                 assert!(config.is_none());
@@ -693,6 +810,7 @@ mod tests {
                 init: _,
                 config,
                 systemd,
+                command: _,
             } => {
                 assert_eq!(config.unwrap(), PathBuf::from("/etc/bifrost/server.json"));
                 assert!(systemd);
@@ -702,6 +820,52 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_cli_parse_client_init() {
+        let cli = Cli::try_parse_from([
+            "bifrost", "client", "init", "--storage", "/shared/bifrost", "--force",
+        ])
+        .unwrap();
+        match cli.mode {
+            Mode::Client { command } => match command {
+                ClientCommand::Init { path, force } => {
+                    assert!(path.is_none());
+                    assert!(force);
+                }
+                _ => panic!("expected ClientCommand::Init"),
+            },
+            _ => panic!("expected Client mode"),
+        }
+        // 全局 --storage 照旧可用（init 靠它拿共享目录）
+        assert_eq!(cli.storage.as_deref(), Some(std::path::Path::new("/shared/bifrost")));
+    }
+
+    #[test]
+    fn test_cli_parse_server_init() {
+        let cli = Cli::try_parse_from([
+            "bifrost", "server", "init", "--storage", "/shared/bifrost", "--path", "/etc/bifrost/settings.json",
+        ])
+        .unwrap();
+        assert_eq!(cli.storage.as_deref(), Some(std::path::Path::new("/shared/bifrost")));
+        match cli.mode {
+            Mode::Server { command: Some(ServerCommand::Init { path, force }), .. } => {
+                assert_eq!(path.unwrap(), std::path::PathBuf::from("/etc/bifrost/settings.json"));
+                assert!(!force);
+            }
+            _ => panic!("expected ServerCommand::Init"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_legacy_server_init_flag() {
+        // 旧写法仍然有效（有 deprecation 提示）
+        let cli = Cli::try_parse_from(["bifrost", "server", "--init"]).unwrap();
+        match cli.mode {
+            Mode::Server { init, command: None, .. } => assert!(init),
+            _ => panic!("expected legacy --init"),
+        }
+    }
+
     fn test_cli_parse_submit_command_and_job_conflict() {
         let cli = Cli::try_parse_from([
             "bifrost",

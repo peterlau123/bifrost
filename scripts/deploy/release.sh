@@ -17,7 +17,7 @@ set -euo pipefail
 # ── 路径 ────────────────────────────────────────────────────────────────────
 BIFROST_DIR="/gpfs/gcsp/liuxin/bifrost"
 BINARY="${BIFROST_DIR}/target/release/bifrost"
-CTL="${BIFROST_DIR}/bifrost-ctl.sh"
+CTL="${BIFROST_DIR}/scripts/ops/bifrost-ctl.sh"
 
 # 默认全做
 DO_BUILD=1

@@ -6,10 +6,10 @@
 >
 > - **共享盘部署**（H200 / NFS / GPFS）—— 当前生产实际在用的方式，位于文末：容器内构建 →
 >   宿主安装、`install-systemd.sh`、`deploy-h200.sh`，以及各项实测数据。
-> - **本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`，仓库根目录那份 unit）—— `scripts/systemd-setup.sh`
+> - **本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`，仓库根目录那份 unit）—— `scripts/deploy/systemd-setup.sh`
 >   背后的经典模型。前半部分有若干内容当前版本**并未实现**：settings.json 里的 Prometheus
 >   `metrics:` 配置段，以及 `/usr/local/bin/bifrost-health-check.sh`（仓库里是
->   `scripts/health-check.sh`，且 `systemd-setup.sh` 并不会安装它）。请把它们当模板看，别当既有功能。
+>   `scripts/validate/health-check.sh`，且 `systemd-setup.sh` 并不会安装它）。请把它们当模板看，别当既有功能。
 
 本指南覆盖 Bifrost 的生产部署（systemd）。
 
@@ -36,7 +36,7 @@ Bifrost 面向生产部署，具备：
 
 ```bash
 # 编译并安装（需要 root）
-sudo ./scripts/systemd-setup.sh
+sudo ./scripts/deploy/systemd-setup.sh
 ```
 
 该脚本会：
@@ -79,7 +79,8 @@ sudo tee /etc/bifrost/settings.json >/dev/null <<'JSON'
 }
 JSON
 
-# 4.1 自检（必须在 server 端跑；有阻断项时退出码 1）
+# 4.1 上线前自检：每次部署都跑，与文件系统无关（GPFS/NFS/本地目录一样）；
+#     必须在 server 端跑，有阻断项时退出码 1
 sudo bifrost warmup --config /etc/bifrost/settings.json
 
 
@@ -506,7 +507,7 @@ cd /data/liuxin/Ax/bifrost            # 仓库已在共享盘上
 sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
 # 方式 B：本机编译（宿主没有 Rust 工具链时不可用，见下节）
 #   cargo build --release            # gnu 产物 target/release/bifrost，只适合 glibc>=2.39 的目标机
-#   scripts/find-binary.sh release   # 让 cargo 报告真实路径
+#   scripts/build/find-binary.sh release   # 让 cargo 报告真实路径
 #   ⚠ 目标机 glibc 更旧时，gnu 产物仍可能起来（weak version 只警告），别靠 --version 判断
 
 bifrost warmup --storage /data/liuxin/bifrost
@@ -537,10 +538,10 @@ cp target/x86_64-unknown-linux-musl/release/bifrost dist/bifrost-linux-x86_64
 # ── 宿主（root）：安装 + 重启，一条命令，失败自动回滚 ──────────────
 # setsid 必须加：daemon 退出时会清理任务进程组，不脱离会把部署脚本自己杀掉
 bifrost client submit --storage /data/liuxin/bifrost \
-  --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy-h200.sh >/dev/null 2>&1 &'
+  --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy/deploy-h200.sh >/dev/null 2>&1 &'
 ```
 
-`scripts/deploy-h200.sh` 的三道门槛，全部在**碰 `/usr/local/bin` 之前**跑，任一道
+`scripts/deploy/deploy-h200.sh` 的三道门槛，全部在**碰 `/usr/local/bin` 之前**跑，任一道
 不过就直接退出、旧 daemon 不受影响：
 
 1. `ldd` 必须显示 `statically linked`（拦住 gnu 动态产物；`--allow-dynamic` 可放行）
@@ -595,7 +596,7 @@ sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
 而且没有 `Restart=` 兜底。用例：
 
 ```bash
-sudo scripts/install-systemd.sh --storage /data/liuxin/bifrost
+sudo scripts/deploy/install-systemd.sh --storage /data/liuxin/bifrost
 #   OK: bifrost.service active (728908), heartbeat fresh
 systemctl status bifrost          # active + enabled（开机自启）
 journalctl -u bifrost -f          # 日志（含每次启动的 warmup 自检）
@@ -634,7 +635,7 @@ cgroup 里，`systemctl restart` 会把部署脚本自己一起杀掉 —— set
 
 ```bash
 # 有 systemd：优先用 systemctl（会走上面的 KillSignal / KillMode）
-systemctl restart bifrost         # 换二进制请用 scripts/deploy-h200.sh（含校验与回滚）
+systemctl restart bifrost         # 换二进制请用 scripts/deploy/deploy-h200.sh（含校验与回滚）
 # 无 systemd：前台 Ctrl+C 一次优雅退出（<1s），再按一次强制退出；后台 kill -TERM <pid>
 ```
 
@@ -644,7 +645,7 @@ systemctl restart bifrost         # 换二进制请用 scripts/deploy-h200.sh（
 
 ```bash
 # 可选：外部看门狗（cron 每 2 分钟），心跳或扫描信标过期就重启 daemon
-*/2 * * * * /data/liuxin/Ax/bifrost/scripts/watchdog.sh \
+*/2 * * * * /data/liuxin/Ax/bifrost/scripts/ops/watchdog.sh \
     --storage /data/liuxin/bifrost --restart 'systemctl restart bifrost' \
     >> /var/log/bifrost-watchdog.log 2>&1
 ```

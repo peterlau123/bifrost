@@ -8,9 +8,9 @@
 >   last section: build in a container → install on the host, `install-systemd.sh`, `deploy-h200.sh`,
 >   plus the measured numbers.
 > - **Local private layout** (`/var/lib/bifrost` + `/etc/bifrost`, unit shipped in the repo root) — the
->   classic model behind `scripts/systemd-setup.sh`. Parts of this half describe behaviour the current
+>   classic model behind `scripts/deploy/systemd-setup.sh`. Parts of this half describe behaviour the current
 >   release does **not** implement: the Prometheus `metrics:` block in settings.json, and
->   `/usr/local/bin/bifrost-health-check.sh` (the repo ships `scripts/health-check.sh`, and
+>   `/usr/local/bin/bifrost-health-check.sh` (the repo ships `scripts/validate/health-check.sh`, and
 >   `systemd-setup.sh` does not install it). Treat them as a template, not as shipped features.
 
 This guide covers production deployment of Bifrost using systemd.
@@ -38,7 +38,7 @@ Bifrost is designed for production deployment with:
 
 ```bash
 # Build and install (requires root)
-sudo ./scripts/systemd-setup.sh
+sudo ./scripts/deploy/systemd-setup.sh
 ```
 
 This script:
@@ -81,7 +81,8 @@ sudo tee /etc/bifrost/settings.json >/dev/null <<'JSON'
 }
 JSON
 
-# 4.1 Pre-flight self-check (must run on the server side; exits 1 on blocking findings)
+# 4.1 Pre-flight self-check: every deployment, any filesystem (GPFS/NFS/local alike);
+#     must run on the server side, exits 1 on blocking findings
 sudo bifrost warmup --config /etc/bifrost/settings.json
 
 
@@ -498,7 +499,7 @@ cd /data/liuxin/Ax/bifrost            # the repo already lives on shared storage
 sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
 # Option B: build on the host (unavailable when the host has no Rust toolchain - see the next section)
 #   cargo build --release            # gnu artifact target/release/bifrost, only for glibc>=2.39 targets
-#   scripts/find-binary.sh release   # let cargo report the real path
+#   scripts/build/find-binary.sh release   # let cargo report the real path
 #   Note: on an older-glibc target the gnu artifact may still start (weak version only warns),
 #   so do not rely on `--version` to decide
 
@@ -532,10 +533,10 @@ cp target/x86_64-unknown-linux-musl/release/bifrost dist/bifrost-linux-x86_64
 # setsid is required: the daemon kills task process groups when it exits, and without
 # detaching it would kill the deploy script itself
 bifrost client submit --storage /data/liuxin/bifrost \
-  --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy-h200.sh >/dev/null 2>&1 &'
+  --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy/deploy-h200.sh >/dev/null 2>&1 &'
 ```
 
-`scripts/deploy-h200.sh` has three gates, all evaluated **before touching `/usr/local/bin`**; any
+`scripts/deploy/deploy-h200.sh` has three gates, all evaluated **before touching `/usr/local/bin`**; any
 failure exits immediately and the running daemon is untouched:
 
 1. `ldd` must report `statically linked` (blocks gnu dynamic artifacts; `--allow-dynamic` bypasses it)
@@ -590,7 +591,7 @@ A hand-started `sudo bifrost server` lives in the user login session's scope (me
 is no `Restart=` to bring it back. Usage:
 
 ```bash
-sudo scripts/install-systemd.sh --storage /data/liuxin/bifrost
+sudo scripts/deploy/install-systemd.sh --storage /data/liuxin/bifrost
 #   OK: bifrost.service active (728908), heartbeat fresh
 systemctl status bifrost          # active + enabled (starts on boot)
 journalctl -u bifrost -f          # logs (including the warmup self-check on every start)
@@ -633,7 +634,7 @@ result is written) — trust `/tmp/bifrost-deploy.log` and `journalctl -u bifros
 
 ```bash
 # With systemd: prefer systemctl (it honours the KillSignal / KillMode above)
-systemctl restart bifrost         # to swap binaries use scripts/deploy-h200.sh (validation + rollback)
+systemctl restart bifrost         # to swap binaries use scripts/deploy/deploy-h200.sh (validation + rollback)
 # Without systemd: Ctrl+C once for a graceful exit (<1s), again to force; or kill -TERM <pid> in the background
 ```
 
@@ -645,7 +646,7 @@ still holding the GPUs.
 ```bash
 # Optional: external watchdog (cron, every 2 minutes) restarts the daemon when the heartbeat
 # or the scan beacon goes stale
-*/2 * * * * /data/liuxin/Ax/bifrost/scripts/watchdog.sh \
+*/2 * * * * /data/liuxin/Ax/bifrost/scripts/ops/watchdog.sh \
     --storage /data/liuxin/bifrost --restart 'systemctl restart bifrost' \
     >> /var/log/bifrost-watchdog.log 2>&1
 ```

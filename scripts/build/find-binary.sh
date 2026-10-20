@@ -9,7 +9,7 @@
 # 输出: 绝对路径；失败时非 0 退出并打印原因到 stderr。
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 PROFILE="${1:-release}"
 case "$PROFILE" in

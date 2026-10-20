@@ -264,8 +264,11 @@ env_vars:
 
 ### 编译
 
+一条命令走完：`scripts/build/build.sh`（部署到 daemon 侧要加 `--static` 产 musl，加 `--dist` 顺手复制到
+`dist/`）。下面这些手工步骤就是它包起来的东西。
+
 > 构建产物的位置可能被 `CARGO_TARGET_DIR` 或 `target-dir` 配置改掉。脚本请用
-> `scripts/find-binary.sh [release|debug]` 取真实路径，不要写死 `target/release/bifrost`：
+> `scripts/build/find-binary.sh [release|debug]` 取真实路径，不要写死 `target/release/bifrost`：
 > 它让 cargo 自己报告产物（`--message-format=json`）。`deploy.sh` / `restart_server.sh` /
 > `systemd-setup.sh` 都已改成这样。
 
@@ -306,7 +309,6 @@ vim ~/.bifrost/settings.json
 ```json
 {
   "shared_storage": "/mnt/gpfs/bifrost",
-  "database": "/mnt/gpfs/bifrost/bifrost.db",
   "client": {
     "poll_interval": "2s",
     "heartbeat_timeout": "180s"
@@ -370,6 +372,16 @@ vim ~/.bifrost/settings.json
 
 > **重要：** 源机器与目标机器的 `shared_storage` 必须指向同一物理目录。
 
+#### 上线前自检（每次部署都要做，与文件系统无关）
+
+`bifrost warmup` 是 daemon 上线前的必需步骤 —— 共享目录是 GPFS、NFS 还是本地目录都一样。
+它检查存储可写性、打印文件系统类型、做时钟自检、读现有心跳、列出可见 GPU；有阻断项时退出码 1，
+因此可以直接当作部署脚本的门槛。
+
+```bash
+bifrost warmup --storage /mnt/gpfs/bifrost
+```
+
 #### 注册 systemd 服务（推荐生产使用）
 
 ```bash
@@ -387,8 +399,8 @@ journalctl -u bifrost -f
 ```
 
 > 共享盘布局（如 H200 的 `/data/...`）不适用仓库根目录那份 unit —— 用
-> `scripts/install-systemd.sh --storage <dir>` 按实际布局渲染，再用
-> `scripts/deploy-h200.sh` 安装并重启。详见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
+> `scripts/deploy/install-systemd.sh --storage <dir>` 按实际布局渲染，再用
+> `scripts/deploy/deploy-h200.sh` 安装并重启。详见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
 
 #### 手动启动守护进程（调试用）
 
@@ -494,7 +506,7 @@ bifrost server --init  # 生成默认配置
 | `sleep` | 强制定时器驱动（最低 CPU），适合确认健康的机器 |
 | `spin` | 强制 busy-poll（~1 核），只给确有时钟问题的机器 |
 
-自检结果会打在启动日志里：`clock: ok (sleep-driven scan)` 或 `WARNING: ... busy-poll`。运行时若仍怀疑停摆，用外部看门狗 `scripts/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄，超阈值重启）——它跑在 cron/systemd timer 里，不和 daemon 共享故障域。
+自检结果会打在启动日志里：`clock: ok (sleep-driven scan)` 或 `WARNING: ... busy-poll`。运行时若仍怀疑停摆，用外部看门狗 `scripts/ops/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄，超阈值重启）——它跑在 cron/systemd timer 里，不和 daemon 共享故障域。
 
 ### SSH 传输层
 
@@ -523,6 +535,9 @@ bifrost server --init  # 生成默认配置
 ### 共享目录不是 GPFS 时
 
 bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 上典型用法：
+
+不管最后用的是 GPFS 还是别的文件系统，第一步都是 `bifrost warmup`（见 [Warmup 自检](#warmup-自检)）。
+下面这段只是把它和 H200 专有的参数放在一起。
 
 ```bash
 # ── H200（server 端）───────────────────────────────────────
@@ -566,6 +581,9 @@ bifrost client submit --job examples/quick_start.yaml
 - 退出时会 **SIGKILL 所有在跑任务的进程组**，避免 benchmark 变成孤儿进程继续占 GPU
 
 ### Warmup 自检
+
+**每次部署的第一步，与文件系统无关** —— GPFS、NFS、Lustre、本地目录都要过一遍。systemd unit 每次
+启动也会跑它（`ExecStartPost`），但首次上线前手工跑一次，才能尽早发现路径写错或时钟冻结。
 
 ```bash
 # 在目标机（要跑 daemon 的那台）上执行
@@ -695,8 +713,8 @@ ls -lh target/release/bifrost
 |---|---|---|---|
 | **Client CLI** | ✅ | 无需操作 | 每次调用都重新 exec 二进制，自动用新版 |
 | **MCP Server** | ✅ | **必须 kill 旧 mcp-serve 进程** | 常驻进程，改 binary 后 Agent 不会自动重启；kill 后下次调用自动拉起新版（⚠️ 最常见遗漏点） |
-| **Daemon Server** | ✅ | `./bifrost-ctl.sh restart`（本机）或 `kill -HUP <supervisor_pid>`（跨机） | Supervisor 负责 kill 旧 + 起新 |
-| **Supervisor** | ⚠️ 仅当脚本本身改了 | 重启 supervisor：`./bifrost-supervisor.sh restart` | 脚本更新才需要，binary 更新不需要动 supervisor |
+| **Daemon Server** | ✅ | `scripts/ops/bifrost-ctl.sh restart`（本机）或 `kill -HUP <supervisor_pid>`（跨机） | Supervisor 负责 kill 旧 + 起新 |
+| **Supervisor** | ⚠️ 仅当脚本本身改了 | 重启 supervisor：`scripts/ops/bifrost-supervisor.sh restart` | 脚本更新才需要，binary 更新不需要动 supervisor |
 
 ### 更新检查清单
 
@@ -704,7 +722,7 @@ ls -lh target/release/bifrost
 编译新 binary 后：
 1. ✅ Client CLI    - 自动生效（无状态）
 2. ⚠️ MCP Server   - 必须 kill 旧 mcp-serve（Hermes: pkill -f "bifrost mcp-serve"）
-3. 🔄 Daemon Server - ./bifrost-ctl.sh restart（跨机器，无需 SSH）
+3. 🔄 Daemon Server - scripts/ops/bifrost-ctl.sh restart（跨机器，无需 SSH）
 4. ⏹️ Supervisor    - 二进制更新无需动；脚本更新才 restart
 ```
 
@@ -712,9 +730,9 @@ ls -lh target/release/bifrost
 
 ```bash
 # 本机运行，通过共享存储上的 control.json 控制远端 server
-./bifrost-ctl.sh restart    # 重启远端 daemon（编译后必做）
-./bifrost-ctl.sh status     # 查询状态（回写 status.json）
-./bifrost-ctl.sh stop       # 关闭
+scripts/ops/bifrost-ctl.sh restart    # 重启远端 daemon（编译后必做）
+scripts/ops/bifrost-ctl.sh status     # 查询状态（回写 status.json）
+scripts/ops/bifrost-ctl.sh stop       # 关闭
 ```
 
 > 详细运维记录见 [docs/ops-practice.md](docs/ops-practice.md)。
@@ -740,14 +758,14 @@ Supervisor 是跑在**离线机（Daemon 端）**的守护脚本，管理 bifros
 cd /gpfs/gcsp/liuxin/bifrost
 
 # 1. 启动 supervisor（后台常驻，nohup，SSH 断开不影响）
-./bifrost-supervisor.sh start
+scripts/ops/bifrost-supervisor.sh start
 #   输出: supervisor pid: <PID>  (log: .../server.log)
 
 # 2. 可选: 开机自启（系统重启后自动拉起）
-./install-supervisor-cron.sh
+scripts/ops/install-supervisor-cron.sh
 
 # 3. 验证
-./bifrost-supervisor.sh status
+scripts/ops/bifrost-supervisor.sh status
 #    supervisor:  running (pid=<PID>)
 #    bifrost server: running (pid=<PID>)
 ```
@@ -756,9 +774,9 @@ cd /gpfs/gcsp/liuxin/bifrost
 
 ```bash
 # 通过共享存储上的 control.json 给远端 supervisor 发指令（2s 内生效）
-./bifrost-ctl.sh restart    # 重启远端 daemon（编译新 binary 后必做）
-./bifrost-ctl.sh status     # 查询状态（supervisor 回写 status.json）
-./bifrost-ctl.sh stop       # 关闭 server + supervisor
+scripts/ops/bifrost-ctl.sh restart    # 重启远端 daemon（编译新 binary 后必做）
+scripts/ops/bifrost-ctl.sh status     # 查询状态（supervisor 回写 status.json）
+scripts/ops/bifrost-ctl.sh stop       # 关闭 server + supervisor
 ```
 
 ### 本地信号控制（离线机上，可选）
@@ -784,7 +802,7 @@ kill -USR1 <supervisor_pid>   # 打印状态
 ### 卸载
 
 ```bash
-./bifrost-supervisor.sh stop
+scripts/ops/bifrost-supervisor.sh stop
 # 如安装了自启，移除 crontab 行:
 # crontab -e 删除含 bifrost-supervisor 的行
 ```
@@ -1055,6 +1073,38 @@ bifrost/
 ├── scripts/            # 构建/部署/验证脚本
 └── docs/               # 文档
 ```
+
+## 脚本
+
+部署是全脚本化的，不需要一条条敲命令。所有脚本都在 `scripts/` 下，按用途分子目录：
+
+```
+scripts/
+├── build/     build.sh（--static / --target / --profile / --dist）、find-binary.sh
+├── deploy/    deploy-server.sh（必选 --storage）、deploy-client.sh、install-systemd.sh、
+│              deploy-h200.sh（H200 预设）、systemd-setup.sh（旧的本地私有布局）、release.sh
+├── validate/  remote-validate.sh（10 项端到端校验）、h200-smoke.sh、health-check.sh
+├── ops/       watchdog.sh、bifrost-supervisor.sh、bifrost-ctl.sh、
+│              install-supervisor-cron.sh、restart_server.sh
+└── examples/  quickstart.sh（可跑通的用法样例）
+```
+
+实际会用到的三条命令：
+
+```bash
+# 目标机（daemon 侧，root）
+scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
+
+# 联网机（client 侧）
+scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
+
+# 对着已运行的 daemon 跑一遍用法样例
+scripts/examples/quickstart.sh --storage /data/liuxin/bifrost
+```
+
+`deploy-server.sh` 依次做：候选二进制门槛（静态链接 → `--version` → `warmup`）→ `bifrost server init`
+→ 安装并重启（systemd，或 `--no-systemd`）→ 等心跳刷新 → 真跑一条任务做 smoke；失败自动回滚。
+全部参数：`--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --allow-dynamic --force --log`。
 
 ## 文档
 
