@@ -7,32 +7,34 @@ After=network.target
 Type=simple
 User=root
 Group=root
+# 工作目录决定任务默认 cwd（也可在 settings.json 的 daemon.working_dir 指定）
 WorkingDirectory=/var/lib/bifrost
-ExecStart=/usr/local/bin/bifrost server --systemd
+# --config 指向 settings.json；也可以用 --storage 直接覆盖共享目录
+ExecStart=/usr/local/bin/bifrost server --config /etc/bifrost/settings.json --systemd
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
-# Environment variables
+# 配置解析顺序：--config > BIFROST_CONFIG > ~/.bifrost/settings.json
+Environment="BIFROST_CONFIG=/etc/bifrost/settings.json"
 Environment="RUST_LOG=info"
-Environment="BIFROST_DATA_DIR=/var/lib/bifrost"
 
-# Resource limits
+# 资源限制：结果载荷上限 64MB/流，10 并发时峰值内存约 1–2GB，别卡在 2G
 LimitNOFILE=65536
-MemoryMax=2G
+MemoryMax=8G
 TasksMax=100
 
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=yes
+# ProtectSystem/ProtectHome 只读挂载，共享目录必须在 ReadWritePaths 里
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/bifrost
 
-# Health check
-ExecStartPost=/usr/local/bin/bifrost-health-check.sh startup
-ExecStopPost=/usr/local/bin/bifrost-health-check.sh shutdown
+# 上线前自检（阻断项只会写日志，不阻止启动；想去掉 "-" 前缀让它直接失败）
+ExecStartPost=-/usr/local/bin/bifrost warmup --config /etc/bifrost/settings.json
 
 [Install]
 WantedBy=multi-user.target

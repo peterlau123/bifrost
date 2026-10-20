@@ -77,8 +77,14 @@ sudo systemctl start bifrost
 ## CLI 命令速查
 
 ```bash
+# 上线前自检（在 server/目标机上跑）
+bifrost warmup                      # 或 bifrost --warmup
+
 # 提交单条命令（自动识别 pytest/shell）
 bifrost client submit --command "pytest tests/ -v" --timeout 600
+bifrost client submit --command "..." --retries 2   # 重试需显式开启
+bifrost client submit --command "..." --timeout 0   # 0 = 继承 daemon 默认
+bifrost server --storage /data/liuxin/bifrost       # --storage 覆盖 shared_storage
 
 # 提交 YAML Job（多步骤顺序执行）
 bifrost client submit --job job.yaml
@@ -108,6 +114,7 @@ bifrost/
 │   │   ├── settings.rs     # ~/.bifrost/settings.json 配置
 │   │   ├── error.rs        # BifrostError 枚举
 │   │   ├── lock.rs         # fs2 文件锁 + atomic_write
+│   │   ├── warmup.rs       # bifrost warmup 环境自检
 │   │   ├── db.rs           # TODO: SQLite 集成（任务历史持久化）
 │   │   ├── batch_tracker.rs# 批量进度跟踪
 │   │   └── job.rs          # YAML Job 定义
@@ -123,7 +130,9 @@ bifrost/
 │       ├── heartbeat.rs    # 心跳检测
 │       ├── logger.rs       # 日志管理
 │       ├── gpu_monitor.rs  # nvidia-smi GPU 状态
-│       ├── gpu_scheduler.rs# 轮询 GPU 调度
+│       ├── gpu_pool.rs     # 在用：每卡一个租约的 GPU 池
+│       ├── clock_probe.rs  # 启动时钟自检（决定 scan_mode）
+│       ├── gpu_scheduler.rs# 旧轮询调度（未接线，待删）
 │       └── gpu_task_processor.rs # GPU 完整生命周期 (RAII)
 ├── tests/
 │   ├── unit/               # 10 个单元测试
@@ -131,6 +140,9 @@ bifrost/
 ├── config/                 # 配置模板
 ├── examples/               # YAML Job 示例 (pytest, benchmark, smoke)
 ├── scripts/                # 部署脚本
+│   ├── find-binary.sh      # 解析 cargo 真实产物路径（尊重 CARGO_TARGET_DIR）
+│   ├── watchdog.sh         # 外部看门狗（心跳/扫描信标年龄 → 重启）
+│   └── h200-smoke.sh       # 目标机一条命令跑完 9 项行为验证
 ├── docs/                   # adapter-guide.md, deployment.md, ops-practice.md
 └── adapters/               # pytest_template.yaml
 ```

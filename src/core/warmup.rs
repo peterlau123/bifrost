@@ -15,8 +15,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 /// statfs 的魔数 → 文件系统名（只需要覆盖常见的共享/本地文件系统）。
-fn fs_name(magic: i64) -> &'static str {
-    match magic as u64 {
+fn fs_name(magic: u64) -> &'static str {
+    match magic {
         0x4750_4653 => "gpfs",
         0x6969 => "nfs",
         0x5846_5342 => "xfs",
@@ -35,7 +35,7 @@ fn fs_type_of(path: &Path) -> Option<&'static str> {
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::statfs(c.as_ptr(), &mut buf) };
     if rc == 0 {
-        Some(fs_name(buf.f_type))
+        Some(fs_name(buf.f_type as u64))
     } else {
         None
     }

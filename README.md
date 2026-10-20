@@ -515,11 +515,34 @@ bifrost server --init  # generate default settings
 
 ## 🚀 Usage
 
+### 共享目录不是 GPFS（如 H200 的 `/data` 互挂）
+
+bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 上典型用法：
+
+```bash
+# ── H200（server 端）───────────────────────────────────────
+cd /data/liuxin/Ax/bifrost
+cargo build --release                          # 产物：target/release/bifrost
+bifrost warmup  --storage /data/liuxin/bifrost # 必跑：存储可写/时钟/GPU 自检
+bifrost server  --storage /data/liuxin/bifrost # 起 daemon
+
+# ── client 端（任何能看到同一目录的机器）──────────────────
+bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
+```
+
+- `--storage` 是**全局参数**，覆盖 settings.json 的 `shared_storage`，任意子命令可用
+- 仓库里带了两个预编译二进制（`dist/`，已 gitignore）：`bifrost-linux-x86_64` 是 **musl 静态**，
+  任意 x86_64 Linux 直接跑；`-glibc` 那个要求 glibc ≥ 2.39。不确定对方系统版本时用静态版。
+- 首次运行自动建出 `commands/ results/ status/ artifacts/ logs/ cancel/`，并写 `heartbeat.json` / `scan.json`
+- 目录若是多机共享的网络文件系统，inotify 可能丢事件 —— 兜底扫描（默认 1s）兜住，不依赖 GPFS
+
 ### Submit Tasks
 
 ```bash
 # 提交任意 shell 命令（以 pytest 开头自动识别为 pytest 任务）
 bifrost client submit --command "pytest tests/unit/ -v" --timeout 600
+bifrost client submit --command "..." --timeout 0        # 0 = 用 daemon 默认超时
+bifrost client submit --command "..." --retries 2        # 重试需显式开启（默认 0）
 bifrost client submit --command "python script.py --input data.csv" --timeout 300 --priority 10
 
 # 指定工作目录

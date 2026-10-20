@@ -6,4 +6,5 @@ logs/
 commands/
 results/
 status/
-/.pi/
+/.pi/dist/
+dist/

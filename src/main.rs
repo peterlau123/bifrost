@@ -7,6 +7,12 @@ use std::path::PathBuf;
 #[command(name = "bifrost")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Override shared_storage (commands/results/logs/artifacts root) for this
+    /// invocation. Equivalent to editing settings.json, but convenient for
+    /// `bifrost server --storage /data/liuxin/bifrost`.
+    #[arg(long, global = true, value_name = "DIR")]
+    storage: Option<PathBuf>,
+
     #[command(subcommand)]
     mode: Mode,
 }
@@ -121,9 +127,10 @@ fn main() {
         argv.insert(1, "warmup".to_string());
     }
     let cli = Cli::parse_from(argv);
+    let storage = cli.storage.clone();
 
     match cli.mode {
-        Mode::Client { command } => handle_client_mode(command),
+        Mode::Client { command } => handle_client_mode(command, storage),
         Mode::Server {
             init,
             config,
@@ -136,7 +143,7 @@ fn main() {
                 }
                 return;
             }
-            handle_server_mode(config, systemd);
+            handle_server_mode(config, systemd, storage);
         }
         Mode::Warmup { config } => {
             let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
@@ -153,15 +160,19 @@ fn main() {
                 },
                 None => bifrost::core::settings::load(),
             };
+            let mut settings = settings;
+            if let Some(dir) = storage {
+                settings.shared_storage = dir;
+            }
             std::process::exit(bifrost::core::warmup::run(&settings));
         }
-        Mode::McpServe { config } => handle_mcp_serve(config),
+        Mode::McpServe { config } => handle_mcp_serve(config, storage),
     }
 }
 
 /// Handle MCP server mode: expose bifrost tools over stdio
 /// Config resolution order: BIFROST_CONFIG env > -c flag > ~/.bifrost/settings.json > defaults
-fn handle_mcp_serve(config: Option<PathBuf>) {
+fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>) {
     use bifrost::core::settings;
 
     // BIFROST_CONFIG env lets any MCP client (OpenCode, Claude Code, etc.)
@@ -185,6 +196,10 @@ fn handle_mcp_serve(config: Option<PathBuf>) {
     } else {
         settings::load()
     };
+    let mut settings = settings;
+    if let Some(dir) = storage {
+        settings.shared_storage = dir;
+    }
     let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
     match rt.block_on(bifrost::mcp_server::run(settings)) {
         Ok(()) => {}
@@ -196,7 +211,7 @@ fn handle_mcp_serve(config: Option<PathBuf>) {
 }
 
 /// Handle client mode operations
-fn handle_client_mode(command: ClientCommand) {
+fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>) {
     use bifrost::core::bridge::create_bridge;
     use bifrost::core::job::load_job;
     use bifrost::core::models::TaskType;
@@ -216,6 +231,10 @@ fn handle_client_mode(command: ClientCommand) {
         },
         None => settings::load(),
     };
+    let mut settings = settings;
+    if let Some(dir) = storage {
+        settings.shared_storage = dir;
+    }
     let shared_storage = settings.shared_storage.clone();
 
     match command {
@@ -401,7 +420,7 @@ fn handle_client_mode(command: ClientCommand) {
 }
 
 /// Handle server mode operations
-fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
+fn handle_server_mode(config: Option<PathBuf>, systemd: bool, storage: Option<PathBuf>) {
     use bifrost::core::settings;
     use bifrost::daemon::runner::run_server;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -431,6 +450,11 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
     } else {
         settings::load()
     };
+
+    let mut settings = settings;
+    if let Some(dir) = storage {
+        settings.shared_storage = dir;
+    }
 
     if systemd {
         println!("  Mode: systemd service");

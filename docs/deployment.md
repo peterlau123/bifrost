@@ -55,7 +55,24 @@ sudo chmod +x /usr/local/bin/bifrost
 sudo mkdir -p /var/lib/bifrost/{pending,results,completed,logs}
 
 # 4. Create configuration
+sudo mkdir -p /etc/bifrost
+sudo tee /etc/bifrost/settings.json >/dev/null <<'JSON'
+{
+  "shared_storage": "/data/liuxin/bifrost",
+  "client": { "poll_interval": "1s", "wait_timeout": "12h" },
+  "daemon": {
+    "task_timeout": "1h30m",
+    "max_concurrent": 8,
+    "use_shell": true,
+    "scan_interval": "1s",
+    "gpu_pool": [0, 1, 2, 3, 4, 5, 6, 7],
+    "working_dir": "/data/liuxin/bifrost/work"
+  }
+}
+JSON
 
+# 4.1 自检（必须在 server 端；有阻断项退出码 1）
+sudo bifrost warmup --config /etc/bifrost/settings.json
 
 
 # 5. Install systemd service
@@ -455,3 +472,65 @@ bifrost-health-check.sh heartbeat
 
 - [README.md](../README.md) - Project overview
 - [Adapter Guide](adapter-guide.md) - Task adapters
+
+## Shared-directory deployment (H200 / non-GPFS)
+
+bifrost 只要求两端可读写的 POSIX 目录，GPFS 不是必需项。H200 上用宿主机共享的
+`/data` 即可（容器内常挂成 `/workspace`）。
+
+```bash
+# ── H200（server 端）──────────────────────────────────────────────
+cd /data/liuxin/Ax/bifrost            # 仓库已在共享盘上
+
+# 方式 A：直接用仓库里预编译好的静态二进制（推荐，免工具链）
+sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
+# 方式 B：本机编译
+#   cargo build --release            # 产物 target/release/bifrost（需 glibc≥2.39 的目标机才用）
+#   scripts/find-binary.sh release   # 让 cargo 报告真实路径
+
+bifrost warmup --storage /data/liuxin/bifrost
+#   ✓ shared storage is writable
+#   ✓ filesystem: xfs
+#   ✓ clock: ok (sleep-driven scanning is safe)
+#   ✓ 8 GPU(s) visible via nvidia-smi
+bifrost server --storage /data/liuxin/bifrost
+```
+
+```bash
+# ── client 端（同机器或任何能访问该目录的机器）────────────────────
+bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
+bifrost client status --storage /data/liuxin/bifrost <TASK_ID>
+```
+
+### 部署时必须指定共享目录吗？
+
+**是。** 默认值是 `~/.bifrost/data`（本机私有目录），client 和 daemon 看不到同一份
+数据，任务永远 Pending。三种指定方式（优先级从高到低）：
+
+1. 命令行：`bifrost server --storage /data/liuxin/bifrost`（全局参数，client 同样可用）
+2. 环境变量：`export BIFROST_CONFIG=/etc/bifrost/settings.json`
+3. 配置文件：`~/.bifrost/settings.json` 或 `--config` 指定的文件里的 `shared_storage`
+
+指定后目录会自动创建：`commands/ results/ status/ artifacts/ logs/ cancel/`，
+以及 `heartbeat.json`（daemon 存活）和 `scan.json`（兜底扫描存活）。
+
+### 目录权限
+
+daemon 用户与 client 用户都要能读写同一个目录。容器场景下两边 uid 可能不同
+（例如 uid 10000 与 root），最省事的做法：
+
+```bash
+sudo chown -R <daemon_uid>:<client_gid> /data/liuxin/bifrost
+# 或
+sudo setfacl -R -m u:10000:rwX /data/liuxin/bifrost
+sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
+```
+
+### 运行期自愈
+
+```bash
+# 可选：外部看门狗（cron 每 2 分钟），心跳或扫描信标过期就重启 daemon
+*/2 * * * * /data/liuxin/Ax/bifrost/scripts/watchdog.sh \
+    --storage /data/liuxin/bifrost --restart 'systemctl restart bifrost' \
+    >> /var/log/bifrost-watchdog.log 2>&1
+```
