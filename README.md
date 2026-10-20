@@ -435,7 +435,7 @@ bifrost server --init  # generate default settings
 | shared_storage | Yes | Yes | Root directory for commands/results/logs |
 | transport | Yes | -- | Bridge type: `"shared"` (default) or `"ssh"` |
 | ssh | Yes | -- | SSH bridge config (host/remote_dir/...) — required when transport=ssh |
-| client.* | Yes | -- | Poll interval, heartbeat timeout |
+| client.* | Yes | -- | Poll interval, heartbeat timeout, wait timeout（12h 上限） |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
 #### daemon.* 详解（性能测试常用）
@@ -462,12 +462,14 @@ bifrost server --init  # generate default settings
 | task_timeout | 1h30m | 任务未指定 timeout 时的默认值。**不再作为上限**：任务自己写的 `timeout` 优先 |
 | max_concurrent | 10 | 同时执行的任务数（1–100） |
 | use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行 |
-| scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU |
-| stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收——daemon 崩溃不会再让任务永久卡死 |
-| max_retries | 3 | 任务重试次数上限（任务侧 `retry_count` 取更小值）。只对非零退出重试，超时/取消不重试 |
+| scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU；扫描线程每秒写 `scan.json`（ticks/scanned_at），可据此判断兜底扫描是否还活着 |
+| stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收。回收前校验归属：marker 内记录了 host/pid/task，本机存活进程或本进程正在跑的任务一律跳过；keepalive 自动取 `min(60s, 该值/3)` |
+| max_retries | 0 | 任务重试次数上限（任务侧 `retry_count` 取更小值）。**默认关闭**，需显式开启：`client submit --retries 2` 或 YAML `retries: 2`。只对非零退出重试，超时/取消不重试；每次尝试的日志单独保存为 `stdout.attemptN.log` |
 | gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则不覆盖） |
 
 **超时语义**：`client submit --timeout 0`（默认）= 用 daemon 的 `task_timeout`；传具体秒数则任务自己的值生效，daemon 不再钳制。
+
+**客户端上限**：`client.wait_timeout`（默认 12h）是客户端等待单个 job 任务的硬上限，防止 daemon 挂掉后 client 永远阻塞。
 
 ### SSH Bridge (transport = "ssh")
 

@@ -60,9 +60,12 @@ pub struct Task {
     pub task_type: TaskType,
     /// Task priority (0-255, lower is higher priority)
     pub priority: u8,
-    /// Timeout in seconds
+    /// Timeout in seconds (0 = use the daemon's task_timeout).
+    /// `#[serde(default)]` keeps older task files that omit the field readable.
+    #[serde(default)]
     pub timeout: u64,
-    /// Number of retry attempts
+    /// Number of retry attempts (0 = run once; opt-in).
+    #[serde(default)]
     pub retry_count: u8,
     /// Environment variables for the task
     pub env_vars: HashMap<String, String>,
@@ -140,7 +143,8 @@ impl Task {
             priority: 0,
             // 0 = inherit the daemon's task_timeout
             timeout: 0,
-            retry_count: 3,
+            // Retries are opt-in: 0 means run once.
+            retry_count: 0,
             env_vars: HashMap::new(),
             working_dir: PathBuf::from("."),
             artifacts_expected: Vec::new(),

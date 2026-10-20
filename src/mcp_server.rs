@@ -91,8 +91,9 @@ impl McpServer {
             req.command,
             task_type,
             req.priority.unwrap_or(0),
-            req.timeout.unwrap_or(300),
+            req.timeout.unwrap_or(0),
             working_dir,
+            req.retries.unwrap_or(0),
         )
         .map_err(|e| format!("submit failed: {}", e))?;
         Ok(serde_json::json!({ "task_id": task_id.to_string(), "status": "Pending" }).to_string())
@@ -228,6 +229,9 @@ pub struct SubmitRequest {
     /// Working directory on the target node (default: daemon's cwd)
     #[serde(default)]
     working_dir: Option<String>,
+    /// Retry budget for failures (0 = run once)
+    #[serde(default)]
+    retries: Option<u8>,
 }
 
 /// Status/result request (shared shape)
@@ -250,6 +254,7 @@ mod tests {
             client: crate::core::settings::ClientSection {
                 poll_interval: None,
                 heartbeat_timeout: Some(std::time::Duration::from_secs(180)),
+                wait_timeout: None,
             },
             daemon: crate::core::settings::DaemonSection::default(),
         }
@@ -285,6 +290,7 @@ mod tests {
                 timeout: Some(30),
                 priority: None,
                 working_dir: None,
+                retries: None,
             }))
             .await
             .unwrap();

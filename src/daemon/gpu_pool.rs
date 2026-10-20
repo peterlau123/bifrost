@@ -36,6 +36,17 @@ impl GpuPool {
         !self.ids.is_empty()
     }
 
+    /// Acquire a specific device (for tasks that pin CUDA_VISIBLE_DEVICES).
+    /// Returns None when the id is not part of the pool or is disabled.
+    pub async fn acquire_specific(self: Arc<Self>, gpu_id: u32) -> Option<GpuLease> {
+        let idx = self.ids.iter().position(|&g| g == gpu_id)?;
+        let permit = self.slots[idx].clone().acquire_owned().await.ok()?;
+        Some(GpuLease {
+            gpu_id,
+            _permit: permit,
+        })
+    }
+
     /// Acquire a GPU. Returns None when the pool is disabled.
     pub async fn acquire(self: Arc<Self>) -> Option<GpuLease> {
         if self.ids.is_empty() {

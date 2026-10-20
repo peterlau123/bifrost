@@ -68,6 +68,10 @@ enum ClientCommand {
         #[arg(short = 'w', long)]
         working_dir: Option<PathBuf>,
 
+        /// Retry budget for failures (0 = run once)
+        #[arg(long, default_value = "0")]
+        retries: u8,
+
         /// Run job tasks in parallel (submit all first, then poll all).
         /// Only valid with --job. Default: sequential.
         #[arg(long)]
@@ -191,6 +195,7 @@ fn handle_client_mode(command: ClientCommand) {
             timeout,
             priority,
             working_dir,
+            retries,
             parallel,
         } => {
             let bridge = create_bridge(&settings).expect("Failed to create bridge");
@@ -199,12 +204,19 @@ fn handle_client_mode(command: ClientCommand) {
                 .client
                 .poll_interval
                 .unwrap_or(std::time::Duration::from_secs(2));
+            // Hard ceiling even when a task inherits the daemon timeout.
+            let max_wait = Some(
+                settings
+                    .client
+                    .wait_timeout
+                    .unwrap_or(std::time::Duration::from_secs(12 * 3600)),
+            );
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
                     Ok(job_def) => {
                         match bifrost::client::launcher::launch_job(
-                            &*bridge, job_def, parallel, poll,
+                            &*bridge, job_def, parallel, poll, max_wait,
                         ) {
                             Ok(job_result) => {
                                 println!();
@@ -231,6 +243,7 @@ fn handle_client_mode(command: ClientCommand) {
                     priority,
                     timeout,
                     working_dir,
+                    retries,
                 ) {
                     Ok(task_id) => {
                         let submit_elapsed = submit_start.elapsed();
@@ -440,6 +453,7 @@ mod tests {
                     timeout,
                     priority,
                     working_dir: _,
+                    retries: _,
                     parallel: _,
                 } => {
                     assert_eq!(cmd.unwrap(), "pytest tests/");

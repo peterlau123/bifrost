@@ -102,6 +102,15 @@ pub struct ClientSection {
         serialize_with = "ser_duration"
     )]
     pub heartbeat_timeout: Option<Duration>,
+    /// Hard ceiling on how long a client waits for one job task when the task
+    /// itself inherits the daemon timeout (default 12h). Prevents an
+    /// indefinitely blocked client when the daemon is down.
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration"
+    )]
+    pub wait_timeout: Option<Duration>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

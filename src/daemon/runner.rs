@@ -24,9 +24,10 @@ use crate::daemon::executor::{Executor, ExecutorOptions, DEFAULT_TIMEOUT_SECS};
 use crate::daemon::gpu_pool::GpuPool;
 use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 /// Fallback scan cadence when `daemon.scan_interval` is not configured.
@@ -34,8 +35,10 @@ const DEFAULT_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 /// Read/parse retries with 200ms backoff.
 const MAX_READ_RETRIES: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(200);
-/// Keepalive tick for the claim marker of a running task.
-const MARKER_KEEPALIVE: Duration = Duration::from_secs(60);
+/// Upper bound for the claim-marker keepalive tick; shortened automatically
+/// when stale_marker_timeout is small.
+const MARKER_KEEPALIVE_MAX: Duration = Duration::from_secs(60);
+const MARKER_KEEPALIVE_MIN: Duration = Duration::from_secs(2);
 
 pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), String> {
     let ss = s.shared_storage.clone();
@@ -68,8 +71,12 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         .stale_marker_timeout
         .unwrap_or_else(|| default_timeout.saturating_mul(2));
     let use_shell = s.daemon.use_shell.unwrap_or(true);
-    let max_retries = s.daemon.max_retries.unwrap_or(3);
+    // Retries are opt-in: 0 here means a task's retry_count is ignored.
+    let max_retries = s.daemon.max_retries.unwrap_or(0);
     let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
+    // Keepalive must fire well inside the stale window, otherwise a running
+    // task can be mistaken for a crashed one.
+    let keepalive = (stale_after / 3).clamp(MARKER_KEEPALIVE_MIN, MARKER_KEEPALIVE_MAX);
 
     let p = Arc::new(Protocol::new(ss.clone()).map_err(|e| format!("p: {}", e))?);
     let ex = Executor::with_options(
@@ -111,9 +118,17 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         .watch_async()
         .await;
 
-    // Concurrency: max_concurrent tasks at once (README default 10).
-    let mc = s.daemon.max_concurrent.unwrap_or(10).clamp(1, 100);
+    // Concurrency: max_concurrent tasks at once (README default 10). With a
+    // GPU pool the effective ceiling is the pool size - extra slots would only
+    // sit idle waiting for a device.
+    let mut mc = s.daemon.max_concurrent.unwrap_or(10).clamp(1, 100);
+    if !gpu_ids.is_empty() {
+        mc = mc.min(gpu_ids.len());
+    }
     let sem = Arc::new(tokio::sync::Semaphore::new(mc));
+    // Tasks owned by this process. Reclaim never touches these, regardless of
+    // marker age or clock skew.
+    let active_tasks: Arc<Mutex<HashSet<uuid::Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // Fallback scan: a dedicated thread that sleeps between ticks. It used to
     // busy-poll with yield_now() to survive a frozen CLOCK_MONOTONIC on H20
@@ -128,10 +143,17 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         let ac_s = active_count.clone();
         let sd_s = sd.clone();
         let gpu_s = gpu.clone();
+        let at_s = active_tasks.clone();
+        let ss_beacon = ss.clone();
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
+            let mut ticks: u64 = 0;
             while !sd_s.load(Ordering::Relaxed) {
-                reclaim_stale_markers(&cd_s, stale_after);
+                ticks += 1;
+                // Liveness beacon: the MCP health check can tell a dead scan
+                // thread from a quiet one without relying on this thread's
+                // own clock.
+                write_scan_beacon(&ss_beacon, ticks);
                 // No point scanning when every slot is busy.
                 if sem_s.available_permits() > 0 {
                     for path in scan_pending(&cd_s) {
@@ -140,13 +162,28 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                         let sem2 = sem_s.clone();
                         let ac2 = ac_s.clone();
                         let gpu2 = gpu_s.clone();
+                        let at2 = at_s.clone();
+                        let ka2 = keepalive;
                         let h = handle.clone();
                         h.spawn(async move {
-                            spawn_task(p2, ex2, sem2, ac2, gpu2, path);
+                            spawn_task(p2, ex2, sem2, ac2, at2, gpu2, ka2, path);
                         });
                     }
                 }
                 std::thread::sleep(scan_interval);
+            }
+        });
+    }
+    // Reclaim runs on its own thread so a wedged scan thread cannot disable
+    // self-healing. Slow cadence: this only stats markers.
+    {
+        let cd_r = cd.clone();
+        let sd_r = sd.clone();
+        let at_r = active_tasks.clone();
+        std::thread::spawn(move || {
+            while !sd_r.load(Ordering::Relaxed) {
+                reclaim_stale_markers(&cd_r, stale_after, &at_r);
+                std::thread::sleep(Duration::from_secs(10));
             }
         });
     }
@@ -167,7 +204,9 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             ex.clone(),
             sem.clone(),
             active_count.clone(),
+            active_tasks.clone(),
             gpu.clone(),
+            keepalive,
             path,
         );
     }
@@ -178,7 +217,16 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         }
         tokio::select! {
             Some(path) = rx.recv() => {
-                spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), gpu.clone(), path);
+                spawn_task(
+                    p.clone(),
+                    ex.clone(),
+                    sem.clone(),
+                    active_count.clone(),
+                    active_tasks.clone(),
+                    gpu.clone(),
+                    keepalive,
+                    path,
+                );
             }
         }
     }
@@ -188,12 +236,15 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
 
 /// Spawn a task processing future. Claim-marker dedup happens inside so
 /// inotify events and fallback scans never double-execute a task.
+#[allow(clippy::too_many_arguments)]
 fn spawn_task(
     p: Arc<Protocol>,
     ex: Executor,
     sem: Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicUsize>,
+    active_tasks: Arc<Mutex<HashSet<uuid::Uuid>>>,
     gpu: Arc<GpuPool>,
+    keepalive_tick: Duration,
     path: PathBuf,
 ) {
     tokio::spawn(async move {
@@ -202,27 +253,48 @@ fn spawn_task(
         // the task. .processing is excluded from scans, so no re-entry.
         let marker = path.with_extension("processing");
         let marker_for_claim = marker.clone();
+        let task_id = task_id_from_path(&path);
+        let owner = marker_owner_line(task_id);
         let claimed = tokio::task::spawn_blocking(move || {
-            std::fs::OpenOptions::new()
+            match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&marker_for_claim)
-                .is_ok()
+            {
+                Ok(mut f) => {
+                    // Ownership info lets the reclaimer tell "another live
+                    // daemon owns this" from "the owner died".
+                    let _ = std::io::Write::write_all(&mut f, owner.as_bytes());
+                    true
+                }
+                Err(_) => false,
+            }
         })
         .await
         .unwrap_or(false);
         if !claimed {
             return; // already claimed by another event/scan (or stale marker)
         }
+        if let Some(tid) = task_id {
+            if let Ok(mut set) = active_tasks.lock() {
+                set.insert(tid);
+            }
+        }
 
         // Refresh the marker mtime while we run so the stale reclaimer does
         // not steal a legitimately long task.
         let stop_keepalive = Arc::new(AtomicBool::new(false));
-        let keepalive = spawn_marker_keepalive(marker.clone(), stop_keepalive.clone());
+        let keepalive =
+            spawn_marker_keepalive(marker.clone(), stop_keepalive.clone(), keepalive_tick);
 
         active.fetch_add(1, Ordering::Relaxed);
         let result = process_one(&p, &ex, &gpu, &path).await;
         active.fetch_sub(1, Ordering::Relaxed);
+        if let Some(tid) = task_id {
+            if let Ok(mut set) = active_tasks.lock() {
+                set.remove(&tid);
+            }
+        }
 
         stop_keepalive.store(true, Ordering::Relaxed);
         let _ = keepalive.join();
@@ -285,12 +357,53 @@ async fn process_one(
     // CUDA_VISIBLE_DEVICES unless the task already pins one.
     let mut task_for_exec = task.clone();
     let mut _gpu_lease = None;
-    if gpu.is_enabled() && !task_for_exec.env_vars.contains_key("CUDA_VISIBLE_DEVICES") {
-        if let Some(lease) = gpu.clone().acquire().await {
-            task_for_exec
-                .env_vars
-                .insert("CUDA_VISIBLE_DEVICES".to_string(), lease.gpu_id.to_string());
-            _gpu_lease = Some(lease);
+    if gpu.is_enabled() {
+        // Waiting for a device can take hours, so stay cancelable while queued.
+        let cancel_dir = p.cancel_dir().to_path_buf();
+        let pinned = task_for_exec
+            .env_vars
+            .get("CUDA_VISIBLE_DEVICES")
+            .and_then(|v| v.split(',').next())
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        let lease = match pinned {
+            // A task that pins a device still reserves that slot, otherwise it
+            // can collide with a task the pool hands the same GPU to.
+            Some(id) => {
+                tokio::select! {
+                    biased;
+                    l = gpu.clone().acquire_specific(id) => l,
+                    _ = wait_cancel(&cancel_dir, tid) => None,
+                }
+            }
+            None => {
+                tokio::select! {
+                    biased;
+                    l = gpu.clone().acquire() => l,
+                    _ = wait_cancel(&cancel_dir, tid) => None,
+                }
+            }
+        };
+        match lease {
+            Some(lease) => {
+                task_for_exec
+                    .env_vars
+                    .entry("CUDA_VISIBLE_DEVICES".to_string())
+                    .or_insert_with(|| lease.gpu_id.to_string());
+                _gpu_lease = Some(lease);
+            }
+            None => {
+                if p.has_cancel(&tid) {
+                    write_terminal_result(
+                        p,
+                        &task,
+                        TaskStatus::Cancelled,
+                        "cancelled while waiting for a GPU",
+                    )
+                    .await;
+                    p.clear_cancel(&tid);
+                    return Ok(());
+                }
+            }
         }
     }
 
@@ -349,6 +462,14 @@ async fn process_one(
     Ok(())
 }
 
+/// Resolve when a cancel request file appears for this task.
+async fn wait_cancel(dir: &Path, task_id: uuid::Uuid) {
+    let path = dir.join(format!("{}.json", task_id));
+    while !path.exists() {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 /// Write a terminal result + status and consume the task file.
 async fn write_terminal_result(p: &Arc<Protocol>, task: &Task, status: TaskStatus, message: &str) {
     let tid = task.task_id;
@@ -380,13 +501,17 @@ async fn write_terminal_result(p: &Arc<Protocol>, task: &Task, status: TaskStatu
     let _ = blocking_write(move || p3.remove_task(&tid)).await;
 }
 
-/// Touch a task's claim marker every MARKER_KEEPALIVE until stopped.
-fn spawn_marker_keepalive(marker: PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+/// Touch a task's claim marker periodically until stopped.
+fn spawn_marker_keepalive(
+    marker: PathBuf,
+    stop: Arc<AtomicBool>,
+    tick: Duration,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        // Sleep in 1s slices so shutdown does not wait a full keepalive tick.
+        // Sleep in 1s slices so shutdown does not wait a full tick.
         while !stop.load(Ordering::Relaxed) {
             let mut waited = Duration::ZERO;
-            while waited < MARKER_KEEPALIVE {
+            while waited < tick {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
@@ -402,14 +527,23 @@ fn spawn_marker_keepalive(marker: PathBuf, stop: Arc<AtomicBool>) -> std::thread
 
 /// Delete claim markers left behind by a crashed/killed daemon.
 ///
-/// A marker older than `stale_after` whose owning process is gone means the
-/// task will never execute again (scans skip `.processing`, so nothing ever
-/// re-claims it). Removing the marker makes the task claimable again.
-fn reclaim_stale_markers(commands_dir: &Path, stale_after: Duration) {
+/// A marker is reclaimed only when none of these hold:
+///   * its task is in this process's active set (we own it right now),
+///   * its owner line names this host and that pid is still alive,
+///   * it is younger than `stale_after`.
+///
+/// The age check is the last resort for markers owned by another host,
+/// where process liveness cannot be checked.
+fn reclaim_stale_markers(
+    commands_dir: &Path,
+    stale_after: Duration,
+    active: &Arc<Mutex<HashSet<uuid::Uuid>>>,
+) {
     let Ok(entries) = std::fs::read_dir(commands_dir) else {
         return;
     };
     let now = SystemTime::now();
+    let local_host = local_hostname();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if !name.ends_with(".processing") {
@@ -423,7 +557,25 @@ fn reclaim_stale_markers(commands_dir: &Path, stale_after: Duration) {
         if age < stale_after {
             continue;
         }
-        let task_path = entry.path().with_extension("json");
+
+        let marker_path = entry.path();
+        let owner = read_marker_owner(&marker_path);
+        if let Some(tid) = owner.task {
+            if let Ok(set) = active.lock() {
+                if set.contains(&tid) {
+                    continue; // ours, still running
+                }
+            }
+        }
+        if owner.host.as_deref() == Some(local_host.as_str()) {
+            if let Some(pid) = owner.pid {
+                if pid_alive(pid) {
+                    continue; // another live daemon on this host owns it
+                }
+            }
+        }
+
+        let task_path = marker_path.with_extension("json");
         if task_path.exists() {
             eprintln!(
                 "reclaiming stale claim marker {} (idle {}s) - task will re-run",
@@ -431,7 +583,71 @@ fn reclaim_stale_markers(commands_dir: &Path, stale_after: Duration) {
                 age.as_secs()
             );
         }
-        let _ = std::fs::remove_file(entry.path());
+        let _ = std::fs::remove_file(&marker_path);
+    }
+}
+
+#[derive(Default)]
+struct MarkerOwner {
+    host: Option<String>,
+    pid: Option<u32>,
+    task: Option<uuid::Uuid>,
+}
+
+/// Marker payload: `host=<h>;pid=<p>;task=<uuid>;started=<unix>`.
+fn marker_owner_line(task: Option<uuid::Uuid>) -> String {
+    format!(
+        "host={};pid={};task={};started={}\n",
+        local_hostname(),
+        std::process::id(),
+        task.map(|t| t.to_string()).unwrap_or_default(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    )
+}
+
+fn read_marker_owner(path: &Path) -> MarkerOwner {
+    let mut owner = MarkerOwner::default();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return owner;
+    };
+    for field in content.split(';') {
+        let Some((k, v)) = field.trim().split_once('=') else {
+            continue;
+        };
+        match k.trim() {
+            "host" if !v.is_empty() => owner.host = Some(v.trim().to_string()),
+            "pid" => owner.pid = v.trim().parse().ok(),
+            "task" => owner.task = uuid::Uuid::parse_str(v.trim()).ok(),
+            _ => {}
+        }
+    }
+    owner
+}
+
+fn local_hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+fn pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{}", pid)).exists()
+}
+
+/// Write scan liveness so a wedged fallback scanner is detectable.
+fn write_scan_beacon(shared: &Path, ticks: u64) {
+    let payload = serde_json::json!({
+        "pid": std::process::id(),
+        "ticks": ticks,
+        "scanned_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let tmp = shared.join(".scan.json.tmp");
+    if std::fs::write(&tmp, payload.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, shared.join("scan.json"));
     }
 }
 
@@ -600,9 +816,10 @@ mod tests {
         std::fs::write(&task, "{}").unwrap();
         let marker = task.with_extension("processing");
         std::fs::write(&marker, "").unwrap();
+        let active = Arc::new(Mutex::new(HashSet::new()));
 
         // 新鲜 marker 不能被回收
-        reclaim_stale_markers(&cd, Duration::from_secs(3600));
+        reclaim_stale_markers(&cd, Duration::from_secs(3600), &active);
         assert!(marker.exists(), "未过期的 marker 不应被删除");
 
         // 把 mtime 拨回 2 小时前
@@ -614,9 +831,63 @@ mod tests {
         f.set_modified(old).unwrap();
         drop(f);
 
-        reclaim_stale_markers(&cd, Duration::from_secs(3600));
+        reclaim_stale_markers(&cd, Duration::from_secs(3600), &active);
         assert!(!marker.exists(), "过期 marker 应被回收，任务重新可领取");
         assert!(task.exists(), "回收 marker 不应删除任务文件本身");
+    }
+
+    /// marker 归属校验：本机存活 pid 拥有的过期 marker 不得被回收。
+    #[test]
+    fn test_reclaim_skips_live_owner() {
+        let tmp = TempDir::new().unwrap();
+        let cd = tmp.path().join("commands");
+        std::fs::create_dir_all(&cd).unwrap();
+        let tid = uuid::Uuid::new_v4();
+        let task = cd.join(format!("20260731_103000_{}.json", tid));
+        std::fs::write(&task, "{}").unwrap();
+        let marker = task.with_extension("processing");
+        std::fs::write(&marker, marker_owner_line(Some(tid))).unwrap();
+
+        let old = SystemTime::now() - Duration::from_secs(7200);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        reclaim_stale_markers(&cd, Duration::from_secs(10), &active);
+        assert!(marker.exists(), "本机存活进程持有的 marker 不应被回收");
+    }
+
+    /// marker 归属校验：本进程正在跑的任务即使 mtime 很旧也不回收。
+    #[test]
+    fn test_reclaim_skips_active_task() {
+        let tmp = TempDir::new().unwrap();
+        let cd = tmp.path().join("commands");
+        std::fs::create_dir_all(&cd).unwrap();
+        let tid = uuid::Uuid::new_v4();
+        let task = cd.join(format!("20260731_103000_{}.json", tid));
+        std::fs::write(&task, "{}").unwrap();
+        let marker = task.with_extension("processing");
+        std::fs::write(
+            &marker,
+            format!("host=other;pid=99999999;task={};started=0", tid),
+        )
+        .unwrap();
+        let old = SystemTime::now() - Duration::from_secs(7200);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        active.lock().unwrap().insert(tid);
+        reclaim_stale_markers(&cd, Duration::from_secs(1), &active);
+        assert!(marker.exists(), "活跃任务不得被回收");
     }
 
     /// 修复项 6：排队中的任务被 cancel 时直接写 Cancelled 结果。

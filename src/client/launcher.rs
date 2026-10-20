@@ -12,13 +12,19 @@ pub const DEFAULT_POLL: Duration = Duration::from_secs(2);
 /// Grace added to a task's own timeout before the client gives up on it.
 const TIMEOUT_GRACE: u64 = 30;
 
-/// Client-side deadline for a job task. `None` when the task inherits the
-/// daemon timeout (the daemon is then the only authority on runtime).
-fn task_deadline(timeout: u64) -> Option<Duration> {
-    if timeout == 0 {
+/// Client-side deadline for a job task. A task that inherits the daemon
+/// timeout still gets the client's own ceiling, so a dead daemon cannot block
+/// the client forever.
+fn task_deadline(timeout: u64, max_wait: Option<Duration>) -> Option<Duration> {
+    let own = if timeout == 0 {
         None
     } else {
         Some(Duration::from_secs(timeout + TIMEOUT_GRACE))
+    };
+    match (own, max_wait) {
+        (Some(d), Some(m)) => Some(d.min(m)),
+        (Some(d), None) => Some(d),
+        (None, m) => m,
     }
 }
 
@@ -27,6 +33,7 @@ pub fn launch_job(
     job: JobDefinition,
     parallel: bool,
     poll: Duration,
+    max_wait: Option<Duration>,
 ) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
     eprintln!(
@@ -38,7 +45,7 @@ pub fn launch_job(
     let mut jr = JobResult::new(job.name.clone(), total);
 
     if parallel {
-        return launch_job_parallel(bridge, &job, &mut jr, poll);
+        return launch_job_parallel(bridge, &job, &mut jr, poll, max_wait);
     }
 
     for (i, ti) in job.tasks.iter().enumerate() {
@@ -47,7 +54,7 @@ pub fn launch_job(
         let mut task = Task::new(ti.command.clone(), TaskType::Custom)
             .with_priority(ti.priority)
             .with_timeout(ti.timeout)
-            .with_retry_count(0);
+            .with_retry_count(ti.retries);
         // JobTask 的 working_dir / env_vars 必须传递, 否则 YAML 中配置被静默忽略
         if let Some(wd) = &ti.working_dir {
             task = task.with_working_dir(wd.clone());
@@ -65,7 +72,7 @@ pub fn launch_job(
             .submit_task(&task)
             .map_err(|e| BifrostError::ConfigInvalid(format!("submit: {}", e)))?;
         let start = Instant::now();
-        let limit = task_deadline(ti.timeout);
+        let limit = task_deadline(ti.timeout, max_wait);
         loop {
             if limit.is_some_and(|l| start.elapsed() > l) {
                 jr.record_task(JobTaskResult {
@@ -128,6 +135,7 @@ fn launch_job_parallel(
     job: &JobDefinition,
     jr: &mut JobResult,
     poll: Duration,
+    max_wait: Option<Duration>,
 ) -> BifrostResult<JobResult> {
     // 1. Submit all tasks immediately
     let mut pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
@@ -135,7 +143,7 @@ fn launch_job_parallel(
         let mut task = Task::new(ti.command.clone(), TaskType::Custom)
             .with_priority(ti.priority)
             .with_timeout(ti.timeout)
-            .with_retry_count(0);
+            .with_retry_count(ti.retries);
         if let Some(wd) = &ti.working_dir {
             task = task.with_working_dir(wd.clone());
         }
@@ -158,7 +166,7 @@ fn launch_job_parallel(
         std::thread::sleep(poll);
         let mut still_pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
         for (i, name, tid, start, timeout) in pending.drain(..) {
-            let limit = task_deadline(timeout);
+            let limit = task_deadline(timeout, max_wait);
             if limit.is_some_and(|l| start.elapsed() > l) {
                 jr.record_task(JobTaskResult {
                     name: name.clone(),
@@ -321,6 +329,7 @@ mod tests {
                 name: "check-env".into(),
                 command: "pwd".into(),
                 timeout: 30,
+                retries: 0,
                 priority: 5,
                 working_dir: Some(PathBuf::from("/tmp")),
                 env_vars: [("MY_VAR".to_string(), "job-env-ok".to_string())].into(),
@@ -330,7 +339,7 @@ mod tests {
             }],
         };
         let (bridge, submitted) = MockBridge::new();
-        let jr = launch_job(&bridge, job, false, DEFAULT_POLL).unwrap();
+        let jr = launch_job(&bridge, job, false, DEFAULT_POLL, None).unwrap();
         assert_eq!(jr.completed_tasks, 1);
         let t = submitted.lock().unwrap()[0].clone();
         assert_eq!(t.working_dir, PathBuf::from("/tmp"), "working_dir 必须传递");
@@ -354,6 +363,7 @@ mod tests {
                 name: "produce".into(),
                 command: "echo hi > report.json".into(),
                 timeout: 30,
+                retries: 0,
                 priority: 0,
                 working_dir: Some(PathBuf::from("/tmp")),
                 env_vars: Default::default(),
@@ -363,7 +373,7 @@ mod tests {
             }],
         };
         let (bridge, submitted) = MockBridge::new();
-        let _ = launch_job(&bridge, job, false, DEFAULT_POLL).unwrap();
+        let _ = launch_job(&bridge, job, false, DEFAULT_POLL, None).unwrap();
         let t = submitted.lock().unwrap()[0].clone();
         assert_eq!(
             t.artifacts_expected,
@@ -382,6 +392,7 @@ mod tests {
                 name: "produce".into(),
                 command: "true".into(),
                 timeout: 30,
+                retries: 0,
                 priority: 0,
                 working_dir: None,
                 env_vars: Default::default(),
@@ -391,7 +402,7 @@ mod tests {
             }],
         };
         let (bridge, submitted) = MockBridge::new();
-        let _ = launch_job(&bridge, job, true, DEFAULT_POLL).unwrap();
+        let _ = launch_job(&bridge, job, true, DEFAULT_POLL, None).unwrap();
         let t = submitted.lock().unwrap()[0].clone();
         assert_eq!(t.artifacts_expected, vec!["out.bin".to_string()]);
     }

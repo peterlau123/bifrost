@@ -16,6 +16,9 @@ pub struct JobTask {
     pub command: String,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
+    /// Retry budget for this task (0 = run once). Capped by daemon.max_retries.
+    #[serde(default)]
+    pub retries: u8,
     #[serde(default)]
     pub priority: u8,
     pub working_dir: Option<PathBuf>,

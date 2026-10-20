@@ -15,10 +15,12 @@ pub fn submit_task(
     priority: u8,
     timeout: u64,
     working_dir: Option<PathBuf>,
+    retries: u8,
 ) -> Result<Uuid> {
     let task = Task::new(command, task_type)
         .with_priority(priority)
-        .with_timeout(timeout);
+        .with_timeout(timeout)
+        .with_retry_count(retries);
 
     let task = if let Some(wd) = working_dir {
         task.with_working_dir(wd)
@@ -113,6 +115,7 @@ mod tests {
             10,
             300,
             None,
+            0,
         )
         .unwrap();
 
@@ -149,6 +152,7 @@ mod tests {
             5,
             600,
             Some(PathBuf::from("/workspace")),
+            0,
         )
         .unwrap();
 
