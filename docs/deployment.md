@@ -486,8 +486,9 @@ cd /data/liuxin/Ax/bifrost            # 仓库已在共享盘上
 #   dist/bifrost-linux-x86_64 是 musl 静态链接，glibc 2.35 的宿主实测可跑
 sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
 # 方式 B：本机编译（宿主没有 Rust 工具链时不可用，见下节）
-#   cargo build --release            # 产物 target/release/bifrost（需 glibc≥2.39 的目标机才用）
+#   cargo build --release            # gnu 产物 target/release/bifrost，只适合 glibc>=2.39 的目标机
 #   scripts/find-binary.sh release   # 让 cargo 报告真实路径
+#   ⚠ 目标机 glibc 更旧时，gnu 产物仍可能起来（weak version 只警告），别靠 --version 判断
 
 bifrost warmup --storage /data/liuxin/bifrost
 #   ✓ shared storage is writable
@@ -500,9 +501,13 @@ bifrost server --storage /data/liuxin/bifrost
 ### 从开发容器构建 → 在宿主机安装（宿主无 Rust 工具链）
 
 实测 H200 宿主（Ubuntu 22.04，glibc 2.35）**没有** cargo/rustc：`command -v cargo` 空，
-`find / -maxdepth 4 -name cargo` 也空。而开发容器里 `cargo build --release` 的产物要
-glibc ≥ 2.39（`objdump -T | grep GLIBC_` 可见 `GLIBC_2.39`），拷到宿主会直接
-`version 'GLIBC_2.39' not found`。所以部署链路固定成 musl 静态二进制：
+`find / -maxdepth 4 -name cargo` 也空。而开发容器（Debian 13，glibc 2.41）里
+`cargo build --release` 的 gnu 产物引用 `GLIBC_2.39`。
+
+这个坑比看起来隐蔽：**宿主跑它不会立刻失败**，只打一行
+"weak version 'GLIBC_2.39' not found"，然后照常启动、照常执行任务——因为被引用的是
+weak 符号，动态链接器只警告不报错。所以「`--version` 返回 0」根本不能证明产物匹配，
+要等某天走到真正用到该符号的代码路径才炸。部署政策因此固定为**只装 musl 静态产物**：
 
 ```
 # ── 开发容器（有 Rust 工具链）────────────────────────────────────
@@ -516,10 +521,19 @@ bifrost client submit --storage /data/liuxin/bifrost \
   --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy-h200.sh >/dev/null 2>&1 &'
 ```
 
-`scripts/deploy-h200.sh` 做的事：先在新二进制上跑 `--version` 校验它在本机能起
-→ 备份 `/usr/local/bin/bifrost.old` → `install` + `mv` 原子替换 → SIGTERM 旧 daemon
-（实测 1s 内退出）→ `setsid` 起新 daemon → 起不来就回滚到 `.old`。
-日志在 `/tmp/bifrost-deploy.log` 与 `/tmp/bifrost-daemon.log`。
+`scripts/deploy-h200.sh` 的三道门槛，全部在**碰 `/usr/local/bin` 之前**跑，任一道
+不过就直接退出、旧 daemon 不受影响：
+
+1. `ldd` 必须显示 `statically linked`（拦住 gnu 动态产物；`--allow-dynamic` 可放行）
+2. 候选二进制 `--version` 退出 0 **且输出里没有 glibc 版本告警**（`weak version` 也算）
+3. 候选二进制 `warmup --storage <dir>` 退出 0 —— 顺带把"环境能不能上线"一起验了：
+   存储可写、文件系统类型（缓存型会提示 inotify 不可靠）、时钟不自旋、
+   `nvidia-smi` 可见卡数、`gpu_pool` 与实际卡数是否一致
+
+过了门槛才备份 `.old` → `install` + `mv` 原子替换 → SIGTERM 旧 daemon（实测 1s 内退出）
+→ `setsid` 起新 daemon → 等心跳比本次启动更新 → 用 `client submit` 真跑一条任务做
+smoke（过了才算部署成功，否则自动回滚）。
+日志：`/tmp/bifrost-deploy.log`、`/tmp/bifrost-daemon.log`。
 
 GPU 池默认自动探测本机全部卡；要限制范围用 `--gpus 0,1`，要关闭用 `--gpus ""`
 （或在 settings.json 写 `"gpu_pool": []`）。
