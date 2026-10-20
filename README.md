@@ -1,66 +1,66 @@
-# 🌉 Bifrost - Offline Machine Command Execution Framework
+# 🌉 Bifrost — Command Execution Framework for Offline Machines
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Rust Edition](https://img.shields.io/badge/Rust-2021%20Edition-dea584.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
-![Tests](https://img.shields.io/badge/Tests-73%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/Tests-126%20passed-brightgreen.svg)
 ![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
-[![CI](https://img.shields.io/github/actions/workflow/status/peterlau123/bifrost/ci.yml?branch=test%2Fdeploy)](https://github.com/peterlau123/bifrost/actions)
 
 <p align="center">
-  <img src="assets/bifrost-banner.svg" alt="Bifrost - the rainbow bridge connecting online client and offline daemon" width="720">
+  <img src="assets/bifrost-banner.svg" alt="Bifrost - the rainbow bridge connecting an online client and an offline daemon" width="720">
 </p>
 
-Bifrost is a Rust-based framework for executing commands on offline/air-gapped machines through shared storage communication. It enables networked client machines to submit tasks and offline daemon machines to execute them, with results synchronized via portable storage.
+**English** | [简体中文](README.zh-CN.md)
 
-## 目录
+Bifrost is a Rust framework for executing commands on offline / air-gapped machines through shared storage. A networked client machine submits tasks; an offline daemon machine executes them; results are synchronized back through the same portable storage.
+
+## Table of Contents
 
 - [Overview](#overview)
   - [Problem Solved](#problem-solved)
   - [Key Features](#key-features)
 - [Architecture](#architecture)
+  - [Simplified (four components)](#simplified-four-components)
+  - [Detailed (with shared storage and internals)](#detailed-with-shared-storage-and-internals)
 - [Workflow](#workflow)
 - [Directory Structure](#directory-structure)
 - [Environment Requirements](#environment-requirements)
-  - [Client Machine (Online)](#client-machine-online)
-  - [Daemon Machine (Offline)](#daemon-machine-offline)
+  - [Client Machine (online)](#client-machine-online)
+  - [Daemon Machine (offline)](#daemon-machine-offline)
   - [Container Execution (Optional)](#container-execution-optional)
 - [Installation](#installation)
   - [Build](#build)
-  - [Deploy Client (Online Machine)](#deploy-client-online-machine)
-  - [Deploy Daemon (Offline Machine)](#deploy-daemon-offline-machine)
+  - [Deploy to the Client Machine (online)](#deploy-to-the-client-machine-online)
+  - [Deploy to the Daemon Machine (offline)](#deploy-to-the-daemon-machine-offline)
+  - [End-to-end Verification](#end-to-end-verification)
 - [Configuration](#configuration)
-  - [Client Configuration](#client-configuration)
-  - [Daemon Configuration](#daemon-configuration)
+  - [Settings File](#settings-file)
+  - [daemon.* in detail](#daemon-in-detail)
+  - [Clock self-check and fallback scanning](#clock-self-check-and-fallback-scanning)
+  - [SSH Bridge](#ssh-bridge)
 - [Usage](#usage)
-- [部署全景与发布更新流程](#-部署全景与发布更新流程)
-- [Supervisor 守护进程部署](#-supervisor-守护进程部署)
-- [运维实践（APMM UT 场景）](docs/ops-practice.md)
+  - [Shared storage that is not GPFS](#shared-storage-that-is-not-gpfs)
   - [Submit Tasks](#submit-tasks)
+  - [Stopping the service](#stopping-the-service)
+  - [Warmup](#warmup)
   - [Check Status](#check-status)
-  - [Retrieve Results](#retrieve-results)
-  - [Read Artifacts](#read-artifacts)
-  - [Health Check](#health-check)
-  - [Daemon Operations](#daemon-operations)
+  - [Cancel Task](#cancel-task)
+  - [Clean Up Old Tasks](#clean-up-old-tasks)
+  - [Pytest in a Container](#pytest-in-a-container)
+  - [Pytest Prerequisites](#pytest-prerequisites)
+- [Deployment Matrix and Release Workflow](#deployment-matrix-and-release-workflow)
+- [Supervisor Daemon Deployment](#supervisor-daemon-deployment)
 - [MCP Server (Agent Integration)](#mcp-server-agent-integration)
-  - [Quick Start](#quick-start-3-steps)
+  - [Quick Start](#quick-start)
   - [Agent Configurations](#agent-configurations)
   - [MCP Tools](#mcp-tools)
   - [Standard Call Sequence](#standard-call-sequence)
   - [Verification](#verification)
-  - [Troubleshooting](#mcp-troubleshooting)
-- [Pytest Integration](#pytest-integration)
-  - [Basic Usage](#basic-usage)
-  - [Pytest in Container (Offline Machine)](#pytest-in-container-offline-machine)
-  - [Pytest Prerequisites](#pytest-prerequisites-offline-machine)
+  - [MCP Troubleshooting](#mcp-troubleshooting)
 - [Task Types](#task-types)
 - [Task Priority](#task-priority)
 - [Security Features](#security-features)
-  - [Command Injection Prevention](#command-injection-prevention)
-  - [Path Traversal Protection](#path-traversal-protection)
 - [Development](#development)
-  - [Running Tests](#running-tests)
-  - [Project Structure](#project-structure)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -68,91 +68,91 @@ Bifrost is a Rust-based framework for executing commands on offline/air-gapped m
 
 ---
 
-## 🌉 Overview
+## Overview
 
 ### Problem Solved
 
-When dealing with air-gapped machines (no network access), traditional remote execution tools like SSH, RPC, or REST APIs don't work. Bifrost solves this by using **shared storage as a communication channel**:
+Traditional remote execution tools — SSH, RPC, REST APIs — do not work on air-gapped machines that have no network access. Bifrost uses **shared storage as the communication channel**:
 
-- **Client** (networked machine) writes tasks to `commands/` directory
-- **Daemon** (offline machine) watches for new tasks and executes them
-- **Results** are written back to `results/` directory
-- Synchronization via GPFS shared storage
+- The **client** (networked machine) writes tasks into the `commands/` directory
+- The **daemon** (offline machine) watches for new tasks and executes them
+- **Results** are written back into the `results/` directory
+- Synchronization happens over GPFS / NFS / Lustre or any other shared POSIX filesystem
 
 ### Key Features
 
-- **Bridge abstraction** - Transport-agnostic communication: shared storage (GPFS/NFS) **and SSH** implemented
-- **Unified settings** - ~/.bifrost/settings.json, init via CLI
-- **Air-gapped operation** - Complete separation between client and server
-- **Security hardened** - Command injection prevention, path traversal protection
-- **High performance** - inotify file watching + fallback scan (100ms), tokio async execution, e2e overhead ~4-6%
-- **Multiple task types** - Shell commands, pytest tests, custom adapters
-- **Parallel jobs** - `--parallel` submits all tasks concurrently (daemon max_concurrent)
-- **Priority scheduling** - Tasks sorted by priority (0-255)
-- **Timeout management** - Configurable timeouts with automatic retry
-- **systemd integration** - Production-ready server deployment
-- **Supervisor daemon** - 崩溃自愈、信号控制、跨机器控制（bifrost-supervisor.sh）
-- **MCP Server** - 内置 MCP，任何 MCP Agent (Hermes/OpenCode/Claude) 直接接入
-- **Health monitoring** - Heartbeat-based server health checks
+- **Bridge abstraction** — transport-agnostic communication: shared storage (GPFS/NFS) **and SSH** are both implemented
+- **Unified settings** — `~/.bifrost/settings.json`, initialized from the CLI
+- **Air-gapped operation** — complete separation between client and server
+- **Security hardened** — command injection prevention, path traversal protection
+- **High performance** — inotify file watching plus a fallback scan (100ms), tokio async execution, end-to-end overhead ~4–6%
+- **Multiple task types** — shell commands, pytest runs, custom adapters
+- **Parallel jobs** — `--parallel` submits all tasks concurrently (bounded by the daemon's `max_concurrent`)
+- **Priority scheduling** — tasks are sorted by priority (0–255)
+- **Timeout management** — configurable timeouts with optional retry
+- **systemd integration** — production-ready server deployment
+- **Supervisor daemon** — crash recovery, signal control, cross-machine control (`bifrost-supervisor.sh`)
+- **MCP Server** — built in, so any MCP-capable agent (Hermes / OpenCode / Claude) can drive it directly
+- **Health monitoring** — heartbeat-based server health checks
 
-## 🏗️ Architecture
+## Architecture
 
-### 简略图（四组件交互）
+### Simplified (four components)
 
 ```mermaid
 flowchart LR
-    subgraph Agent["Agent（AI Agent：Hermes/OpenCode/Claude…）"]
-        A1["通过 MCP 提交任务<br/>读取执行结果"]
+    subgraph Agent["Agent (AI agent: Hermes/OpenCode/Claude…)"]
+        A1["Submit tasks over MCP<br/>read execution results"]
     end
 
-    subgraph Client["Client（联网机）"]
-        C1["bifrost CLI / MCP Server<br/>序列化任务写入共享存储<br/>从共享存储取执行结果"]
+    subgraph Client["Client (networked machine)"]
+        C1["bifrost CLI / MCP Server<br/>serialize tasks into shared storage<br/>read results back from shared storage"]
     end
 
-    subgraph SS["共享存储<br/>(GPFS 文件交换)"]
-        S1["任务实体 / 执行结果<br/>/ 控制指令"]
+    subgraph SS["Shared storage<br/>(GPFS file exchange)"]
+        S1["Task entities / results<br/>/ control commands"]
     end
 
-    subgraph Server["Server（离线机执行程序）"]
-        R1["从共享存储反序列化任务实体<br/>执行命令<br/>将结果写回共享存储"]
+    subgraph Server["Server (offline executor)"]
+        R1["deserialize task entities<br/>execute commands<br/>write results back"]
     end
 
-    subgraph Supervisor["Supervisor（守护进程）"]
-        V1["监控和管理<br/>Server 生命周期<br/>(崩溃自愈/重启/关闭)"]
+    subgraph Supervisor["Supervisor (daemon manager)"]
+        V1["monitor and manage<br/>the server lifecycle<br/>(crash recovery / restart / stop)"]
     end
 
-    Agent -->|"MCP 提交/查询"| Client
-    Client <-->|"读写"| SS
-    SS <-->|"反序列化执行/写回"| Server
+    Agent -->|"submit / query over MCP"| Client
+    Client <-->|"read / write"| SS
+    SS <-->|"deserialize, execute, write back"| Server
     Supervisor -->|"spawn / monitor / control"| Server
 ```
 
-### 详细图（含共享存储与内部组件）
+### Detailed (with shared storage and internals)
 
 ```mermaid
 flowchart TB
     subgraph Client["Client Machine (Online)"]
-        CLI["bifrost CLI<br/>(人/脚本手动使用)"]
-        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>Agent 集成: Hermes/OpenCode/...<br/>(内部复用 CLI 逻辑)"]
-        CTL["bifrost-ctl.sh<br/>(跨机器控制)"]
+        CLI["bifrost CLI<br/>(humans / scripts)"]
+        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>agent integration: Hermes/OpenCode/...<br/>(reuses CLI logic internally)"]
+        CTL["bifrost-ctl.sh<br/>(cross-machine control)"]
     end
-    
+
     subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
         CMD["commands/<br/>Task JSON files"]
         RES["results/<br/>Result JSON files"]
         STA["status/<br/>Progress updates"]
         ART["artifacts/<br/>Execution outputs"]
-        HB["heartbeat.json<br/>(daemon 心跳)"]
-        CTRL["control.json<br/>(supervisor 控制指令)"]
+        HB["heartbeat.json<br/>(daemon heartbeat)"]
+        CTRL["control.json<br/>(supervisor commands)"]
     end
-    
+
     subgraph Daemon["Daemon Machine (Offline)"]
-        SUP["Supervisor<br/>(bifrost-supervisor.sh)<br/>崩溃自愈 + 信号控制"]
-        WT["File Watcher<br/>(inotify + fallback 100ms)"]
+        SUP["Supervisor<br/>(bifrost-supervisor.sh)<br/>crash recovery + signal control"]
+        WT["File Watcher<br/>(inotify + 100ms fallback)"]
         EX["Executor<br/>(tokio async)"]
         LOG["Log Manager"]
     end
-    
+
     CLI -->|"submit task"| CMD
     MCP -->|"submit task"| CMD
     CMD -->|"detect new file"| WT
@@ -171,7 +171,7 @@ flowchart TB
     SUP -->|"write status.json"| CTRL
 ```
 
-## 🔄 Workflow
+## Workflow
 
 ```mermaid
 sequenceDiagram
@@ -180,26 +180,26 @@ sequenceDiagram
     participant S as Shared Storage
     participant V as Supervisor (Offline)
     participant D as Daemon (Offline)
-    
-    Note over C,M: 二选一: 人或脚本用 CLI, Agent 用 MCP。<br/>MCP Server 内部复用 Client 的提交/查询逻辑,<br/>两者不是并行角色。
+
+    Note over C,M: Either/or: humans and scripts use the CLI,<br/>agents use MCP. The MCP server reuses the client's<br/>submit/query logic — they are not parallel roles.
     C->>S: Write task to commands/{task_id}.json (CLI)
-    M->>S: Write task to commands/{task_id}.json (Agent 经 MCP)
-    Note over D: Watcher detects (inotify,<br/>fallback scan 100ms 兜底)
+    M->>S: Write task to commands/{task_id}.json (agent via MCP)
+    Note over D: Watcher detects it (inotify,<br/>100ms fallback scan as a safety net)
     D->>S: Update status/{task_id}.json (progress)
     D->>D: Execute command (timeout/retry)
     D->>S: Write logs/{task_id}/stdout.log, stderr.log
     D->>S: Write results/{task_id}_result.json
     D->>S: Update heartbeat.json
-    Note over C: Poll result file (0.2s interval,<br/>GPFS stat 无子进程开销)
+    Note over C: Poll the result file (0.2s interval,<br/>a stat call — no subprocess overhead on GPFS)
     C->>S: Read results/{task_id}_result.json (CLI)
-    M->>S: Read results/{task_id}_result.json (Agent 经 MCP)
-    Note over V: 每 2s 检查 server 存活<br/>崩溃自动拉起 (指数退避)
-    V->>S: 读 control.json (跨机器指令)
-    Note over V: restart/stop/status 指令执行
-    V->>S: 写 status.json (状态回写)
+    M->>S: Read results/{task_id}_result.json (agent via MCP)
+    Note over V: Check server liveness every 2s<br/>restart on crash (exponential backoff)
+    V->>S: Read control.json (cross-machine commands)
+    Note over V: Execute restart/stop/status
+    V->>S: Write status.json (state written back)
 ```
 
-## 📁 Directory Structure
+## Directory Structure
 
 ```
 /shared/storage/
@@ -217,36 +217,36 @@ sequenceDiagram
 │       ├── stderr.log
 │       └── metadata.json
 ├── heartbeat.json         # Daemon health status
-├── control.json           # 跨机器控制指令 (bifrost-ctl.sh 写, supervisor 读)
-├── status.json            # supervisor 状态回写 (bifrost-ctl.sh status 读)
-├── supervisor.pid         # supervisor 进程 PID
-├── server.pid             # daemon server 进程 PID
-└── server.log             # supervisor + server 日志
+├── control.json           # Cross-machine commands (bifrost-ctl.sh writes, supervisor reads)
+├── status.json            # Supervisor state written back (read by bifrost-ctl.sh status)
+├── supervisor.pid         # Supervisor PID
+├── server.pid             # Daemon server PID
+└── server.log             # Supervisor + server log
 ```
 
-## 环境要求
+## Environment Requirements
 
-### 源机器（联网机器，Client 端）
+### Client Machine (online)
 
-| 需求 | 版本 | 说明 |
+| Requirement | Version | Notes |
 |------|------|------|
-| **Rust** | 1.70+ | 编译环境，只需编译一次 |
-| **共享存储** | - | GPFS / NFS / Lustre 等 POSIX 共享文件系统，与 目标机器 共用 |
+| **Rust** | 1.70+ | Build environment; only needed once |
+| **Shared storage** | - | GPFS / NFS / Lustre or any POSIX shared filesystem, the same one the daemon uses |
 
-### 目标机器（离线机器，Daemon 端）
+### Daemon Machine (offline)
 
-| 需求 | 版本 | 说明 |
+| Requirement | Version | Notes |
 |------|------|------|
-| **bifrost 二进制** | - | 单一二进制，零依赖 |
-| **systemd** | - | 可选，推荐生产使用 |
-| **共享存储** | - | 与 源机器 挂载同一共享目录（GPFS / NFS / Lustre 等） |
-| **Python** | 3.10+ | 可选，执行 pytest 任务时需要 |
-| **pytest** | 7.x | 可选，执行 pytest 任务时需要 |
+| **bifrost binary** | - | Single binary, no runtime dependencies |
+| **systemd** | - | Optional, recommended for production |
+| **Shared storage** | - | Same shared directory as the client (GPFS / NFS / Lustre …) |
+| **Python** | 3.10+ | Optional, required for pytest tasks |
+| **pytest** | 7.x | Optional, required for pytest tasks |
 | **pytest-json-report** | - | Plugin for structured results |
 
 ### Container Execution (Optional)
 
-通过容器在 目标机器 上执行 pytest：
+Run pytest on the daemon machine inside a container:
 
 ```yaml
 # adapters/docker_pytest.yaml
@@ -260,46 +260,46 @@ env_vars:
   PYTEST_JSON_REPORT_FILE: "/work/report.json"
 ```
 
-## 🛠️ Installation
+## Installation
 
 ### Build
 
-> 构建产物的位置可能被 `CARGO_TARGET_DIR` 或 `target-dir` 配置改掉。脚本请用
-> `scripts/find-binary.sh [release|debug]` 取真实路径，不要写死 `target/release/bifrost`：
-> 它让 cargo 自己报告产物（`--message-format=json`），deploy.sh / restart_server.sh /
-> systemd-setup.sh 都已改成这样。
+> The build output location can be changed by `CARGO_TARGET_DIR` or a `target-dir` setting.
+> Scripts must resolve the real path through `scripts/find-binary.sh [release|debug]` instead of
+> hardcoding `target/release/bifrost`: it asks cargo to report the artifact
+> (`--message-format=json`). `deploy.sh` / `restart_server.sh` / `systemd-setup.sh` already do this.
 
-编译环境需要 Rust 1.70+。如果没有 Rust 工具链，可以在任意有 Rust 的机器上编译，然后分发单一二进制文件（静态编译，无运行时依赖）。
+Building requires Rust 1.70+. Without a Rust toolchain you can build on any machine that has one and ship the single binary (statically linked, no runtime dependencies).
 
 ```bash
-# 克隆仓库
-git clone http://10.20.30.25:8080/agent/bifrost.git
+# Clone the repository
+git clone https://gitee.com/peterlau/bifrost.git
 cd bifrost
 
-# 编译 release 版本（约 8MB 单一二进制）
+# Build the release binary (~8MB single binary)
 cargo build --release
 
-# 确认编译产物
+# Verify the artifact
 ls -lh target/release/bifrost
 ```
 
-> **交叉编译：** 如果目标架构不同（如 x86_64 编译、aarch64 部署）：
+> **Cross-compilation:** if the target architecture differs (e.g. build on x86_64, deploy on aarch64):
 > `cargo build --release --target aarch64-unknown-linux-gnu`
 
 ---
 
-### 部署到 源机器（联网机器，Client 端）
+### Deploy to the Client Machine (online)
 
-源机器 机器负责下发命令和查询结果，只需要 CLI 二进制和配置文件。
+The client machine issues commands and queries results; it only needs the CLI binary and a settings file.
 
 ```bash
-# 1. 复制二进制
+# 1. Copy the binary
 sudo cp target/release/bifrost /usr/local/bin/
 
-# 2. 初始化配置（生成 ~/.bifrost/settings.json）
+# 2. Initialize the settings file (writes ~/.bifrost/settings.json)
 bifrost server --init
 
-# 3. 编辑配置，指定共享存储路径
+# 3. Edit it and point shared_storage at the shared directory
 vim ~/.bifrost/settings.json
 ```
 
@@ -314,41 +314,41 @@ vim ~/.bifrost/settings.json
 }
 ```
 
-**验证 Client：**
+**Verify the client:**
 
 ```bash
-# 查看帮助
+# Show help
 bifrost client submit --help
 
-# 提交一个简单任务验证连通性（需 目标机器 daemon 已运行）
+# Submit a trivial task to verify connectivity (the daemon must already be running)
 bifrost client submit --command "hostname" --timeout 30
-# 记下返回的 TASK_ID
+# Note the returned TASK_ID
 bifrost client status <TASK_ID>
 ```
 
 ---
 
-### 部署到 目标机器（离线机器，Daemon 端）
+### Deploy to the Daemon Machine (offline)
 
-目标机器 机器网络隔离，通过共享存储接收命令并返回结果。
+The daemon machine is network-isolated: it receives commands and returns results through shared storage.
 
-两台机器挂载同一共享目录（当前使用 GPFS，也支持 NFS、Lustre 等 POSIX 文件系统），编译好的二进制可以直接被 目标机器 访问。
+Both machines mount the same shared directory (GPFS today; NFS, Lustre and other POSIX filesystems also work), so the compiled binary can be picked up directly on the daemon side.
 
 ```bash
-# ---- 源机器 端：编译后写入 GPFS 共享目录 ----
+# ---- Client side: write the build into the shared directory ----
 cp target/release/bifrost /mnt/gpfs/bifrost/bin/
 
-# ---- 目标机器 端：从共享存储安装 ----
-# GPFS 已挂载在 /mnt/gpfs，直接访问
+# ---- Daemon side: install from shared storage ----
+# GPFS is mounted at /mnt/gpfs, so it can be read directly
 sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
 sudo chmod +x /usr/local/bin/bifrost
 
-# 初始化配置
+# Initialize the settings file
 mkdir -p ~/.bifrost
 bifrost server --init
 ```
 
-#### 目标机器 配置 shared storage
+#### Configure shared storage on the daemon
 
 ```bash
 vim ~/.bifrost/settings.json
@@ -368,60 +368,65 @@ vim ~/.bifrost/settings.json
 }
 ```
 
-> **重要：** 源机器 和 目标机器 的 `shared_storage` 必须指向同一物理目录。
+> **Important:** `shared_storage` must resolve to the same physical directory on the client and on the daemon.
 
-#### 注册 systemd 服务（推荐生产使用）
+#### Register the systemd service (recommended for production)
 
 ```bash
-# 安装服务文件（项目根目录有 bifrost.service）
+# Install the unit file (bifrost.service ships in the project root)
 sudo cp bifrost.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable bifrost
 sudo systemctl start bifrost
 
-# 查看状态
+# Check status
 sudo systemctl status bifrost
 
-# 查看实时日志
+# Follow logs
 journalctl -u bifrost -f
 ```
 
-#### 手动启动守护进程（调试用）
+> For a shared-storage layout (e.g. H200's `/data/...`) the bundled unit does not fit — use
+> `scripts/install-systemd.sh --storage <dir>` to render one for the actual layout, then
+> `scripts/deploy-h200.sh` to install and restart. See [docs/deployment.md](docs/deployment.md).
+
+#### Run the daemon manually (debugging)
 
 ```bash
-# 前台运行，按 Ctrl+C 停止
+# Foreground; stop with Ctrl+C
 bifrost server
 
-# 指定配置文件
+# With an explicit settings file
 bifrost server --config ~/.bifrost/settings.json
 
-# 验证心跳文件已生成
+# Verify the heartbeat file was created
 ls -la /mnt/gpfs/bifrost/heartbeat.json
 ```
 
 ---
 
-### 端到端验证部署
+### End-to-end Verification
 
 ```bash
-# 目标机器 端：确认 daemon 运行且心跳正常
-ls -la /mnt/gpfs/bifrost/heartbeat.json           # 文件应存在，60s 内更新
-cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # 显示 daemon 状态
+# Daemon side: confirm the daemon is up and the heartbeat is fresh
+ls -la /mnt/gpfs/bifrost/heartbeat.json           # should exist and be updated within 60s
+cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # shows daemon state
 
-# 源机器 端：端到端测试
-# 注意：命令不经 shell 解释（防注入），&& / | / > 等 shell 语法需用 sh -c 包裹
+# Client side: end-to-end test
+# Note: commands are not interpreted by a shell (injection prevention), so && / | / > need sh -c
 bifrost client submit \
   --command "sh -c 'echo \"bifrost deployment ok\"; nvidia-smi -L | head -3'" \
   --timeout 30
 
-# 5-10 秒后查询结果
+# Query the result after 5-10 seconds
 bifrost client status <TASK_ID>
-# 预期输出应为 "Completed"，消息包含 "bifrost deployment ok"
+# Expected: "Completed", with output containing "bifrost deployment ok"
 ```
+## Configuration
 
-## ⚙️ Configuration
+### Settings File
 
-### Settings File (`~/.bifrost/settings.json`)
+`~/.bifrost/settings.json`:
 
 ```bash
 bifrost server --init  # generate default settings
@@ -440,10 +445,10 @@ bifrost server --init  # generate default settings
 | shared_storage | Yes | Yes | Root directory for commands/results/logs |
 | transport | Yes | -- | Bridge type: `"shared"` (default) or `"ssh"` |
 | ssh | Yes | -- | SSH bridge config (host/remote_dir/...) — required when transport=ssh |
-| client.* | Yes | -- | Poll interval, heartbeat timeout, wait timeout（12h 上限） |
+| client.* | Yes | -- | Poll interval, heartbeat timeout, wait timeout (12h cap) |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
-#### daemon.* 详解（性能测试常用）
+#### daemon.* in detail
 
 ```json
 {
@@ -464,119 +469,120 @@ bifrost server --init  # generate default settings
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| task_timeout | 1h30m | 任务未指定 timeout 时的默认值。**不再作为上限**：任务自己写的 `timeout` 优先 |
-| max_concurrent | 10 | 同时执行的任务数（1–100） |
-| use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行。单个任务可用 `shell: false` 覆盖（YAML 里给字面量 `$`/`*` 的任务用） |
-| scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU；扫描线程每秒写 `scan.json`（ticks/scanned_at），可据此判断兜底扫描是否还活着 |
-| stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收。回收前校验归属：marker 内记录了 host/pid/task，本机存活进程或本进程正在跑的任务一律跳过；keepalive 自动取 `min(60s, 该值/3)` |
-| max_retries | 不限制 | 任务重试次数的**上限**（不配 = 不设上限）。重试本身是任务侧 opt-in：`client submit --retries 2` 或 YAML `retries: 2`，不写就是跑一次。只对非零退出重试，超时/取消不重试；每次尝试日志单独保存为 `stdout.attemptN.log` |
-| gpu_pool | **自动** | **不配置 = 自动使用本机全部 GPU**（`nvidia-smi` 探测）。每个任务独占一张卡并注入 `CUDA_VISIBLE_DEVICES`（任务自己指定则该 id 占租约，不覆盖值）；并发上限取 `min(max_concurrent, 卡数)`。`[]` = 关闭 GPU 分配，`[0,1]` = 只用这两张 |
-| cancel_poll | 1s | 运行中任务检查 cancel 请求的间隔。1s 是可取消性与元数据开销的折中；30s 意味着跑飞的 benchmark 要空转半分钟才被杀 |
-| log_backups | 1 | 保留几个轮转备份（`.1`..`.N`，上限 9）。单流日志固定 64MB 转一次，磁盘占用上界 ≈ `64MB × (log_backups+1)`；最新内容始终在 `stdout.log` |
-| — | 固定 | 结果载荷上限 64MB（头 16MB 上下文 + 尾 48MB 汇总）——benchmark summary 在流尾，尾部权重更大；完整日志另存 `logs/<id>/` |
+| task_timeout | 1h30m | Default timeout when a task does not specify one. **No longer a cap**: a task's own `timeout` wins |
+| max_concurrent | 10 | Number of tasks executed concurrently (1–100) |
+| use_shell | true | Commands run through `sh -c`, so pipes, redirection, `&&`, `$VAR`, `&` all work; set false to exec argv directly. A single task can override with `shell: false` (use it for tasks containing literal `$` / `*`) |
+| scan_interval | 1s | Fallback scan period in addition to inotify. An idle daemon no longer busy-polls and burns CPU; the scan thread writes `scan.json` (ticks/scanned_at) every second, so you can tell whether the fallback scan is still alive |
+| stale_marker_timeout | 2×task_timeout | A `.processing` claim marker older than this is reclaimed. Ownership is verified before reclaiming: the marker records host/pid/task, and tasks owned by a live local process or by this process are skipped. Keepalive uses `min(60s, value/3)` |
+| max_retries | unlimited | Upper bound on retries (unset = no bound). Retrying itself is opt-in per task: `client submit --retries 2` or YAML `retries: 2`; without it a task runs once. Only non-zero exits are retried — timeouts and cancellations are not. Each attempt is logged separately as `stdout.attemptN.log` |
+| gpu_pool | **auto** | **Unset = automatically use every GPU on the machine** (detected via `nvidia-smi`). Each task gets an exclusive card injected as `CUDA_VISIBLE_DEVICES` (if the task names one itself, that id is leased but the value is not overwritten); the concurrency cap becomes `min(max_concurrent, #GPUs)`. `[]` disables GPU assignment, `[0,1]` uses only those two |
+| cancel_poll | 1s | How often a running task checks for a cancel request. 1s balances cancellability against metadata overhead; 30s would mean a runaway benchmark keeps burning the GPU for half a minute before it dies |
+| log_backups | 1 | Number of rotated backups to keep (`.1`..`.N`, max 9). Each stream rotates at a fixed 64MB, so disk usage is bounded by `64MB × (log_backups+1)`; the newest content is always in `stdout.log` |
+| — | fixed | Result payload cap 64MB (16MB head context + 48MB tail summary) — benchmark summaries sit at the tail of the stream, so the tail is weighted more heavily; full logs live in `logs/<id>/` |
 
-**超时语义**：`client submit --timeout 0`（默认）= 用 daemon 的 `task_timeout`；传具体秒数则任务自己的值生效，daemon 不再钳制。
+**Timeout semantics:** `client submit --timeout 0` (the default) means "use the daemon's `task_timeout`"; passing a concrete number makes the task's own value authoritative — the daemon no longer clamps it.
 
-**客户端上限**：`client.wait_timeout`（默认 12h）是客户端等待单个 job 任务的硬上限，防止 daemon 挂掉后 client 永远阻塞。
+**Client-side cap:** `client.wait_timeout` (default 12h) is the hard upper bound on how long the client waits for a single job, so a dead daemon cannot block the client forever.
 
-### 时钟自检与兜底扫描（daemon.scan_mode）
+### Clock self-check and fallback scanning
 
-某些虚拟化环境（H20 上记录过）会出现 CLOCK_MONOTONIC 冻结：`sleep()` 的 deadline 永不到达，线程永久卡住，daemon 表现为"心跳正常但不消费任务"。H200 等新机器大概率没有这个问题，所以**默认不背这个成本**：
+Some virtualised environments (observed on H20) freeze `CLOCK_MONOTONIC`: `sleep()` deadlines never arrive, threads hang forever, and the daemon looks like "heartbeat fine but tasks never consumed". Newer machines such as H200 almost certainly do not have this defect, so **the default does not make every machine pay for it**:
 
-| scan_mode | 行为 |
+| scan_mode | Behaviour |
 |---|---|
-| `auto`（默认） | 启动时花 ~200ms 自检：同时看墙钟与单调时钟，只有确认二者脱节才切到 spin |
-| `sleep` | 强制定时器驱动（最低 CPU），适合确认健康的机器 |
-| `spin` | 强制 busy-poll（~1 核），只给确有时钟问题的机器 |
+| `auto` (default) | Spend ~200ms at startup comparing wall clock against the monotonic clock; switch to spin only when the two are confirmed to diverge |
+| `sleep` | Force timer-driven scanning (lowest CPU), for machines known to be healthy |
+| `spin` | Force busy-poll (~1 core), only for machines that really have a clock problem |
 
-自检结果会打在启动日志里：`clock: ok (sleep-driven scan)` 或 `WARNING: ... busy-poll`。运行时若仍怀疑停摆，用外部看门狗 `scripts/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄，超阈值重启）——它跑在 cron/systemd timer 里，不和 daemon 共享故障域。
+The self-check result is printed in the startup log: `clock: ok (sleep-driven scan)` or `WARNING: ... busy-poll`. If you still suspect a stall at runtime, use the external watchdog `scripts/watchdog.sh` (reads the age of `heartbeat.json` / `scan.json` and restarts past a threshold) — it runs from cron or a systemd timer, so it does not share a failure domain with the daemon.
 
-### SSH Bridge (transport = "ssh")
+### SSH Bridge
 
-当 Client 与目标机**没有共享文件系统**、但可通过 SSH 访问时，用 SSH 作为传输层：Client 通过 ssh 读写目标机的 `commands/ results/ status/ artifacts/` 目录，目标机上的 daemon 依旧用本地 Protocol 消费任务——两端目录语义完全一致，daemon 无需改动。
+When the client and the target machine have **no shared filesystem** but are reachable over SSH, use SSH as the transport: the client reads and writes the target's `commands/ results/ status/ artifacts/` directories over ssh, and the daemon on the target keeps consuming tasks through the local Protocol — both sides keep identical directory semantics, so the daemon needs no changes.
 
 ```json
 {
-  "shared_storage": "/tmp/bifrost",            // daemon 侧仍用它定位本地目录
+  "shared_storage": "/tmp/bifrost",            // the daemon still uses this for its local paths
   "transport": "ssh",
   "ssh": {
-    "host": "target-machine.example.com",      // 必填
-    "user": "bifrost",                          // 可选，默认当前用户
-    "remote_dir": "/gpfs/bifrost",              // 必填：目标机上充当 shared_storage 的目录
-    "port": 22,                                 // 可选，默认 22
-    "connect_timeout": "10s"                    // 可选，每次 ssh 连接超时（默认 10s）
+    "host": "target-machine.example.com",      // required
+    "user": "bifrost",                          // optional, defaults to the current user
+    "remote_dir": "/gpfs/bifrost",              // required: the directory acting as shared_storage on the target
+    "port": 22,                                 // optional, default 22
+    "connect_timeout": "10s"                    // optional, per-connection timeout (default 10s)
   },
   "client": {},
   "daemon": {}
 }
 ```
 
-要求：本机可 `ssh <host>` 免密登录（`BatchMode=yes`）。文件内容经 ssh stdin 传输（`cat >` + 原子 `mv`），路径经 shell 转义，无注入风险。
+Requirements: passwordless `ssh <host>` from the client (`BatchMode=yes`). File contents travel over ssh stdin (`cat >` plus an atomic `mv`), and paths are shell-escaped, so there is no injection risk.
 
-## 🚀 Usage
+## Usage
 
-### 共享目录不是 GPFS（如 H200 的 `/data` 互挂）
+### Shared storage that is not GPFS
 
-bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 上典型用法：
+Bifrost only requires **a POSIX directory both sides can read and write**; it is not tied to GPFS. A typical H200 setup:
 
 ```bash
-# ── H200（server 端）───────────────────────────────────────
+# ---- on the H200 (server side) ----
 cd /data/liuxin/Ax/bifrost
-cargo build --release                          # 产物：target/release/bifrost
-bifrost warmup  --storage /data/liuxin/bifrost # 必跑：存储可写/时钟/GPU 自检
-bifrost server  --storage /data/liuxin/bifrost      # GPU 池自动探测本机全部卡
-# 需要限制卡范围时：--gpus 0,3,5；完全不用 GPU：--gpus "" 或配置 "gpu_pool": []
+cargo build --release                          # artifact: target/release/bifrost
+bifrost warmup  --storage /data/liuxin/bifrost # required: storage / clock / GPU self-check
+bifrost server  --storage /data/liuxin/bifrost      # GPU pool auto-detects every card on the machine
+# Limit the cards with --gpus 0,3,5; disable GPUs entirely with --gpus "" or "gpu_pool": []
 
-# ── client 端（任何能看到同一目录的机器）──────────────────
+# ---- on the client side (any machine that can see the same directory) ----
 bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
 ```
 
-- `--storage` / `--gpus` 都是**全局参数**，分别覆盖 `shared_storage` 与 `daemon.gpu_pool`，任意子命令可用
-- GPU 池默认自动探测；`--gpus` 只用于"限制范围"或"关闭"（`--gpus ""`）
-- 仓库里带了两个预编译二进制（`dist/`，已 gitignore）：`bifrost-linux-x86_64` 是 **musl 静态**，
-  任意 x86_64 Linux 直接跑；`-glibc` 那个要求 glibc ≥ 2.39。不确定对方系统版本时用静态版。
-- 首次运行自动建出 `commands/ results/ status/ artifacts/ logs/ cancel/`，并写 `heartbeat.json` / `scan.json`
-- 目录若是多机共享的网络文件系统，inotify 可能丢事件 —— 兜底扫描（默认 1s）兜住，不依赖 GPFS
+- `--storage` and `--gpus` are **global flags** that override `shared_storage` and `daemon.gpu_pool` respectively, and work with any subcommand
+- The GPU pool is auto-detected by default; `--gpus` is only for "limit the range" or "disable" (`--gpus ""`)
+- The repo ships two prebuilt binaries (`dist/`, git-ignored): `bifrost-linux-x86_64` is **musl static** and
+  runs on any x86_64 Linux; the `-glibc` variant requires glibc ≥ 2.39. Use the static one when you are unsure of the target OS
+- On first run `commands/ results/ status/ artifacts/ logs/ cancel/` are created automatically, along with `heartbeat.json` / `scan.json`
+- If the directory is a network filesystem shared by several machines, inotify may drop events — the fallback scan (1s by default) covers it, so GPFS is not required
 
 ### Submit Tasks
 
 ```bash
-# 提交任意 shell 命令（以 pytest 开头自动识别为 pytest 任务）
+# Submit an arbitrary shell command (commands starting with pytest are treated as pytest tasks)
 bifrost client submit --command "pytest tests/unit/ -v" --timeout 600
-bifrost client submit --command "..." --timeout 0        # 0 = 用 daemon 默认超时
-bifrost client submit --command "..." --retries 2        # 重试需显式开启（默认 0）
+bifrost client submit --command "..." --timeout 0        # 0 = use the daemon default
+bifrost client submit --command "..." --retries 2        # retry must be enabled explicitly (default 0)
 bifrost client submit --command "python script.py --input data.csv" --timeout 300 --priority 10
 
-# 指定工作目录
+# With an explicit working directory
 bifrost client submit --command "make build" --working-dir /workspace/project --timeout 1200
 
-# 提交 YAML Job（多步骤顺序执行）
+# Submit a YAML job (multi-step, sequential)
 bifrost client submit --job examples/quick_start.yaml
 ```
 
-### 停止服务
+### Stopping the service
 
-- `Ctrl+C`（SIGINT）：优雅停机，**500ms 内退出**；再次 `Ctrl+C` 立即强制退出（exit 130）
-- `SIGTERM`（`systemctl stop` / `kill`）：同样优雅退出
-- 退出时会 **SIGKILL 所有在跑任务的进程组**，避免 benchmark 变成孤儿进程继续占 GPU
+- `Ctrl+C` (SIGINT): graceful shutdown, **exits within 500ms**; a second `Ctrl+C` forces an immediate exit (exit 130)
+- `SIGTERM` (`systemctl stop` / `kill`): also a graceful shutdown
+- On exit it **SIGKILLs the process group of every running task**, so benchmarks cannot survive as orphans still holding the GPUs
 
-### Warmup（上线前自检，**在 server 端跑**）
+### Warmup
 
 ```bash
-# 在目标机（要跑 daemon 的那台）上执行
-bifrost warmup                     # 或 bifrost --warmup
+# Run this on the target machine (the one that will run the daemon)
+bifrost warmup                     # or: bifrost --warmup
 ```
-检查共享存储可写性/文件系统类型、时钟自检（是否会 sleep 卡死）、现有 daemon 心跳、GPU 可见性。有阻断项时退出码 1，可直接接到部署脚本里。
 
-**为什么必须在 server 端**：这些检查都是"执行侧"的属性 —— 时钟冻结影响的是 daemon 的兜底扫描线程，GPU 只有目标机才有，存储可写性取决于 daemon 那个用户的权限。在 client 端跑只能证明"client 视角下共享盘可读写"，对定位 daemon 启动失败没有帮助（权限不同、机器不同）。
+Checks shared-storage writability and filesystem type, performs the clock self-check (whether `sleep()` can hang), looks at the existing daemon heartbeat, and reports GPU visibility. It exits 1 on blocking findings, so it can be wired straight into a deploy script.
+
+**Why it has to run on the server side:** every check is a property of the executing side — a frozen clock affects the daemon's fallback scan thread, the GPUs only exist on the target machine, and writability depends on the daemon user's permissions. Running it on the client only proves "the shared directory is writable from the client's point of view", which tells you nothing when the daemon fails to start (different user, different machine).
 
 ### Check Status
 
 ```bash
-# 查询任务状态（位置参数，无需 --task-id）
+# Query a task's status (positional argument, no --task-id)
 bifrost client status <TASK_ID>
 
-# 输出
+# Output
 Task ID: abc123-def456
 Status: Completed
 Message: Task completed in 45s
@@ -588,11 +594,11 @@ Message: Task completed in 45s
 bifrost client cancel <TASK_ID>
 ```
 
-实现方式：client 在共享存储写入 `cancel/<task_id>.json`，daemon 对**运行中**的任务每 300ms 轮询该文件，命中即 `SIGKILL` 整个进程组（含 `sh -c` 的孙进程），结果状态为 `Cancelled`；对**排队中**的任务则在领取后、执行前直接写 `Cancelled` 结果。任务结束后 cancel 文件自动清理。MCP 侧对应工具为 `bifrost_cancel`。
+How it works: the client writes `cancel/<task_id>.json` into shared storage; for a **running** task the daemon polls that file every 300ms and, on a hit, `SIGKILL`s the whole process group (including grandchildren under `sh -c`), leaving the result in state `Cancelled`. A **queued** task is marked `Cancelled` right after being claimed, before execution starts. The cancel file is cleaned up once the task finishes. The MCP equivalent is `bifrost_cancel`.
 
-### Clean Up Old Tasks (prevent storage growth)
+### Clean Up Old Tasks
 
-Long-running deployments accumulate files in `commands/ results/ status/ logs/ artifacts/`. Clean removes all files of **finished tasks** (those with a result file) older than N days:
+Long-running deployments accumulate files in `commands/ results/ status/ logs/ artifacts/`. `clean` removes all files of **finished tasks** (those with a result file) older than N days:
 
 ```bash
 # Preview what would be removed (safe, no deletion)
@@ -606,11 +612,13 @@ bifrost client clean --storage /gpfs/gcsp/liuxin/bifrost_test --older-than 30
 ```
 
 **Safety guarantees:**
+
 - Only tasks **with a result file** (terminal state) are touched — pending/running tasks are never candidates
 - `heartbeat.json` and `settings.json` are **never** removed
 - `--dry-run` previews before any deletion; `--older-than` defaults to 7 days
 
 **Example output:**
+
 ```
 $ bifrost client clean --older-than 7 --dry-run
   would remove aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa (5 files)
@@ -621,11 +629,12 @@ $ bifrost client clean --older-than 7
 Removed 7 files from 2 finished tasks (older than 7 days)
 ```
 
-### Pytest in Container (Offline Machine)
+### Pytest in a Container
 
 To run pytest in a container on the offline machine:
 
-1. **Create Docker adapter**:
+1. **Create a Docker adapter**:
+
 ```yaml
 # /etc/bifrost/adapters/docker_pytest.yaml
 name: docker_pytest
@@ -635,7 +644,8 @@ artifacts:
   - report.json
 ```
 
-2. **Submit task with adapter**:
+2. **Submit a task with the adapter**:
+
 ```bash
 bifrost client submit \
   --command "docker run --rm -v /workspace/myproject:/app -w /app python:3.10-slim pytest tests/unit/ --json-report --json-report-file=report.json" \
@@ -643,9 +653,9 @@ bifrost client submit \
   --timeout 600
 ```
 
-### Pytest Prerequisites (Offline Machine)
+### Pytest Prerequisites
 
-Install on offline machine or in container:
+Install on the offline machine (or inside the container):
 
 ```bash
 pip install pytest pytest-json-report pytest-cov
@@ -653,157 +663,155 @@ pip install pytest pytest-json-report pytest-cov
 
 ---
 
-## 🗺️ 部署全景与发布更新流程
+## Deployment Matrix and Release Workflow
 
-> 一个 bifrost 二进制，跑 4 类角色：**Client CLI**、**Daemon Server**、**MCP Server**、**Supervisor**。
-> 发布新版本时，不同角色的更新方式不同，下面统一交代。
+> One bifrost binary plays four roles: **Client CLI**, **Daemon Server**, **MCP Server**, **Supervisor**.
+> Rolling out a new build touches each role differently — this section covers all of them.
 
-### 部署矩阵
+### Deployment matrix
 
-| 角色 | 跑在哪 | 谁启动 | 配置来源 | 是否需要"安装" |
+| Role | Runs on | Started by | Config source | Needs "installation"? |
 |---|---|---|---|---|
-| **Client CLI** | 联网机（本机）| 手动/脚本 | `BIFROST_CONFIG` 或 `~/.bifrost/settings.json` | 仅二进制在 GPFS，无需安装 |
-| **Daemon Server** | 离线机（H20）| Supervisor 或 systemd | `-c <config>` 或 `~/.bifrost/settings.json` | 二进制 + working_dir |
-| **MCP Server** | 联网机（Agent 侧）| Agent（Hermes/OpenCode…）自动拉起 | `BIFROST_CONFIG` 环境变量 | 无（Agent 配置指向二进制）|
-| **Supervisor** | 离线机（H20）| `bifrost-supervisor.sh start` 或 crontab @reboot | 内置路径常量 | 脚本 + 二进制 |
+| **Client CLI** | Networked machine (local) | Manual / scripts | `BIFROST_CONFIG` or `~/.bifrost/settings.json` | No — binary lives on shared storage |
+| **Daemon Server** | Offline machine | Supervisor or systemd | `-c <config>` or `~/.bifrost/settings.json` | Binary + working_dir |
+| **MCP Server** | Networked machine (agent side) | Launched by the agent (Hermes/OpenCode…) | `BIFROST_CONFIG` env var | None (agent config points at the binary) |
+| **Supervisor** | Offline machine | `bifrost-supervisor.sh start` or crontab @reboot | Built-in path constants | Script + binary |
 
-### 发布流程（新版本）
+### Release flow (new version)
 
 ```bash
-# 1. 在联网机编译
+# 1. Build on the networked machine
 cd bifrost
 cargo build --release
 
-# 2. 二进制产物（GPFS 共享存储，两端都能访问）
+# 2. The artifact (on shared storage, visible to both sides)
 ls -lh target/release/bifrost
 #    -> /gpfs/gcsp/liuxin/bifrost/target/release/bifrost
 ```
 
-### 发布后各角色更新方式
+### How each role picks up a new build
 
-| 角色 | 需要更新吗 | 怎么更新 | 说明 |
+| Role | Needs updating? | How | Notes |
 |---|---|---|---|
-| **Client CLI** | ✅ | 无需操作 | 每次调用都重新 exec 二进制，自动用新版 |
-| **MCP Server** | ✅ | **必须 kill 旧 mcp-serve 进程** | 常驻进程，改 binary 后 Agent 不会自动重启；kill 后下次调用自动拉起新版（⚠️ 最常见遗漏点）|
-| **Daemon Server** | ✅ | `./bifrost-ctl.sh restart`（本机）或 `kill -HUP <supervisor_pid>`（H20）| Supervisor 负责 kill 旧 + 起新 |
-| **Supervisor** | ⚠️ 仅当脚本本身改了 | 重启 supervisor：`./bifrost-supervisor.sh restart` | 脚本更新才需要，binary 更新不需要动 supervisor |
+| **Client CLI** | ✅ | Nothing to do | Every invocation re-execs the binary, so it picks up the new build |
+| **MCP Server** | ✅ | **You must kill the old mcp-serve process** | Long-running process; changing the binary does not restart it, and the agent will not do it for you. Kill it and the next call spawns the new build (⚠️ the most commonly missed step) |
+| **Daemon Server** | ✅ | `./bifrost-ctl.sh restart` (local) or `kill -HUP <supervisor_pid>` (remote) | The supervisor kills the old process and starts the new one |
+| **Supervisor** | ⚠️ Only if the script itself changed | Restart the supervisor: `./bifrost-supervisor.sh restart` | Only script changes need this; binary updates do not |
 
-### 更新检查清单
+### Update checklist
 
 ```
-编译新 binary 后：
-1. ✅ Client CLI    - 自动生效（无状态）
-2. ⚠️ MCP Server   - 必须 kill 旧 mcp-serve（Hermes: pkill -f "bifrost mcp-serve"）
-3. 🔄 Daemon Server - ./bifrost-ctl.sh restart（跨机器，无需 SSH）
-4. ⏹️ Supervisor    - 二进制更新无需动；脚本更新才 restart
+After building a new binary:
+1. ✅ Client CLI    - automatic (stateless)
+2. ⚠️ MCP Server   - must kill the old mcp-serve (Hermes: pkill -f "bifrost mcp-serve")
+3. 🔄 Daemon Server - ./bifrost-ctl.sh restart (cross-machine, no SSH needed)
+4. ⏹️ Supervisor    - untouched for binary updates; restart only when the script changes
 ```
 
-### 跨机器控制（无需 SSH）
+### Cross-machine control (no SSH needed)
 
 ```bash
-# 本机运行，通过 GPFS control.json 控制 H20 上的 server
-./bifrost-ctl.sh restart    # 重启 H20 daemon（编译后必做）
-./bifrost-ctl.sh status     # 查询状态（回写 status.json）
-./bifrost-ctl.sh stop       # 关闭
+# Run locally; controls the remote server through control.json on shared storage
+./bifrost-ctl.sh restart    # restart the remote daemon (do this after every build)
+./bifrost-ctl.sh status     # query state (writes back status.json)
+./bifrost-ctl.sh stop       # shut down
 ```
 
-> 详细运维记录见 [docs/ops-practice.md](docs/ops-practice.md)。
+> Detailed operational notes live in [docs/ops-practice.md](docs/ops-practice.md).
 
 ---
 
-## 🛡️ Supervisor 守护进程部署
+## Supervisor Daemon Deployment
 
-Supervisor 是跑在**离线机（Daemon 端）**的守护脚本，管理 bifrost server 生命周期：
-崩溃自愈、信号控制、跨机器控制（通过 GPFS 控制文件）。推荐生产使用，替代手动启停。
+The supervisor is a daemon script that runs on the **offline (daemon) machine** and manages the bifrost server lifecycle: crash recovery, signal control, and cross-machine control (through control files on shared storage). Recommended for production over starting the daemon by hand.
 
-### 脚本一览
+### Script overview
 
-| 脚本 | 位置 | 用途 |
+| Script | Location | Purpose |
 |---|---|---|
-| `bifrost-supervisor.sh` | 离线机（H20）| 守护进程：server 生命周期管理 |
-| `bifrost-ctl.sh` | 联网机（Client 端）| 跨机器控制（restart/stop/status）|
-| `install-supervisor-cron.sh` | 离线机（H20）| crontab @reboot 开机自启 |
-| `restart_server.sh` | 离线机（H20）| 轻量版一键重启（无 supervisor 时用）|
+| `bifrost-supervisor.sh` | Offline machine | The supervisor: server lifecycle management |
+| `bifrost-ctl.sh` | Networked machine (client side) | Cross-machine control (restart/stop/status) |
+| `install-supervisor-cron.sh` | Offline machine | crontab @reboot auto-start |
+| `restart_server.sh` | Offline machine | Lightweight one-shot restart (for when no supervisor is used) |
 
-### 部署（离线机 H20，一次性）
+### Deployment (offline machine, one-off)
 
 ```bash
 cd /gpfs/gcsp/liuxin/bifrost
 
-# 1. 启动 supervisor（后台常驻，nohup，SSH 断开不影响）
+# 1. Start the supervisor (background, nohup, survives SSH disconnect)
 ./bifrost-supervisor.sh start
-#   输出: supervisor pid: <PID>  (log: .../server.log)
+#   output: supervisor pid: <PID>  (log: .../server.log)
 
-# 2. 可选: 开机自启（系统重启后自动拉起）
+# 2. Optional: auto-start on boot
 ./install-supervisor-cron.sh
 
-# 3. 验证
+# 3. Verify
 ./bifrost-supervisor.sh status
-#    supervisor:  running (pid=<PID>)
-#    bifrost server: running (pid=<PID>)
+#   supervisor:  running (pid=<PID>)
+#   bifrost server: running (pid=<PID>)
 ```
 
-### 跨机器控制（联网机，无需 SSH）
+### Cross-machine control (online machine, no SSH)
 
 ```bash
-# 通过 GPFS control.json 给 H20 supervisor 发指令（2s 内生效）
-./bifrost-ctl.sh restart    # 重启 H20 daemon（编译新 binary 后必做）
-./bifrost-ctl.sh status     # 查询状态（supervisor 回写 status.json）
-./bifrost-ctl.sh stop       # 关闭 server + supervisor
+# Send commands to the remote supervisor through control.json (effective within 2s)
+./bifrost-ctl.sh restart    # restart the remote daemon (do this after building a new binary)
+./bifrost-ctl.sh status     # query state (the supervisor writes status.json back)
+./bifrost-ctl.sh stop       # stop server + supervisor
 ```
 
-### 本地信号控制（H20 上，可选）
+### Local signal control (on the offline machine)
 
 ```bash
-kill -HUP  <supervisor_pid>   # 重启 bifrost server
-kill -TERM <supervisor_pid>   # 关闭 server + supervisor
-kill -USR1 <supervisor_pid>   # 打印状态
+kill -HUP  <supervisor_pid>   # restart the bifrost server
+kill -TERM <supervisor_pid>   # stop server + supervisor
+kill -USR1 <supervisor_pid>   # print status
 ```
 
-### 健壮性特性
+### Robustness features
 
-| 特性 | 机制 |
+| Feature | Mechanism |
 |---|---|
-| 长期常驻 | nohup 后台，SSH 断开不影响 |
-| 崩溃自愈 | 2s 健康检查 + 指数退避重试（上限 60s）|
-| 单实例锁 | flock 防重复启动 |
-| 日志轮转 | 5MB 自动归档，保留 3 份 |
-| 控制容错 | 坏 JSON/未知指令忽略 |
-| 优雅停止 | TERM 等 5s，超时 SIGKILL |
-| **孤儿进程防护** | setsid 启动 daemon（独立进程组）+ 进程组 kill + 启动前清理残留任务 |
+| Long-lived | nohup in the background; SSH disconnects do not matter |
+| Crash recovery | 2s health check with exponential backoff (capped at 60s) |
+| Single-instance lock | flock prevents double starts |
+| Log rotation | Auto-archives at 5MB, keeps 3 files |
+| Control tolerance | Malformed JSON / unknown commands are ignored |
+| Graceful stop | TERM, wait 5s, then SIGKILL |
+| **Orphan protection** | Starts the daemon under setsid (its own process group), kills by process group, and cleans residual tasks before starting |
 
-### 卸载
+### Uninstall
 
 ```bash
 ./bifrost-supervisor.sh stop
-# 如安装了自启, 移除 crontab 行:
-# crontab -e 删除含 bifrost-supervisor 的行
+# If you installed auto-start, remove the crontab line:
+# crontab -e and delete the line containing bifrost-supervisor
 ```
 
 ---
-
-## 🤖 MCP Server (Agent Integration)
+## MCP Server (Agent Integration)
 
 Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes task submission as structured tools over stdio. **Any MCP-capable agent** — Hermes, OpenCode, Claude Code, Cline, Cursor, Codex, or any generic coding agent — can connect and submit tasks to the offline daemon without writing file-exchange glue code.
 
 ```
 ┌─────────────────────────────────────────┐
-│ 任意 MCP Agent (Hermes/OpenCode/Claude…) │
-│   └─ stdio MCP ── bifrost mcp-serve    │  ← 联网侧 (client 机器)
+│ Any MCP agent (Hermes/OpenCode/Claude…) │
+│   └─ stdio MCP ── bifrost mcp-serve    │  ← networked side (client machine)
 ├─────────────────────────────────────────┤
-│        GPFS 共享存储 (shared_storage)    │
+│        shared storage (shared_storage)   │
 │   commands/  results/  status/  logs/   │
 ├─────────────────────────────────────────┤
-│        bifrost daemon (H20, 离线)        │
-│   inotify 监控 → 并发执行 → 写回结果     │
+│        bifrost daemon (offline)          │
+│   inotify watch → concurrent exec → write back │
 └─────────────────────────────────────────┘
 ```
 
-The MCP server is **stateless**: every tool call reads/writes GPFS directly. Multiple agents can connect simultaneously (one process instance per connection) without conflicts.
+The MCP server is **stateless**: every tool call reads and writes shared storage directly. Multiple agents can connect simultaneously (one process instance per connection) without conflicts.
 
-> 完整接入指南（含全部 Agent 配置示例）见 [MCP.md](MCP.md)。
+> The full integration guide, including every agent's config sample, is in [MCP.md](MCP.md).
 
-### Quick Start (3 steps)
+### Quick Start
 
 **1. Build the binary** (on the online/client machine):
 
@@ -811,7 +819,7 @@ The MCP server is **stateless**: every tool call reads/writes GPFS directly. Mul
 cargo build --release        # target/release/bifrost (3.0M)
 ```
 
-**2. Prepare a settings file** — point `shared_storage` at the same GPFS exchange directory used by the offline daemon:
+**2. Prepare a settings file** — point `shared_storage` at the same exchange directory the offline daemon uses:
 
 ```json
 {
@@ -821,7 +829,7 @@ cargo build --release        # target/release/bifrost (3.0M)
 }
 ```
 
-**3. Register in your agent** — the universal config is:
+**3. Register it in your agent** — the universal config is:
 
 ```
 command: /path/to/target/release/bifrost
@@ -875,7 +883,7 @@ or project-level `.mcp.json`:
 }
 ```
 
-**Cline / Cursor / generic coding agents** — same `mcpServers` JSON shape with `command` + `args` + `env` (see [MCP.md](MCP.md) for screenshots-level detail).
+**Cline / Cursor / generic coding agents** — the same `mcpServers` JSON shape with `command` + `args` + `env` (see [MCP.md](MCP.md) for screenshot-level detail).
 
 ### MCP Tools
 
@@ -896,9 +904,10 @@ or project-level `.mcp.json`:
 ```
 
 **Important rules:**
+
 - Complex commands **must be wrapped in `sh -c '...'`** (injection-prevention design; `>`, `&&`, `$VAR`, `&` need a shell)
 - Check `bifrost_health` before submitting — a not-ready daemon silently drops tasks
-- Daemon executes concurrently up to `max_concurrent` (default 10); burst submits are fine
+- The daemon executes concurrently up to `max_concurrent` (default 10); burst submits are fine
 
 ### Verification
 
@@ -919,8 +928,8 @@ python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | Connection closed on add | shared_storage path not writable/missing | Fix `shared_storage` in settings.json |
-| `alive: false` | daemon not running or heartbeat stale | Start `bifrost server -c <cfg>` on H20, wait 2s |
-| Task stuck Pending | daemon not consuming (inotify skips existing files) | Check health before submit; ensure server is up |
+| `alive: false` | daemon not running or heartbeat stale | Start `bifrost server -c <cfg>` on the target machine, wait 2s |
+| Task stuck Pending | daemon not consuming (inotify skips existing files) | Check health before submit; ensure the server is up |
 | submit error | command format issue | Wrap complex commands in `sh -c '...'` |
 | Multi-agent usage | — (no conflict, file-based) | No extra config needed |
 
@@ -930,7 +939,7 @@ python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
 |------|-------------|----------|
 | `shell` | Shell command execution | Build scripts, data processing |
 | `pytest` | Python test execution | Unit tests, integration tests |
-| `custom` | Adapter-based execution | Docker, specialized tools |
+| `custom` | Adapter-based execution | Docker, specialised tools |
 
 ## Task Priority
 
@@ -943,7 +952,7 @@ Priority ranges from 0 to 255:
 | 51-100 | Low | Background tasks, cleanup |
 | 101-255 | Lowest | Maintenance, logs |
 
-## 🛡️ Security Features
+## Security Features
 
 ### Command Injection Prevention
 
@@ -955,22 +964,22 @@ let args = shell_words::split(&command)?;
 Command::new(&args[0]).args(&args[1..]);
 ```
 
-> **实测注意**：由于命令不经 shell 解释，`&&`、`||`、管道 `|`、重定向 `>`、通配符 `*` 等 **shell 语法不会生效**，整条命令会被当作单个可执行文件的参数。需要 shell 特性时，请显式用 `sh -c` 包裹：
+> **Practical caveat:** because commands are not interpreted by a shell, **shell syntax such as `&&`, `||`, pipes `|`, redirection `>` and globs `*` does not take effect** — the whole string becomes arguments to a single executable. When you need shell features, wrap the command explicitly in `sh -c`:
 
 ```bash
-# ✅ 正确：显式调用 shell 解释多命令/管道/重定向
+# ✅ Correct: explicitly invoke a shell for multiple commands/pipes/redirection
 bifrost client submit --command "sh -c 'cd /workspace && make build 2>&1 | tee build.log'"
 
-# ❌ 错误：&& 和 | 会被原样当作 echo 的参数输出，不会执行
+# ❌ Wrong: && and | are passed to echo verbatim and never executed
 bifrost client submit --command "echo hello && nvidia-smi -L | head -3"
 ```
 
-### 任务监控时机（inotify 行为）
+### Task monitoring timing (inotify behaviour)
 
-Daemon 使用 `notify`（inotify）监听 `commands/` 目录，**只捕获启动后新出现的文件**，不会扫描启动前已存在的存量任务。因此：
+The daemon watches `commands/` with `notify` (inotify), which **only reports files created after startup** — existing tasks are not scanned. Therefore:
 
-- **正确姿势**：先启动 daemon，再提交任务
-- **遗留任务**：daemon 启动前已写入 `commands/` 的任务文件不会被消费（也不报错），需要重新提交或在 daemon 重启后处理
+- **Correct order**: start the daemon first, then submit tasks
+- **Leftover tasks**: a task file already in `commands/` before the daemon starts is never consumed (and no error is raised); resubmit it or handle it after a daemon restart
 
 ### Path Traversal Protection
 
@@ -985,7 +994,7 @@ if !canonical.starts_with(&artifacts_dir) {
 }
 ```
 
-## 🧪 Development
+## Development
 
 ### Running Tests
 
@@ -1005,7 +1014,7 @@ cargo tarpaulin --out Html
 
 ### End-to-End Tests (CI-equivalent)
 
-The full e2e suite lives in `tests/e2e/` (timeout, job, concurrent, multi-GPU pytest, robustness, MCP) and runs on **GitHub Actions CI** (`.github/workflows/ci.yml`):
+The full e2e suite lives in `tests/e2e/` (timeout, job, concurrent, multi-GPU pytest, robustness, MCP) and runs in CI (`.github/workflows/ci.yml`):
 
 ```bash
 cargo build --release
@@ -1024,7 +1033,7 @@ bifrost/
 │   │   ├── bridge.rs   # Bridge transport trait
 │   │   ├── protocol.rs # Shared-storage bridge impl
 │   │   ├── settings.rs # ~/.bifrost/settings.json
-│   │   ├── db.rs       # TODO: SQLite history
+│   │   ├── sdnotify.rs # systemd readiness notification
 │   │   ├── error.rs    # Error types
 │   │   ├── lock.rs     # File locking
 │   │   └── batch_tracker.rs
@@ -1043,53 +1052,54 @@ bifrost/
 │   ├── unit/           # Unit tests
 │   └── integration/    # Integration tests
 ├── config/             # Default configurations
-├── scripts/            # Deployment scripts
+├── scripts/            # Build / deploy / validation scripts
 └── docs/               # Documentation
 ```
 
-## 📚 Documentation
+## Documentation
 
-- [Adapter Guide](docs/adapter-guide.md) - Custom task adapters
-- [Deployment Guide](docs/deployment.md) - Production deployment
-- [MCP Integration Guide](MCP.md) - Universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
-- [Test Report](test.md) - Performance & timeout & job workflow test reports
+- [Adapter Guide](docs/adapter-guide.md) — custom task adapters
+- [Deployment Guide](docs/deployment.md) — production deployment, systemd, container-build → host-install flow
+- [Operations Practice](docs/ops-practice.md) — real-world operational notes
+- [MCP Integration Guide](MCP.md) — universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
+- [Test Report](test.md) — performance, timeout and job-workflow test reports
 
-## 🩺 Troubleshooting
+## Troubleshooting
 
 ### Daemon Not Detecting Tasks
 
 1. Check shared storage path permissions
-2. Verify notify library works: `strace -e inotify_wait bifrost server`
-3. Check commands/ directory exists
-4. **Task was submitted before daemon started** - inotify only watches files created *after* daemon startup; stale tasks in `commands/` are silently ignored. Re-submit the task or restart the daemon.
+2. Verify the notify library works: `strace -e inotify_wait bifrost server`
+3. Check that the `commands/` directory exists
+4. **The task was submitted before the daemon started** — inotify only watches files created *after* startup; stale tasks in `commands/` are silently ignored. Resubmit the task or restart the daemon.
 
 ### Task Timeout
 
-1. Increase timeout in task submission
-2. Check system resources on daemon machine
-3. Profile command execution time
+1. Increase the timeout when submitting the task
+2. Check system resources on the daemon machine
+3. Profile how long the command actually takes
 
 ### Heartbeat Timeout
 
-1. Verify daemon process running: `systemctl status bifrost`
-2. Check heartbeat.json permissions
-3. Verify shared storage accessible
+1. Verify the daemon process is running: `systemctl status bifrost`
+2. Check `heartbeat.json` permissions
+3. Verify the shared storage is accessible
 
 ### Artifact Not Found
 
-1. Verify command generates expected artifacts
-2. Check working directory
-3. Verify artifact_name doesn't contain path separators
+1. Verify the command actually produces the declared artifacts
+2. Check the working directory
+3. Verify `artifact_name` contains no path separators
 
-## 📄 License
+## License
 
-MIT License - see [LICENSE](LICENSE) file.
+MIT License — see the [LICENSE](LICENSE) file.
 
-## 📌 Status
+## Status
 
-Bifrost v0.1.0 is released. Core functionality is stable and tested. Future enhancements:
+Bifrost v0.1.0 is released. Core functionality is stable and tested. Planned enhancements:
 
 - Web UI monitoring dashboard
 - Distributed execution (multiple daemons)
 - Task dependency graph (DAG scheduling)
-- AI-based task scheduling optimization
+- AI-based task scheduling optimisation
