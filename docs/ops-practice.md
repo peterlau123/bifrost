@@ -1,5 +1,9 @@
 # Bifrost 运维实践记录（APMM UT 场景）
 
+> 注：文中提到的 `bifrost-supervisor.sh` / `bifrost-ctl.sh` / `restart_server.sh` 已删除，
+> 当前用 systemd + `scripts/deploy/deploy-server.sh` 管理 daemon。本文保留为历史记录。
+
+
 > 记录 2026-08-03 在 APMM UT Workflow 接入 bifrost 过程中的问题、优化与运维方案。
 > 场景：本机（npu-062）作为 Client，H20（infra-gpu-h20-022）作为离线 Daemon，
 > 通过 GPFS 共享存储（`/gpfs/gcsp/liuxin/bifrost_test`）通信。

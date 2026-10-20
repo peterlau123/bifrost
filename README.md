@@ -48,8 +48,7 @@ Bifrost is a Rust framework for executing commands on offline / air-gapped machi
   - [Clean Up Old Tasks](#clean-up-old-tasks)
   - [Pytest in a Container](#pytest-in-a-container)
   - [Pytest Prerequisites](#pytest-prerequisites)
-- [Deployment Matrix and Release Workflow](#deployment-matrix-and-release-workflow)
-- [Supervisor Daemon Deployment](#supervisor-daemon-deployment)
+- [Release and Update](#release-and-update)
 - [MCP Server (Agent Integration)](#mcp-server-agent-integration)
   - [Quick Start](#quick-start)
   - [Agent Configurations](#agent-configurations)
@@ -91,7 +90,7 @@ Traditional remote execution tools — SSH, RPC, REST APIs — do not work on ai
 - **Priority scheduling** — tasks are sorted by priority (0–255)
 - **Timeout management** — configurable timeouts with optional retry
 - **systemd integration** — production-ready server deployment
-- **Supervisor daemon** — crash recovery, signal control, cross-machine control (`bifrost-supervisor.sh`)
+- **systemd supervision** — `Restart=on-failure`, readiness reported via sd_notify, starts on boot
 - **MCP Server** — built in, so any MCP-capable agent (Hermes / OpenCode / Claude) can drive it directly
 - **Health monitoring** — heartbeat-based server health checks
 
@@ -117,8 +116,8 @@ flowchart LR
         R1["deserialize task entities<br/>execute commands<br/>write results back"]
     end
 
-    subgraph Supervisor["Supervisor (daemon manager)"]
-        V1["monitor and manage<br/>the server lifecycle<br/>(crash recovery / restart / stop)"]
+    subgraph Supervisor["systemd"]
+        V1["supervise the server<br/>(restart on failure / stop)"]
     end
 
     Agent -->|"submit / query over MCP"| Client
@@ -134,7 +133,6 @@ flowchart TB
     subgraph Client["Client Machine (Online)"]
         CLI["bifrost CLI<br/>(humans / scripts)"]
         MCP["MCP Server<br/>(bifrost mcp-serve)<br/>agent integration: Hermes/OpenCode/...<br/>(reuses CLI logic internally)"]
-        CTL["bifrost-ctl.sh<br/>(cross-machine control)"]
     end
 
     subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
@@ -143,11 +141,10 @@ flowchart TB
         STA["status/<br/>Progress updates"]
         ART["artifacts/<br/>Execution outputs"]
         HB["heartbeat.json<br/>(daemon heartbeat)"]
-        CTRL["control.json<br/>(supervisor commands)"]
     end
 
     subgraph Daemon["Daemon Machine (Offline)"]
-        SUP["Supervisor<br/>(bifrost-supervisor.sh)<br/>crash recovery + signal control"]
+        SUP["systemd<br/>(bifrost.service)<br/>Restart=on-failure"]
         WT["File Watcher<br/>(inotify + 100ms fallback)"]
         EX["Executor<br/>(tokio async)"]
         LOG["Log Manager"]
@@ -165,10 +162,7 @@ flowchart TB
     RES -->|"poll results"| CLI
     RES -->|"poll results"| MCP
     HB -->|"check health"| CLI
-    CTL -->|"write control.json"| CTRL
-    CTRL -->|"read & execute<br/>(restart/stop/status)"| SUP
     SUP -->|"spawn/monitor"| WT
-    SUP -->|"write status.json"| CTRL
 ```
 
 ## Workflow
@@ -178,7 +172,7 @@ sequenceDiagram
     participant C as Client (Online)
     participant M as MCP Server (Agent)
     participant S as Shared Storage
-    participant V as Supervisor (Offline)
+    participant V as systemd (Offline)
     participant D as Daemon (Offline)
 
     Note over C,M: Either/or: humans and scripts use the CLI,<br/>agents use MCP. The MCP server reuses the client's<br/>submit/query logic — they are not parallel roles.
@@ -193,10 +187,7 @@ sequenceDiagram
     Note over C: Poll the result file (0.2s interval,<br/>a stat call — no subprocess overhead on GPFS)
     C->>S: Read results/{task_id}_result.json (CLI)
     M->>S: Read results/{task_id}_result.json (agent via MCP)
-    Note over V: Check server liveness every 2s<br/>restart on crash (exponential backoff)
-    V->>S: Read control.json (cross-machine commands)
-    Note over V: Execute restart/stop/status
-    V->>S: Write status.json (state written back)
+    Note over V: Restart=on-failure brings the daemon back
 ```
 
 ## Directory Structure
@@ -217,11 +208,7 @@ sequenceDiagram
 │       ├── stderr.log
 │       └── metadata.json
 ├── heartbeat.json         # Daemon health status
-├── control.json           # Cross-machine commands (bifrost-ctl.sh writes, supervisor reads)
-├── status.json            # Supervisor state written back (read by bifrost-ctl.sh status)
-├── supervisor.pid         # Supervisor PID
-├── server.pid             # Daemon server PID
-└── server.log             # Supervisor + server log
+└── .processing/           # In-flight claim markers (stale ones are reclaimed)
 ```
 
 ## Environment Requirements
@@ -270,7 +257,7 @@ needs, `--dist` to drop a copy in `dist/`). The manual commands below are what i
 > The build output location can be changed by `CARGO_TARGET_DIR` or a `target-dir` setting.
 > Scripts must resolve the real path through `scripts/build/find-binary.sh [release|debug]` instead of
 > hardcoding `target/release/bifrost`: it asks cargo to report the artifact
-> (`--message-format=json`). `deploy.sh` / `restart_server.sh` / `systemd-setup.sh` already do this.
+> (`--message-format=json`). `scripts/build/build.sh` and the deploy scripts already do this.
 
 Building requires Rust 1.70+. Without a Rust toolchain you can build on any machine that has one and ship the single binary (statically linked, no runtime dependencies).
 
@@ -683,133 +670,35 @@ pip install pytest pytest-json-report pytest-cov
 
 ---
 
-## Deployment Matrix and Release Workflow
+## Release and Update
 
-> One bifrost binary plays four roles: **Client CLI**, **Daemon Server**, **MCP Server**, **Supervisor**.
-> Rolling out a new build touches each role differently — this section covers all of them.
+One binary serves four roles — Client CLI, Daemon Server, MCP Server, and (optionally) systemd acting as the
+supervisor. Updating it is mostly about knowing which of them keeps running:
 
-### Deployment matrix
-
-| Role | Runs on | Started by | Config source | Needs "installation"? |
-|---|---|---|---|---|
-| **Client CLI** | Networked machine (local) | Manual / scripts | `BIFROST_CONFIG` or `~/.bifrost/settings.json` | No — binary lives on shared storage |
-| **Daemon Server** | Offline machine | Supervisor or systemd | `-c <config>` or `~/.bifrost/settings.json` | Binary + working_dir |
-| **MCP Server** | Networked machine (agent side) | Launched by the agent (Hermes/OpenCode…) | `BIFROST_CONFIG` env var | None (agent config points at the binary) |
-| **Supervisor** | Offline machine | `bifrost-supervisor.sh start` or crontab @reboot | Built-in path constants | Script + binary |
-
-### Release flow (new version)
-
-```bash
-# 1. Build on the networked machine
-cd bifrost
-cargo build --release
-
-# 2. The artifact (on shared storage, visible to both sides)
-ls -lh target/release/bifrost
-#    -> /gpfs/gcsp/liuxin/bifrost/target/release/bifrost
-```
-
-### How each role picks up a new build
-
-| Role | Needs updating? | How | Notes |
-|---|---|---|---|
-| **Client CLI** | ✅ | Nothing to do | Every invocation re-execs the binary, so it picks up the new build |
-| **MCP Server** | ✅ | **You must kill the old mcp-serve process** | Long-running process; changing the binary does not restart it, and the agent will not do it for you. Kill it and the next call spawns the new build (⚠️ the most commonly missed step) |
-| **Daemon Server** | ✅ | `scripts/ops/bifrost-ctl.sh restart` (local) or `kill -HUP <supervisor_pid>` (remote) | The supervisor kills the old process and starts the new one |
-| **Supervisor** | ⚠️ Only if the script itself changed | Restart the supervisor: `scripts/ops/bifrost-supervisor.sh restart` | Only script changes need this; binary updates do not |
-
-### Update checklist
-
-```
-After building a new binary:
-1. ✅ Client CLI    - automatic (stateless)
-2. ⚠️ MCP Server   - must kill the old mcp-serve (Hermes: pkill -f "bifrost mcp-serve")
-3. 🔄 Daemon Server - scripts/ops/bifrost-ctl.sh restart (cross-machine, no SSH needed)
-4. ⏹️ Supervisor    - untouched for binary updates; restart only when the script changes
-```
-
-### Cross-machine control (no SSH needed)
-
-```bash
-# Run locally; controls the remote server through control.json on shared storage
-scripts/ops/bifrost-ctl.sh restart    # restart the remote daemon (do this after every build)
-scripts/ops/bifrost-ctl.sh status     # query state (writes back status.json)
-scripts/ops/bifrost-ctl.sh stop       # shut down
-```
-
-> Detailed operational notes live in [docs/ops-practice.md](docs/ops-practice.md).
-
----
-
-## Supervisor Daemon Deployment
-
-The supervisor is a daemon script that runs on the **offline (daemon) machine** and manages the bifrost server lifecycle: crash recovery, signal control, and cross-machine control (through control files on shared storage). Recommended for production over starting the daemon by hand.
-
-### Script overview
-
-| Script | Location | Purpose |
+| Role | Runs on | Needs a restart after a new build? |
 |---|---|---|
-| `bifrost-supervisor.sh` | Offline machine | The supervisor: server lifecycle management |
-| `bifrost-ctl.sh` | Networked machine (client side) | Cross-machine control (restart/stop/status) |
-| `install-supervisor-cron.sh` | Offline machine | crontab @reboot auto-start |
-| `restart_server.sh` | Offline machine | Lightweight one-shot restart (for when no supervisor is used) |
-
-### Deployment (offline machine, one-off)
+| Client CLI | online machine | No — every invocation re-execs the binary |
+| MCP Server | online machine (agent side) | **Yes** — kill the old `mcp-serve` process; the agent will not do it for you (Hermes: `pkill -f "bifrost mcp-serve"`) |
+| Daemon Server | offline / GPU machine | **Yes** — `scripts/deploy/deploy-server.sh` does install → restart → verify in one shot |
+| systemd unit | offline / GPU machine | No — `install-systemd.sh` renders it, and `deploy-server.sh` calls it |
 
 ```bash
-cd /gpfs/gcsp/liuxin/bifrost
+# build once (musl static is what the daemon needs)
+scripts/build/build.sh --static --dist
 
-# 1. Start the supervisor (background, nohup, survives SSH disconnect)
-scripts/ops/bifrost-supervisor.sh start
-#   output: supervisor pid: <PID>  (log: .../server.log)
-
-# 2. Optional: auto-start on boot
-scripts/ops/install-supervisor-cron.sh
-
-# 3. Verify
-scripts/ops/bifrost-supervisor.sh status
-#   supervisor:  running (pid=<PID>)
-#   bifrost server: running (pid=<PID>)
+# roll it out on the daemon machine (install + restart + heartbeat + smoke, rollback on failure)
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
 ```
 
-### Cross-machine control (online machine, no SSH)
+Release checklist:
 
-```bash
-# Send commands to the remote supervisor through control.json (effective within 2s)
-scripts/ops/bifrost-ctl.sh restart    # restart the remote daemon (do this after building a new binary)
-scripts/ops/bifrost-ctl.sh status     # query state (the supervisor writes status.json back)
-scripts/ops/bifrost-ctl.sh stop       # stop server + supervisor
+```
+1. ✅ Client CLI    - automatic (stateless)
+2. ⚠️ MCP Server   - kill the old mcp-serve process
+3. 🔄 Daemon       - scripts/deploy/deploy-server.sh --storage <dir>
+4. ⏹️ systemd unit - handled by deploy-server.sh
 ```
 
-### Local signal control (on the offline machine)
-
-```bash
-kill -HUP  <supervisor_pid>   # restart the bifrost server
-kill -TERM <supervisor_pid>   # stop server + supervisor
-kill -USR1 <supervisor_pid>   # print status
-```
-
-### Robustness features
-
-| Feature | Mechanism |
-|---|---|
-| Long-lived | nohup in the background; SSH disconnects do not matter |
-| Crash recovery | 2s health check with exponential backoff (capped at 60s) |
-| Single-instance lock | flock prevents double starts |
-| Log rotation | Auto-archives at 5MB, keeps 3 files |
-| Control tolerance | Malformed JSON / unknown commands are ignored |
-| Graceful stop | TERM, wait 5s, then SIGKILL |
-| **Orphan protection** | Starts the daemon under setsid (its own process group), kills by process group, and cleans residual tasks before starting |
-
-### Uninstall
-
-```bash
-scripts/ops/bifrost-supervisor.sh stop
-# If you installed auto-start, remove the crontab line:
-# crontab -e and delete the line containing bifrost-supervisor
-```
-
----
 ## MCP Server (Agent Integration)
 
 Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes task submission as structured tools over stdio. **Any MCP-capable agent** — Hermes, OpenCode, Claude Code, Cline, Cursor, Codex, or any generic coding agent — can connect and submit tasks to the offline daemon without writing file-exchange glue code.
@@ -1085,10 +974,9 @@ lives under `scripts/`, grouped by purpose:
 scripts/
 ├── build/     build.sh (--static / --target / --profile / --dist), find-binary.sh
 ├── deploy/    deploy-server.sh (--storage required), deploy-client.sh, install-systemd.sh,
-│              deploy-h200.sh (H200 preset), systemd-setup.sh (legacy local layout), release.sh
+│              deploy-h200.sh (H200 preset)
 ├── validate/  remote-validate.sh (10 end-to-end checks), h200-smoke.sh, health-check.sh
-├── ops/       watchdog.sh, bifrost-supervisor.sh, bifrost-ctl.sh,
-│              install-supervisor-cron.sh, restart_server.sh
+├── ops/       watchdog.sh（systemd 之外的兜底自愈，可选）
 └── examples/  quickstart.sh (a runnable usage sample)
 ```
 

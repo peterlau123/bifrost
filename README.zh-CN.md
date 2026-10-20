@@ -48,8 +48,7 @@ Bifrost 是一个 Rust 框架，用**共享存储**作为通信通道，在离�
   - [清理历史任务](#清理历史任务)
   - [容器内跑 pytest](#容器内跑-pytest)
   - [pytest 依赖](#pytest-依赖)
-- [部署矩阵与发布流程](#部署矩阵与发布流程)
-- [Supervisor 守护进程部署](#supervisor-守护进程部署)
+- [发布与更新](#发布与更新)
 - [MCP Server（Agent 接入）](#mcp-serveragent-接入)
   - [快速开始](#快速开始)
   - [各 Agent 配置](#各-agent-配置)
@@ -91,7 +90,7 @@ Bifrost 是一个 Rust 框架，用**共享存储**作为通信通道，在离�
 - **优先级调度**——按优先级（0~255）排序执行
 - **超时管理**——超时可配置，重试按需开启
 - **systemd 集成**——可直接部署为生产服务
-- **Supervisor 守护进程**——崩溃自愈、信号控制、跨机器控制（`bifrost-supervisor.sh`）
+- **systemd 托管**——`Restart=on-failure` 崩溃自愈、sd_notify 就绪上报、开机自启
 - **内置 MCP Server**——任何支持 MCP 的 Agent（Hermes / OpenCode / Claude）可直接接入
 - **健康监控**——基于心跳的服务存活探测
 
@@ -117,14 +116,14 @@ flowchart LR
         R1["从共享存储反序列化任务实体<br/>执行命令<br/>将结果写回共享存储"]
     end
 
-    subgraph Supervisor["Supervisor（守护进程）"]
-        V1["监控和管理<br/>Server 生命周期<br/>(崩溃自愈/重启/关闭)"]
+    subgraph Supervisor["systemd"]
+        V1["托管 Server<br/>(失败重启 / 停止)"]
     end
 
     Agent -->|"MCP 提交/查询"| Client
     Client <-->|"读写"| SS
     SS <-->|"反序列化执行/写回"| Server
-    Supervisor -->|"spawn / monitor / control"| Server
+    Supervisor -->|"spawn / restart"| Server
 ```
 
 ### 详细图（含共享存储与内部组件）
@@ -134,7 +133,6 @@ flowchart TB
     subgraph Client["Client Machine (Online)"]
         CLI["bifrost CLI<br/>(人/脚本手动使用)"]
         MCP["MCP Server<br/>(bifrost mcp-serve)<br/>Agent 集成: Hermes/OpenCode/...<br/>(内部复用 CLI 逻辑)"]
-        CTL["bifrost-ctl.sh<br/>(跨机器控制)"]
     end
 
     subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
@@ -143,11 +141,10 @@ flowchart TB
         STA["status/<br/>进度更新"]
         ART["artifacts/<br/>执行产物"]
         HB["heartbeat.json<br/>(daemon 心跳)"]
-        CTRL["control.json<br/>(supervisor 控制指令)"]
     end
 
     subgraph Daemon["Daemon Machine (Offline)"]
-        SUP["Supervisor<br/>(bifrost-supervisor.sh)<br/>崩溃自愈 + 信号控制"]
+        SUP["systemd<br/>(bifrost.service)<br/>Restart=on-failure"]
         WT["File Watcher<br/>(inotify + 100ms 兜底)"]
         EX["Executor<br/>(tokio async)"]
         LOG["Log Manager"]
@@ -165,10 +162,7 @@ flowchart TB
     RES -->|"轮询结果"| CLI
     RES -->|"轮询结果"| MCP
     HB -->|"健康检查"| CLI
-    CTL -->|"写 control.json"| CTRL
-    CTRL -->|"读取并执行<br/>(restart/stop/status)"| SUP
     SUP -->|"spawn/监控"| WT
-    SUP -->|"写 status.json"| CTRL
 ```
 
 ## 工作流
@@ -178,7 +172,7 @@ sequenceDiagram
     participant C as Client（联网）
     participant M as MCP Server（Agent）
     participant S as 共享存储
-    participant V as Supervisor（离线）
+    participant V as systemd（离线）
     participant D as Daemon（离线）
 
     Note over C,M: 二选一：人或脚本用 CLI，Agent 用 MCP。<br/>MCP Server 内部复用 Client 的提交/查询逻辑，<br/>两者不是并行角色。
@@ -193,10 +187,7 @@ sequenceDiagram
     Note over C: 轮询结果文件（0.2s 间隔，<br/>GPFS 上一次 stat，无子进程开销）
     C->>S: 读 results/{task_id}_result.json（CLI）
     M->>S: 读 results/{task_id}_result.json（Agent 经 MCP）
-    Note over V: 每 2s 检查 server 存活<br/>崩溃自动拉起（指数退避）
-    V->>S: 读 control.json（跨机器指令）
-    Note over V: 执行 restart/stop/status 指令
-    V->>S: 写 status.json（状态回写）
+    Note over V: Restart=on-failure 把 daemon 拉回来
 ```
 
 ## 目录结构
@@ -217,11 +208,7 @@ sequenceDiagram
 │       ├── stderr.log
 │       └── metadata.json
 ├── heartbeat.json         # Daemon 健康状态
-├── control.json           # 跨机器控制指令（bifrost-ctl.sh 写，supervisor 读）
-├── status.json            # supervisor 状态回写（bifrost-ctl.sh status 读）
-├── supervisor.pid         # supervisor 进程 PID
-├── server.pid             # daemon server 进程 PID
-└── server.log             # supervisor + server 日志
+└── .processing/           # 抢占中任务的标记（过期的会被回收）
 ```
 
 ## 环境要求
@@ -269,8 +256,7 @@ env_vars:
 
 > 构建产物的位置可能被 `CARGO_TARGET_DIR` 或 `target-dir` 配置改掉。脚本请用
 > `scripts/build/find-binary.sh [release|debug]` 取真实路径，不要写死 `target/release/bifrost`：
-> 它让 cargo 自己报告产物（`--message-format=json`）。`deploy.sh` / `restart_server.sh` /
-> `systemd-setup.sh` 都已改成这样。
+> 它让 cargo 自己报告产物（`--message-format=json`）。`scripts/build/build.sh` 与各部署脚本都是这样。
 
 编译需要 Rust 1.70+。如果没有 Rust 工具链，可以在任意有 Rust 的机器上编译，然后分发单一二进制文件（静态编译，无运行时依赖）。
 
@@ -681,133 +667,35 @@ pip install pytest pytest-json-report pytest-cov
 
 ---
 
-## 部署矩阵与发布流程
+## 发布与更新
 
-> 一个 bifrost 二进制，跑 4 类角色：**Client CLI**、**Daemon Server**、**MCP Server**、**Supervisor**。
-> 发布新版本时，不同角色的更新方式不同，下面统一交代。
+一个二进制跑四类角色：Client CLI、Daemon Server、MCP Server，以及（可选的）systemd 充当 supervisor。
+更新时真正要紧的是搞清楚哪几个是常驻进程：
 
-### 部署矩阵
-
-| 角色 | 跑在哪 | 谁启动 | 配置来源 | 是否需要"安装" |
-|---|---|---|---|---|
-| **Client CLI** | 联网机（本机） | 手动/脚本 | `BIFROST_CONFIG` 或 `~/.bifrost/settings.json` | 仅二进制在共享存储，无需安装 |
-| **Daemon Server** | 离线机 | Supervisor 或 systemd | `-c <config>` 或 `~/.bifrost/settings.json` | 二进制 + working_dir |
-| **MCP Server** | 联网机（Agent 侧） | Agent（Hermes/OpenCode…）自动拉起 | `BIFROST_CONFIG` 环境变量 | 无（Agent 配置指向二进制） |
-| **Supervisor** | 离线机 | `bifrost-supervisor.sh start` 或 crontab @reboot | 内置路径常量 | 脚本 + 二进制 |
-
-### 发布流程（新版本）
-
-```bash
-# 1. 在联网机编译
-cd bifrost
-cargo build --release
-
-# 2. 二进制产物（共享存储，两端都能访问）
-ls -lh target/release/bifrost
-#    -> /gpfs/gcsp/liuxin/bifrost/target/release/bifrost
-```
-
-### 发布后各角色更新方式
-
-| 角色 | 需要更新吗 | 怎么更新 | 说明 |
-|---|---|---|---|
-| **Client CLI** | ✅ | 无需操作 | 每次调用都重新 exec 二进制，自动用新版 |
-| **MCP Server** | ✅ | **必须 kill 旧 mcp-serve 进程** | 常驻进程，改 binary 后 Agent 不会自动重启；kill 后下次调用自动拉起新版（⚠️ 最常见遗漏点） |
-| **Daemon Server** | ✅ | `scripts/ops/bifrost-ctl.sh restart`（本机）或 `kill -HUP <supervisor_pid>`（跨机） | Supervisor 负责 kill 旧 + 起新 |
-| **Supervisor** | ⚠️ 仅当脚本本身改了 | 重启 supervisor：`scripts/ops/bifrost-supervisor.sh restart` | 脚本更新才需要，binary 更新不需要动 supervisor |
-
-### 更新检查清单
-
-```
-编译新 binary 后：
-1. ✅ Client CLI    - 自动生效（无状态）
-2. ⚠️ MCP Server   - 必须 kill 旧 mcp-serve（Hermes: pkill -f "bifrost mcp-serve"）
-3. 🔄 Daemon Server - scripts/ops/bifrost-ctl.sh restart（跨机器，无需 SSH）
-4. ⏹️ Supervisor    - 二进制更新无需动；脚本更新才 restart
-```
-
-### 跨机器控制（无需 SSH）
-
-```bash
-# 本机运行，通过共享存储上的 control.json 控制远端 server
-scripts/ops/bifrost-ctl.sh restart    # 重启远端 daemon（编译后必做）
-scripts/ops/bifrost-ctl.sh status     # 查询状态（回写 status.json）
-scripts/ops/bifrost-ctl.sh stop       # 关闭
-```
-
-> 详细运维记录见 [docs/ops-practice.md](docs/ops-practice.md)。
-
----
-
-## Supervisor 守护进程部署
-
-Supervisor 是跑在**离线机（Daemon 端）**的守护脚本，管理 bifrost server 生命周期：崩溃自愈、信号控制、跨机器控制（通过共享存储上的控制文件）。推荐生产使用，替代手动启停。
-
-### 脚本一览
-
-| 脚本 | 位置 | 用途 |
+| 角色 | 跑在哪 | 换新版本后要重启吗 |
 |---|---|---|
-| `bifrost-supervisor.sh` | 离线机 | 守护进程：server 生命周期管理 |
-| `bifrost-ctl.sh` | 联网机（Client 端） | 跨机器控制（restart/stop/status） |
-| `install-supervisor-cron.sh` | 离线机 | crontab @reboot 开机自启 |
-| `restart_server.sh` | 离线机 | 轻量版一键重启（无 supervisor 时用） |
-
-### 部署（离线机，一次性）
+| Client CLI | 联网机 | 不用 —— 每次调用都重新 exec 二进制 |
+| MCP Server | 联网机（Agent 侧） | **要** —— 必须 kill 旧的 `mcp-serve` 进程，Agent 不会替你重启（Hermes：`pkill -f "bifrost mcp-serve"`） |
+| Daemon Server | 离线/GPU 机 | **要** —— `scripts/deploy/deploy-server.sh` 一条命令完成安装 → 重启 → 校验 |
+| systemd unit | 离线/GPU 机 | 不用 —— 由 `install-systemd.sh` 渲染，`deploy-server.sh` 会调它 |
 
 ```bash
-cd /gpfs/gcsp/liuxin/bifrost
+# 编译一次（daemon 侧要 musl 静态产物）
+scripts/build/build.sh --static --dist
 
-# 1. 启动 supervisor（后台常驻，nohup，SSH 断开不影响）
-scripts/ops/bifrost-supervisor.sh start
-#   输出: supervisor pid: <PID>  (log: .../server.log)
-
-# 2. 可选: 开机自启（系统重启后自动拉起）
-scripts/ops/install-supervisor-cron.sh
-
-# 3. 验证
-scripts/ops/bifrost-supervisor.sh status
-#    supervisor:  running (pid=<PID>)
-#    bifrost server: running (pid=<PID>)
+# 在 daemon 机器上发布（安装 + 重启 + 心跳 + smoke，失败回滚）
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
 ```
 
-### 跨机器控制（联网机，无需 SSH）
+发布检查清单：
 
-```bash
-# 通过共享存储上的 control.json 给远端 supervisor 发指令（2s 内生效）
-scripts/ops/bifrost-ctl.sh restart    # 重启远端 daemon（编译新 binary 后必做）
-scripts/ops/bifrost-ctl.sh status     # 查询状态（supervisor 回写 status.json）
-scripts/ops/bifrost-ctl.sh stop       # 关闭 server + supervisor
+```
+1. ✅ Client CLI    - 自动生效（无状态）
+2. ⚠️ MCP Server   - kill 旧的 mcp-serve 进程
+3. 🔄 Daemon       - scripts/deploy/deploy-server.sh --storage <dir>
+4. ⏹️ systemd unit - deploy-server.sh 已代为处理
 ```
 
-### 本地信号控制（离线机上，可选）
-
-```bash
-kill -HUP  <supervisor_pid>   # 重启 bifrost server
-kill -TERM <supervisor_pid>   # 关闭 server + supervisor
-kill -USR1 <supervisor_pid>   # 打印状态
-```
-
-### 健壮性特性
-
-| 特性 | 机制 |
-|---|---|
-| 长期常驻 | nohup 后台，SSH 断开不影响 |
-| 崩溃自愈 | 2s 健康检查 + 指数退避重试（上限 60s） |
-| 单实例锁 | flock 防重复启动 |
-| 日志轮转 | 5MB 自动归档，保留 3 份 |
-| 控制容错 | 坏 JSON/未知指令忽略 |
-| 优雅停止 | TERM 等 5s，超时 SIGKILL |
-| **孤儿进程防护** | setsid 启动 daemon（独立进程组）+ 进程组 kill + 启动前清理残留任务 |
-
-### 卸载
-
-```bash
-scripts/ops/bifrost-supervisor.sh stop
-# 如安装了自启，移除 crontab 行:
-# crontab -e 删除含 bifrost-supervisor 的行
-```
-
----
 ## MCP Server（Agent 接入）
 
 Bifrost 内置 **MCP（Model Context Protocol）Server**，把任务提交暴露成 stdio 上的结构化工具。**任何支持 MCP 的 Agent** —— Hermes、OpenCode、Claude Code、Cline、Cursor、Codex 或任意通用编码 Agent —— 都能直接接入并向离线 daemon 提交任务，不需要自己写文件交换的胶水代码。
@@ -1082,10 +970,9 @@ bifrost/
 scripts/
 ├── build/     build.sh（--static / --target / --profile / --dist）、find-binary.sh
 ├── deploy/    deploy-server.sh（必选 --storage）、deploy-client.sh、install-systemd.sh、
-│              deploy-h200.sh（H200 预设）、systemd-setup.sh（旧的本地私有布局）、release.sh
+│              deploy-h200.sh（H200 预设）
 ├── validate/  remote-validate.sh（10 项端到端校验）、h200-smoke.sh、health-check.sh
-├── ops/       watchdog.sh、bifrost-supervisor.sh、bifrost-ctl.sh、
-│              install-supervisor-cron.sh、restart_server.sh
+├── ops/       watchdog.sh（systemd 之外的兜底自愈，可选）
 └── examples/  quickstart.sh（可跑通的用法样例）
 ```
 

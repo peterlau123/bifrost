@@ -1,5 +1,9 @@
 # Daemon 并发能力优化与高负载排障（2026-08-04）
 
+> 注：文中提到的 `bifrost-supervisor.sh` / `bifrost-ctl.sh` / `restart_server.sh` 已删除，
+> 当前用 systemd + `scripts/deploy/deploy-server.sh` 管理 daemon。本文保留为历史记录。
+
+
 > 场景：APMM UT Workflow Phase 2 timeout 重试期间，bifrost daemon 在高并发
 > （外部 4-8 并发 × 内部并行）下反复"卡死"：心跳停更、任务堆积、结果丢失。
 > 本文记录 root cause、修复（blocking pool + 独立心跳线程）与排障经验。

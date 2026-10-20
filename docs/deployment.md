@@ -8,10 +8,10 @@
 >   last section: build in a container → install on the host, `install-systemd.sh`, `deploy-h200.sh`,
 >   plus the measured numbers.
 > - **Local private layout** (`/var/lib/bifrost` + `/etc/bifrost`, unit shipped in the repo root) — the
->   classic model behind `scripts/deploy/systemd-setup.sh`. Parts of this half describe behaviour the current
->   release does **not** implement: the Prometheus `metrics:` block in settings.json, and
->   `/usr/local/bin/bifrost-health-check.sh` (the repo ships `scripts/validate/health-check.sh`, and
->   `systemd-setup.sh` does not install it). Treat them as a template, not as shipped features.
+>   legacy layout this document grew from; nothing installs it any more (use `scripts/deploy/deploy-server.sh`).
+>   Parts of this half also describe behaviour the current release does **not** implement: the Prometheus
+>   `metrics:` block in settings.json, and `/usr/local/bin/bifrost-health-check.sh` (the repo ships
+>   `scripts/validate/health-check.sh` and nothing installs it). Treat it as a template, not as shipped features.
 
 This guide covers production deployment of Bifrost using systemd.
 
@@ -37,17 +37,19 @@ Bifrost is designed for production deployment with:
 ### Automated Installation
 
 ```bash
-# Build and install (requires root)
-sudo ./scripts/deploy/systemd-setup.sh
+# Everything in one command (requires root)
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
 ```
 
-This script:
-1. Builds release binary
-2. Installs to `/usr/local/bin/bifrost`
-3. Creates configuration in `/etc/bifrost/`
-4. Sets up data directories in `/var/lib/bifrost/`
-5. Installs systemd service
-6. Starts service
+That script:
+1. Gates the candidate binary (static link → `--version` → `warmup`)
+2. Writes the server-side settings via `bifrost server init`
+3. Installs to `/usr/local/bin/bifrost` (backing up `.old`)
+4. Renders and restarts the systemd unit (`scripts/deploy/install-systemd.sh`)
+5. Waits for a fresh heartbeat and runs one real task as a smoke test, rolling back on failure
+
+Optional flags: `--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --force`.
+The manual steps below remain as a reference for the layout this script automates.
 
 ### Manual Installation
 

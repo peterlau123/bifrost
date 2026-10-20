@@ -95,10 +95,9 @@ fi
 if [[ -z "$RESTART_CMD" ]]; then
     if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^bifrost.service'; then
         RESTART_CMD="systemctl restart bifrost"
-    elif [[ -x "$(dirname "$0")/bifrost-ctl.sh" ]]; then
-        RESTART_CMD="$(cd "$(dirname "$0")" && pwd)/bifrost-ctl.sh restart"
     else
-        echo "[watchdog] 无可用重启方式，请用 --restart 指定" >&2
+        echo "[watchdog] 没找到 bifrost.service；用 --restart '<命令>' 指定重启方式" >&2
+        echo "[watchdog] （systemd 没装的话，先跑 scripts/deploy/install-systemd.sh）" >&2
         exit 1
     fi
 fi

@@ -6,10 +6,10 @@
 >
 > - **共享盘部署**（H200 / NFS / GPFS）—— 当前生产实际在用的方式，位于文末：容器内构建 →
 >   宿主安装、`install-systemd.sh`、`deploy-h200.sh`，以及各项实测数据。
-> - **本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`，仓库根目录那份 unit）—— `scripts/deploy/systemd-setup.sh`
->   背后的经典模型。前半部分有若干内容当前版本**并未实现**：settings.json 里的 Prometheus
->   `metrics:` 配置段，以及 `/usr/local/bin/bifrost-health-check.sh`（仓库里是
->   `scripts/validate/health-check.sh`，且 `systemd-setup.sh` 并不会安装它）。请把它们当模板看，别当既有功能。
+> - **本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`，仓库根目录那份 unit）—— 这份文档早期的布局，
+>   现在已没有脚本会装它（请用 `scripts/deploy/deploy-server.sh`）。前半部分还有若干内容当前版本**并未实现**：
+>   settings.json 里的 Prometheus `metrics:` 配置段，以及 `/usr/local/bin/bifrost-health-check.sh`
+>   （仓库里是 `scripts/validate/health-check.sh`，且没有脚本会安装它）。请把它们当模板看，别当既有功能。
 
 本指南覆盖 Bifrost 的生产部署（systemd）。
 
@@ -35,17 +35,19 @@ Bifrost 面向生产部署，具备：
 ### 自动化安装
 
 ```bash
-# 编译并安装（需要 root）
-sudo ./scripts/deploy/systemd-setup.sh
+# 一条命令装完（需要 root）
+sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
 ```
 
-该脚本会：
-1. 编译 release 二进制
-2. 安装到 `/usr/local/bin/bifrost`
-3. 在 `/etc/bifrost/` 生成配置
-4. 在 `/var/lib/bifrost/` 建立数据目录
-5. 安装 systemd 服务
-6. 启动服务
+这个脚本会：
+1. 对候选二进制做门槛校验（静态链接 → `--version` → `warmup`）
+2. 用 `bifrost server init` 生成 server 侧配置
+3. 安装到 `/usr/local/bin/bifrost`（先备份 `.old`）
+4. 渲染并重启 systemd unit（`scripts/deploy/install-systemd.sh`）
+5. 等心跳刷新并真跑一条任务做 smoke，失败自动回滚
+
+可选参数：`--binary --config --prefix --service-name --gpus --no-systemd --skip-build --skip-warmup --skip-smoke --force`。
+下面的手工步骤保留作参考，方便理解脚本到底做了什么。
 
 ### 手动安装
 
