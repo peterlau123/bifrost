@@ -568,12 +568,46 @@ sudo setfacl -R -m u:10000:rwX /data/liuxin/bifrost
 sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
 ```
 
+### 装成 systemd 服务（推荐，别用手起的 daemon）
+
+手起的 `sudo bifrost server` 挂在用户 login session 的 scope 里（实测
+`/user.slice/user-1000.slice/session-1356.scope`）：SSH 一断，logind 可能顺手清掉它，
+而且没有 `Restart=` 兜底。用例：
+
+```bash
+sudo scripts/install-systemd.sh --storage /data/liuxin/bifrost
+#   OK: bifrost.service active (728908), heartbeat fresh
+systemctl status bifrost          # active + enabled（开机自启）
+journalctl -u bifrost -f          # 日志（含每次启动的 warmup 自检）
+```
+
+仓库根的 `bifrost.service` 是**本地私有布局**（`/var/lib/bifrost` + `/etc/bifrost`）的
+模板，直接套共享盘布局会启动失败（WorkingDirectory 和 `--config` 都不存在）。所以用
+`install-systemd.sh` 按 `--storage` 现场渲染，unit 里几个刻意的选择：
+
+- `KillSignal=SIGTERM` + `KillMode=mixed`：只给主进程发 SIGTERM，让 daemon 自己先杀
+  干净所有任务的进程组，超时才整组 SIGKILL（默认 control-group 会先打任务）。
+- `Restart=on-failure` + `RestartSec=5`：实测 `kill -9` 主进程后 5s 由 systemd 拉起来，
+  `NRestarts` 递增。
+- `TasksMax=4096`、**不设** `MemoryMax`：2TB 内存 / 192 核的机器，模板里的
+  `MemoryMax=8G` 会把并发 benchmark 打成 OOM。
+- **不启用** `ProtectSystem` / `NoNewPrivileges` / `PrivateTmp`：这台机器的用途就是以
+  root 跑任意命令，硬化只会制造"昨天能跑的脚本今天 permission denied"。
+
+有 unit 之后 `deploy-h200.sh` 会走 `systemctl restart`（而不是 pkill+setsid）。注意它
+会先用 `systemd-run` 把自己搬进一个 transient unit：否则脚本作为任务跑在 daemon 的
+cgroup 里，`systemctl restart` 会把部署脚本自己一起杀掉 —— setsid 挡得住 daemon 的
+进程组清理，挡不住 cgroup kill（这个坑实测撞过：连写日志的 helper 都没活下来）。
+
+副作用：部署任务本身可能**没有结果文件**（写结果前 daemon 已被重启），以
+`/tmp/bifrost-deploy.log` 和 `journalctl -u bifrost-deploy-*` 为准。
+
 ### 停止 / 重启
 
 ```bash
-# 前台：Ctrl+C 一次优雅退出（<1s），再按一次强制退出
-# 后台：kill -TERM <pid> 或 systemctl stop bifrost
-# 换二进制重启：scripts/deploy-h200.sh（备份 + 原子替换 + 起不来回滚）
+# 有 systemd：优先用 systemctl（会走上面的 KillSignal / KillMode）
+systemctl restart bifrost         # 换二进制请用 scripts/deploy-h200.sh（含校验与回滚）
+# 无 systemd：前台 Ctrl+C 一次优雅退出（<1s），再按一次强制退出；后台 kill -TERM <pid>
 ```
 
 退出时会先杀掉所有在跑任务的进程组，避免 benchmark 变成孤儿进程继续占用 GPU。
@@ -586,3 +620,7 @@ sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
     --storage /data/liuxin/bifrost --restart 'systemctl restart bifrost' \
     >> /var/log/bifrost-watchdog.log 2>&1
 ```
+
+装了 systemd unit 之后 `Restart=on-failure` 已经是第一层自愈，下面的外部看门狗只作为
+**没有 systemd 时**的兜底（或想额外覆盖"进程活着但卡死"的场景）；两者同时开不会打架，
+但要记得看门狗也是 `systemctl restart` 同一套动作。
