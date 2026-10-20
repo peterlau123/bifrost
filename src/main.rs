@@ -56,8 +56,8 @@ enum ClientCommand {
         #[arg(long, conflicts_with = "command")]
         job: Option<PathBuf>,
 
-        /// Timeout in seconds
-        #[arg(long, default_value = "300")]
+        /// Timeout in seconds (0 = use the daemon's task_timeout)
+        #[arg(long, default_value = "0")]
         timeout: u64,
 
         /// Task priority (0-255, lower is higher)
@@ -195,11 +195,17 @@ fn handle_client_mode(command: ClientCommand) {
         } => {
             let bridge = create_bridge(&settings).expect("Failed to create bridge");
 
+            let poll = settings
+                .client
+                .poll_interval
+                .unwrap_or(std::time::Duration::from_secs(2));
             if let Some(job_path) = job {
                 // Submit job from YAML
                 match load_job(&job_path) {
                     Ok(job_def) => {
-                        match bifrost::client::launcher::launch_job(&*bridge, job_def, parallel) {
+                        match bifrost::client::launcher::launch_job(
+                            &*bridge, job_def, parallel, poll,
+                        ) {
                             Ok(job_result) => {
                                 println!();
                                 println!("{}", serde_json::to_string_pretty(&job_result).unwrap());
@@ -266,9 +272,22 @@ fn handle_client_mode(command: ClientCommand) {
         }
 
         ClientCommand::Cancel { id } => {
-            println!("Cancel: {}", id);
-            println!("  Note: Task cancellation not yet implemented");
-            println!("  Requires server to support cancel signal");
+            use uuid::Uuid;
+
+            let bridge = create_bridge(&settings).expect("Failed to create bridge");
+            match Uuid::parse_str(&id) {
+                Ok(parsed_id) => match bridge.cancel_task(&parsed_id) {
+                    Ok(()) => {
+                        println!("Cancellation requested for {}", id);
+                        println!(
+                            "  The daemon kills the task's process group and reports Cancelled \
+                             (pending tasks are cancelled before they start)."
+                        );
+                    }
+                    Err(e) => eprintln!("Cancel failed: {}", e),
+                },
+                Err(e) => eprintln!("Invalid task ID format: {}", e),
+            }
         }
 
         ClientCommand::Clean {
@@ -343,6 +362,9 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool) {
 
     println!("Starting bifrost server...");
 
+    // Same resolution order as the client / MCP paths: explicit --config
+    // wins, then BIFROST_CONFIG, then ~/.bifrost/settings.json.
+    let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
     let settings = if let Some(ref config_path) = config {
         match std::fs::read_to_string(config_path) {
             Ok(content) => {

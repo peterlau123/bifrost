@@ -1,42 +1,52 @@
 // Server runner
 //
-// Robustness design (hardened):
-//   - Inotify events are the fast path, but a periodic fallback scan
-//     (every 5s) picks up tasks that inotify missed (watcher failure,
-//     event overflow, or tasks submitted before the server started).
-//     This makes the server self-healing: even with a dead watcher,
-//     new tasks are still consumed.
+// Robustness design:
+//   - Inotify events are the fast path; a low-frequency fallback scan picks
+//     up tasks inotify missed (watcher failure, event overflow, submissions
+//     made while the daemon was down). The scan thread sleeps between ticks
+//     (no busy-polling), so an idle daemon costs ~0 CPU.
 //   - Claim marker: commands/{name}.processing created atomically
-//     (create_new). Whichever path (inotify or scan) creates it first
-//     owns the task; the other skips it. Prevents double execution.
-//   - Read/parse failures are retried (up to 3x with backoff); if a
-//     task still can't be parsed, a Failed result is written so the
-//     client never sees a forever-Pending task.
+//     (create_new). Whichever path (inotify or scan) creates it first owns
+//     the task; the other skips it. A keepalive thread refreshes the marker
+//     mtime while the task runs, and markers older than
+//     `stale_marker_timeout` are reclaimed, so a crashed daemon cannot wedge
+//     a task forever.
+//   - Read/parse failures are retried (up to 3x with backoff); if a task
+//     still can't be parsed, a Failed result is written so the client never
+//     sees a forever-Pending task.
 //   - Executor errors also produce a Failed result instead of silence.
+//   - Optional GPU pool: each task gets an exclusive GPU id injected as
+//     CUDA_VISIBLE_DEVICES (unless the task sets it itself).
 use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
 use crate::core::protocol::Protocol;
 use crate::core::settings::BifrostSettings;
-use crate::daemon::executor::Executor;
+use crate::daemon::executor::{Executor, ExecutorOptions, DEFAULT_TIMEOUT_SECS};
+use crate::daemon::gpu_pool::GpuPool;
 use crate::daemon::heartbeat::Heartbeat;
 use crate::daemon::watcher::AsyncFileWatcher;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-/// Fallback scan interval: catches tasks inotify missed (watcher death,
-/// event overflow, pre-server submissions). GPFS inotify is unreliable for
-/// rename events, so keep this tight (100ms) as a safety net.
-const FALLBACK_SCAN_INTERVAL: Duration = Duration::from_millis(100);
+/// Fallback scan cadence when `daemon.scan_interval` is not configured.
+const DEFAULT_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 /// Read/parse retries with 200ms backoff.
 const MAX_READ_RETRIES: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(200);
+/// Keepalive tick for the claim marker of a running task.
+const MARKER_KEEPALIVE: Duration = Duration::from_secs(60);
 
 pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), String> {
     let ss = s.shared_storage.clone();
     let cd = ss.join("commands");
     let ld = ss.join("logs");
-    if !cd.exists() {
-        std::fs::create_dir_all(&cd).map_err(|e| format!("mkdir: {}", e))?;
+    let cancel_dir = ss.join("cancel");
+    let artifacts_dir = ss.join("artifacts");
+    for dir in [&cd, &cancel_dir, &artifacts_dir] {
+        if !dir.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+        }
     }
     // Auto-create daemon working_dir if configured but doesn't exist
     if let Some(ref wd) = s.daemon.working_dir {
@@ -47,9 +57,34 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         // Set as process cwd so tasks without explicit working_dir use this
         std::env::set_current_dir(wd).map_err(|e| format!("set_current_dir: {}", e))?;
     }
+
+    let default_timeout = s
+        .daemon
+        .task_timeout
+        .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+    let scan_interval = s.daemon.scan_interval.unwrap_or(DEFAULT_SCAN_INTERVAL);
+    let stale_after = s
+        .daemon
+        .stale_marker_timeout
+        .unwrap_or_else(|| default_timeout.saturating_mul(2));
+    let use_shell = s.daemon.use_shell.unwrap_or(true);
+    let max_retries = s.daemon.max_retries.unwrap_or(3);
+    let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
+
     let p = Arc::new(Protocol::new(ss.clone()).map_err(|e| format!("p: {}", e))?);
-    let to = s.daemon.task_timeout.unwrap_or(Duration::from_secs(300));
-    let ex = Executor::new(ld, to).map_err(|e| format!("e: {}", e))?;
+    let ex = Executor::with_options(
+        ld,
+        ExecutorOptions {
+            default_timeout,
+            use_shell,
+            max_retries,
+            cancel_dir: Some(cancel_dir.clone()),
+            artifacts_dir: Some(artifacts_dir),
+        },
+    )
+    .map_err(|e| format!("e: {}", e))?;
+    let gpu = Arc::new(GpuPool::new(gpu_ids.clone()));
+
     let mut hb = Heartbeat::new(ss.clone()).map_err(|e| format!("hb: {}\n", e))?;
     let hi = s
         .daemon
@@ -58,10 +93,9 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let hbs = sd.clone();
     let active_count = Arc::new(AtomicUsize::new(0));
     let hb_active = active_count.clone();
-    // ponytail: heartbeat 用独立 std::thread 而非 tokio::spawn —
-    // write_heartbeat 是 GPFS 同步写 (fs::write), 放在 tokio worker 上
-    // 会被高并发任务饥饿 (阻塞 syscall 占满 worker), 表现为心跳停更。
-    // 独立线程与任务线程池隔离, 心跳永远按时写。
+    // The heartbeat runs on its own std::thread (not tokio::spawn): a GPFS
+    // synchronous write on an async worker gets starved at high concurrency
+    // and the heartbeat stops updating.
     std::thread::spawn(move || loop {
         if hbs.load(Ordering::Relaxed) {
             break;
@@ -77,19 +111,15 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         .watch_async()
         .await;
 
-    // 并发执行: 尊重 max_concurrent 配置 (README 示例默认 10)
+    // Concurrency: max_concurrent tasks at once (README default 10).
     let mc = s.daemon.max_concurrent.unwrap_or(10).clamp(1, 100);
     let sem = Arc::new(tokio::sync::Semaphore::new(mc));
 
-    // 2026-08-08 深修: fallback scan 从 tokio::select + tokio::time::sleep 改为
-    // 独立 std::thread (与心跳线程同机制)。根因: H20 (VM) 时钟漂移下
-    // tokio time driver 的 sleep 永不触发 → scan 分支死 → 新任务不消费 (假活,
-    // 心跳独立线程正常)。std::thread::sleep 实测正常 (心跳 60s 持续更新)。
-    // scan 线程负责: 周期扫描 commands/ + spawn 任务 (通过 tokio Handle)。
-    //
-    // 2026-08-08 彻底修复: std::thread::sleep 在 H20 时钟冻结时也会永久卡住
-    // (nanosleep deadline 依赖 CLOCK_MONOTONIC, VM 时钟冻结后不返回)
-    // → scan 线程死亡 → 假活复发。改忙轮询 + yield (不依赖时钟, 永不卡死)。
+    // Fallback scan: a dedicated thread that sleeps between ticks. It used to
+    // busy-poll with yield_now() to survive a frozen CLOCK_MONOTONIC on H20
+    // VMs, but that burned a full core on every daemon. The watcher remains
+    // the event-driven fast path, and the keepalive + stale reclaim below make
+    // a missed scan recoverable instead of fatal.
     {
         let cd_s = cd.clone();
         let p_s = p.clone();
@@ -97,35 +127,36 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         let sem_s = sem.clone();
         let ac_s = active_count.clone();
         let sd_s = sd.clone();
+        let gpu_s = gpu.clone();
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
-            let mut tick = 0u32;
             while !sd_s.load(Ordering::Relaxed) {
-                tick = tick.wrapping_add(1);
-                // 降频: 每 10000 次 yield (~10ms) scan 一次 — 无 sleep 无时钟依赖
-                if tick.is_multiple_of(10_000) {
-                    let paths = scan_pending(&cd_s);
-                    for path in paths {
+                reclaim_stale_markers(&cd_s, stale_after);
+                // No point scanning when every slot is busy.
+                if sem_s.available_permits() > 0 {
+                    for path in scan_pending(&cd_s) {
                         let p2 = p_s.clone();
                         let ex2 = ex_s.clone();
                         let sem2 = sem_s.clone();
                         let ac2 = ac_s.clone();
+                        let gpu2 = gpu_s.clone();
                         let h = handle.clone();
-                        // spawn_task 内部有 semaphore acquire + tokio::spawn
                         h.spawn(async move {
-                            spawn_task(p2, ex2, sem2, ac2, path);
+                            spawn_task(p2, ex2, sem2, ac2, gpu2, path);
                         });
                     }
                 }
-                std::thread::yield_now();
+                std::thread::sleep(scan_interval);
             }
         });
     }
     println!(
-        "Server ready, watching {} (max_concurrent={}, fallback scan {}s)",
+        "Server ready, watching {} (max_concurrent={}, scan={}ms, shell={}, gpus={:?})",
         cd.display(),
         mc,
-        FALLBACK_SCAN_INTERVAL.as_secs()
+        scan_interval.as_millis(),
+        use_shell,
+        gpu_ids
     );
 
     // Initial catch-up: tasks submitted before the server started
@@ -136,6 +167,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             ex.clone(),
             sem.clone(),
             active_count.clone(),
+            gpu.clone(),
             path,
         );
     }
@@ -146,7 +178,7 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         }
         tokio::select! {
             Some(path) = rx.recv() => {
-                spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), path);
+                spawn_task(p.clone(), ex.clone(), sem.clone(), active_count.clone(), gpu.clone(), path);
             }
         }
     }
@@ -161,14 +193,13 @@ fn spawn_task(
     ex: Executor,
     sem: Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicUsize>,
-    path: std::path::PathBuf,
+    gpu: Arc<GpuPool>,
+    path: PathBuf,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire().await;
         // Claim marker: atomic create_new - whoever creates it first owns
         // the task. .processing is excluded from scans, so no re-entry.
-        // ponytail: create_new on GPFS is a blocking syscall; run in the
-        // blocking pool so a slow GPFS open can't stall async workers.
         let marker = path.with_extension("processing");
         let marker_for_claim = marker.clone();
         let claimed = tokio::task::spawn_blocking(move || {
@@ -181,12 +212,20 @@ fn spawn_task(
         .await
         .unwrap_or(false);
         if !claimed {
-            return; // already claimed by another event/scan
+            return; // already claimed by another event/scan (or stale marker)
         }
 
+        // Refresh the marker mtime while we run so the stale reclaimer does
+        // not steal a legitimately long task.
+        let stop_keepalive = Arc::new(AtomicBool::new(false));
+        let keepalive = spawn_marker_keepalive(marker.clone(), stop_keepalive.clone());
+
         active.fetch_add(1, Ordering::Relaxed);
-        let result = process_one(&p, &ex, &path).await;
+        let result = process_one(&p, &ex, &gpu, &path).await;
         active.fetch_sub(1, Ordering::Relaxed);
+
+        stop_keepalive.store(true, Ordering::Relaxed);
+        let _ = keepalive.join();
         let _ = std::fs::remove_file(&marker);
 
         if let Err(e) = result {
@@ -197,11 +236,12 @@ fn spawn_task(
 
 /// Read, parse, execute one task file and write the result back.
 /// Never leaves a task in a forever-Pending state: parse failures and
-/// executor errors both produce a Failed TaskResult.
+/// executor errors both produce a terminal TaskResult.
 async fn process_one(
     p: &Arc<Protocol>,
     ex: &Executor,
-    path: &std::path::Path,
+    gpu: &Arc<GpuPool>,
+    path: &Path,
 ) -> Result<(), String> {
     let task = match read_task_retry(path).await {
         Some(t) => t,
@@ -210,25 +250,51 @@ async fn process_one(
                 "cannot parse task file (after {} retries)",
                 MAX_READ_RETRIES
             );
-            // 双通道竞态防线：watcher 事件 + fallback scan 都可能把同一
-            // 任务提交给 spawn_task。第一个处理者完成后 claim marker
-            // (.processing) 被删除，排队中的第二个事件会重新 claim 成功，
-            // 但任务文件已被 remove_task 消费——此时若写 Failed result
-            // 会**覆盖已完成的结果**（2026-08-24 e2e job J1/J4 根因）。
-            // 文件不存在 = 已被消费，静默跳过；文件存在但解析失败才写 Failed。
+            // Dual-channel race guard: watcher event + fallback scan can both
+            // hand the same file to spawn_task. After the first handler
+            // finishes it deletes the .json, so a second claim that fails to
+            // read must NOT write a Failed result over the real one.
             if !path.exists() {
                 return Ok(());
             }
             write_failed_result(p, path, &err).await;
-            return Ok(()); // handled: Failed result written
+            return Ok(());
         }
     };
 
     let tid = task.task_id;
+
+    // Cancel requested while the task was still queued?
+    if p.has_cancel(&tid) {
+        write_terminal_result(
+            p,
+            &task,
+            TaskStatus::Cancelled,
+            "cancelled before execution",
+        )
+        .await;
+        p.clear_cancel(&tid);
+        return Ok(());
+    }
+
     let p1 = p.clone();
     let _ = blocking_write(move || p1.write_status(&tid, &TaskStatus::Running, Some("executing")))
         .await;
-    match ex.execute(&task).await {
+
+    // Optional GPU allocation: one task per GPU id, injected as
+    // CUDA_VISIBLE_DEVICES unless the task already pins one.
+    let mut task_for_exec = task.clone();
+    let mut _gpu_lease = None;
+    if gpu.is_enabled() && !task_for_exec.env_vars.contains_key("CUDA_VISIBLE_DEVICES") {
+        if let Some(lease) = gpu.clone().acquire().await {
+            task_for_exec
+                .env_vars
+                .insert("CUDA_VISIBLE_DEVICES".to_string(), lease.gpu_id.to_string());
+            _gpu_lease = Some(lease);
+        }
+    }
+
+    match ex.execute(&task_for_exec).await {
         Ok(r) => {
             let m = match r.status {
                 TaskStatus::Completed => Some("ok"),
@@ -237,9 +303,6 @@ async fn process_one(
             let r_status = r.status.clone();
             let r_dur = r.duration_ms();
             println!("  {}: {} ({}ms)", tid, r_status, r_dur);
-            // ponytail: result/status/remove 都是 GPFS atomic_write (flock +
-            // write + rename), 阻塞 syscall 移到 blocking pool, 避免高并发
-            // 时占满 async worker 导致心跳/其他任务饥饿。
             let p2 = p.clone();
             let _ = blocking_write(move || p2.write_result(&tid, &r)).await;
             let p3 = p.clone();
@@ -286,7 +349,93 @@ async fn process_one(
     Ok(())
 }
 
-/// Run a blocking Protocol/GPFS write on the blocking pool.
+/// Write a terminal result + status and consume the task file.
+async fn write_terminal_result(p: &Arc<Protocol>, task: &Task, status: TaskStatus, message: &str) {
+    let tid = task.task_id;
+    let now = chrono::Utc::now();
+    let msg = message.to_string();
+    let result = TaskResult {
+        task_id: tid,
+        status: status.clone(),
+        output: TaskOutput {
+            stdout: String::new(),
+            stderr: msg.clone(),
+            exit_code: None,
+        },
+        command: task.command.clone(),
+        start_time: now,
+        end_time: now,
+        duration_ms: 0,
+        retries_used: 0,
+        artifacts: Vec::new(),
+        error_message: Some(msg.clone()),
+    };
+    let p1 = p.clone();
+    let _ = blocking_write(move || p1.write_result(&tid, &result)).await;
+    let p2 = p.clone();
+    let status2 = status.clone();
+    let msg2 = msg.clone();
+    let _ = blocking_write(move || p2.write_status(&tid, &status2, Some(msg2.as_str()))).await;
+    let p3 = p.clone();
+    let _ = blocking_write(move || p3.remove_task(&tid)).await;
+}
+
+/// Touch a task's claim marker every MARKER_KEEPALIVE until stopped.
+fn spawn_marker_keepalive(marker: PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        // Sleep in 1s slices so shutdown does not wait a full keepalive tick.
+        while !stop.load(Ordering::Relaxed) {
+            let mut waited = Duration::ZERO;
+            while waited < MARKER_KEEPALIVE {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+                waited += Duration::from_secs(1);
+            }
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&marker) {
+                let _ = f.set_modified(SystemTime::now());
+            }
+        }
+    })
+}
+
+/// Delete claim markers left behind by a crashed/killed daemon.
+///
+/// A marker older than `stale_after` whose owning process is gone means the
+/// task will never execute again (scans skip `.processing`, so nothing ever
+/// re-claims it). Removing the marker makes the task claimable again.
+fn reclaim_stale_markers(commands_dir: &Path, stale_after: Duration) {
+    let Ok(entries) = std::fs::read_dir(commands_dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".processing") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let age = now.duration_since(modified).unwrap_or_default();
+        if age < stale_after {
+            continue;
+        }
+        let task_path = entry.path().with_extension("json");
+        if task_path.exists() {
+            eprintln!(
+                "reclaiming stale claim marker {} (idle {}s) - task will re-run",
+                name,
+                age.as_secs()
+            );
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+/// Run a blocking Protocol/shared-fs write on the blocking pool.
 async fn blocking_write<F, R>(f: F) -> Option<R>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -298,8 +447,6 @@ where
 /// Read + parse a task file with retries. Returns None when it still fails.
 async fn read_task_retry(path: &std::path::Path) -> Option<Task> {
     for attempt in 0..MAX_READ_RETRIES {
-        // ponytail: fs::read_to_string on GPFS is a blocking syscall; run in
-        // the blocking pool so a slow read can't stall async workers.
         let p = path.to_path_buf();
         let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(&p))
             .await
@@ -431,18 +578,144 @@ mod tests {
         std::fs::write(&path, "{}").unwrap();
         let marker = path.with_extension("processing");
 
-        // 第一次创建成功 (领取)
         let first = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&marker);
         assert!(first.is_ok(), "第一次领取应成功");
-        // 第二次创建失败 (已被领取 → 去重)
         let second = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&marker);
         assert!(second.is_err(), "第二次领取必须失败 (防重复执行)");
+    }
+
+    /// 修复项 5：陈旧的 claim marker 必须被回收，否则任务永久卡死。
+    #[test]
+    fn test_reclaim_stale_markers() {
+        let tmp = TempDir::new().unwrap();
+        let cd = tmp.path().join("commands");
+        std::fs::create_dir_all(&cd).unwrap();
+        let task = cd.join("20260731_103000_550e8400-e29b-41d4-a716-446655440000.json");
+        std::fs::write(&task, "{}").unwrap();
+        let marker = task.with_extension("processing");
+        std::fs::write(&marker, "").unwrap();
+
+        // 新鲜 marker 不能被回收
+        reclaim_stale_markers(&cd, Duration::from_secs(3600));
+        assert!(marker.exists(), "未过期的 marker 不应被删除");
+
+        // 把 mtime 拨回 2 小时前
+        let old = SystemTime::now() - Duration::from_secs(7200);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+
+        reclaim_stale_markers(&cd, Duration::from_secs(3600));
+        assert!(!marker.exists(), "过期 marker 应被回收，任务重新可领取");
+        assert!(task.exists(), "回收 marker 不应删除任务文件本身");
+    }
+
+    /// 修复项 6：排队中的任务被 cancel 时直接写 Cancelled 结果。
+    #[tokio::test]
+    async fn test_cancel_before_execution() {
+        let tmp = TempDir::new().unwrap();
+        let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
+        let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(30)).unwrap();
+        let gpu = Arc::new(GpuPool::new(vec![]));
+
+        let task = Task::new("echo hi".into(), crate::core::models::TaskType::Shell);
+        let tid = task.task_id;
+        p.submit_task(&task).unwrap();
+        p.request_cancel(&tid).unwrap();
+
+        let path = tmp.path().join("commands").join(format!(
+            "{}_{}.json",
+            task.timestamp.format("%Y%m%d_%H%M%S"),
+            tid
+        ));
+        process_one(&p, &ex, &gpu, &path).await.unwrap();
+
+        let result_file = tmp
+            .path()
+            .join("results")
+            .join(format!("{}_result.json", tid));
+        let r: TaskResult =
+            serde_json::from_str(&std::fs::read_to_string(result_file).unwrap()).unwrap();
+        assert_eq!(r.status, TaskStatus::Cancelled);
+        assert!(!p.has_cancel(&tid), "cancel 请求处理完应清理");
+    }
+
+    /// 修复项 4：GPU 池开启时任务应拿到 CUDA_VISIBLE_DEVICES。
+    #[tokio::test]
+    async fn test_gpu_pool_assigns_device() {
+        let tmp = TempDir::new().unwrap();
+        let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
+        let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(30)).unwrap();
+        let gpu = Arc::new(GpuPool::new(vec![5]));
+
+        let task = Task::new(
+            "echo \"dev=$CUDA_VISIBLE_DEVICES\"".into(),
+            crate::core::models::TaskType::Shell,
+        );
+        let tid = task.task_id;
+        p.submit_task(&task).unwrap();
+        let path = tmp.path().join("commands").join(format!(
+            "{}_{}.json",
+            task.timestamp.format("%Y%m%d_%H%M%S"),
+            tid
+        ));
+        process_one(&p, &ex, &gpu, &path).await.unwrap();
+
+        let result_file = tmp
+            .path()
+            .join("results")
+            .join(format!("{}_result.json", tid));
+        let r: TaskResult =
+            serde_json::from_str(&std::fs::read_to_string(result_file).unwrap()).unwrap();
+        assert!(
+            r.output.stdout.contains("dev=5"),
+            "stdout={}",
+            r.output.stdout
+        );
+    }
+
+    /// 任务自己指定的 CUDA_VISIBLE_DEVICES 优先于 GPU 池。
+    #[tokio::test]
+    async fn test_task_pinned_gpu_not_overridden() {
+        let tmp = TempDir::new().unwrap();
+        let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
+        let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(30)).unwrap();
+        let gpu = Arc::new(GpuPool::new(vec![5]));
+
+        let task = Task::new(
+            "echo \"dev=$CUDA_VISIBLE_DEVICES\"".into(),
+            crate::core::models::TaskType::Shell,
+        )
+        .with_env_var("CUDA_VISIBLE_DEVICES".into(), "7".into());
+        let tid = task.task_id;
+        p.submit_task(&task).unwrap();
+        let path = tmp.path().join("commands").join(format!(
+            "{}_{}.json",
+            task.timestamp.format("%Y%m%d_%H%M%S"),
+            tid
+        ));
+        process_one(&p, &ex, &gpu, &path).await.unwrap();
+
+        let result_file = tmp
+            .path()
+            .join("results")
+            .join(format!("{}_result.json", tid));
+        let r: TaskResult =
+            serde_json::from_str(&std::fs::read_to_string(result_file).unwrap()).unwrap();
+        assert!(
+            r.output.stdout.contains("dev=7"),
+            "stdout={}",
+            r.output.stdout
+        );
     }
 
     #[tokio::test]
@@ -477,18 +750,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let p = Arc::new(Protocol::new(tmp.path().to_path_buf()).unwrap());
         let ex = Executor::new(tmp.path().join("logs"), Duration::from_secs(60)).unwrap();
+        let gpu = Arc::new(GpuPool::new(vec![]));
 
-        // 任务文件已被消费（不存在）——process_one 必须静默跳过
         let tid = uuid::Uuid::new_v4();
         let path = tmp
             .path()
             .join("commands")
             .join(format!("20260731_103000_{}.json", tid));
-        // 不写文件，模拟"已被删除"
 
-        let r = process_one(&p, &ex, &path).await;
+        let r = process_one(&p, &ex, &gpu, &path).await;
         assert!(r.is_ok(), "缺失任务文件应静默返回 Ok");
-        // 绝不能写 Failed result
         let result_file = tmp
             .path()
             .join("results")

@@ -332,6 +332,19 @@ impl Bridge for SshBridge {
         // Remove both the .json command file and its .lock sidecar.
         self.remove_remote_matching("commands", task_id)
     }
+
+    /// Write a cancel request on the target machine. The daemon there runs the
+    /// same local Protocol and polls `cancel/<id>.json` while the task runs.
+    fn cancel_task(&self, task_id: &Uuid) -> Result<()> {
+        let payload = serde_json::json!({ "task_id": task_id.to_string() });
+        let dir = self.remote_dir.join("cancel");
+        self.run_remote(&format!("mkdir -p {}", sh_quote(&dir.to_string_lossy())))?;
+        let path = dir.join(format!("{}.json", task_id));
+        self.write_remote(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(&payload)?,
+        )
+    }
 }
 
 fn parse_status_string(s: &str) -> TaskStatus {

@@ -29,6 +29,8 @@ pub struct Protocol {
     status_dir: PathBuf,
     /// Directory for task artifacts
     artifacts_dir: PathBuf,
+    /// Directory for cancel request files
+    cancel_dir: PathBuf,
 }
 
 impl Protocol {
@@ -39,9 +41,16 @@ impl Protocol {
         let results_dir = shared_storage.join("results");
         let status_dir = shared_storage.join("status");
         let artifacts_dir = shared_storage.join("artifacts");
+        let cancel_dir = shared_storage.join("cancel");
 
         // Ensure all directories exist
-        for dir in [&commands_dir, &results_dir, &status_dir, &artifacts_dir] {
+        for dir in [
+            &commands_dir,
+            &results_dir,
+            &status_dir,
+            &artifacts_dir,
+            &cancel_dir,
+        ] {
             if !dir.exists() {
                 fs::create_dir_all(dir).map_err(BifrostError::IoError)?;
             }
@@ -53,6 +62,7 @@ impl Protocol {
             results_dir,
             status_dir,
             artifacts_dir,
+            cancel_dir,
         })
     }
 
@@ -233,6 +243,37 @@ impl Protocol {
         &self.shared_storage
     }
 
+    /// Get the cancel request directory path.
+    pub fn cancel_dir(&self) -> &Path {
+        &self.cancel_dir
+    }
+
+    /// Write a cancel request for a task. The daemon polls this file while the
+    /// task runs (and checks it before starting one).
+    pub fn request_cancel(&self, task_id: &Uuid) -> Result<()> {
+        if !self.cancel_dir.exists() {
+            fs::create_dir_all(&self.cancel_dir).map_err(BifrostError::IoError)?;
+        }
+        let payload = serde_json::json!({
+            "task_id": task_id.to_string(),
+            "requested_at": chrono::Utc::now().to_rfc3339(),
+        });
+        atomic_write(
+            &self.cancel_dir.join(format!("{}.json", task_id)),
+            serde_json::to_string_pretty(&payload)?.as_bytes(),
+        )
+    }
+
+    /// True when a cancel request is pending for this task.
+    pub fn has_cancel(&self, task_id: &Uuid) -> bool {
+        self.cancel_dir.join(format!("{}.json", task_id)).exists()
+    }
+
+    /// Drop a handled cancel request.
+    pub fn clear_cancel(&self, task_id: &Uuid) {
+        let _ = fs::remove_file(self.cancel_dir.join(format!("{}.json", task_id)));
+    }
+
     /// Query task status by checking results/ then status/ then commands/.
     fn query_task_status(&self, task_id: &Uuid) -> Result<TaskStatusResponse> {
         // 1. Completed? check results/
@@ -340,6 +381,10 @@ impl Bridge for Protocol {
 
     fn remove_task(&self, task_id: &Uuid) -> Result<()> {
         Protocol::remove_task(self, task_id)
+    }
+
+    fn cancel_task(&self, task_id: &Uuid) -> Result<()> {
+        self.request_cancel(task_id)
     }
 }
 

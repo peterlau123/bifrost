@@ -127,6 +127,30 @@ pub struct DaemonSection {
     pub heartbeat_interval: Option<Duration>,
     pub max_concurrent: Option<usize>,
     pub working_dir: Option<PathBuf>,
+    /// Run commands through `sh -c` so shell syntax (pipes, redirects,
+    /// `&&`, `$VAR`, trailing `&`) works. Default: true.
+    #[serde(default)]
+    pub use_shell: Option<bool>,
+    /// Fallback scan cadence for task files that inotify missed. Default: 1s.
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration"
+    )]
+    pub scan_interval: Option<Duration>,
+    /// Age after which an orphaned `.processing` claim marker counts as stale
+    /// and is reclaimed, so a crashed daemon cannot wedge a task forever.
+    /// Default: 2x task_timeout.
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration"
+    )]
+    pub stale_marker_timeout: Option<Duration>,
+    /// GPU ids handed out one task at a time; the assigned id is injected as
+    /// CUDA_VISIBLE_DEVICES (unless the task sets it itself). Empty = disabled.
+    #[serde(default)]
+    pub gpu_pool: Option<Vec<u32>>,
 }
 
 impl BifrostSettings {
@@ -156,6 +180,14 @@ impl BifrostSettings {
                 return Err(SettingsError::Duration {
                     value: c.to_string(),
                     reason: "max_concurrent must be 1-100".into(),
+                });
+            }
+        }
+        if let Some(gpus) = &self.daemon.gpu_pool {
+            if gpus.len() > 64 {
+                return Err(SettingsError::Duration {
+                    value: gpus.len().to_string(),
+                    reason: "gpu_pool supports at most 64 devices".into(),
                 });
             }
         }

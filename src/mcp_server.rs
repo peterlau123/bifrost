@@ -144,7 +144,32 @@ impl McpServer {
             "stdout": r.output.stdout,
             "stderr": r.output.stderr,
             "duration_ms": r.duration_ms(),
+            "retries_used": r.retries_used,
+            "artifacts": r.artifacts,
             "error_message": r.error_message,
+        })
+        .to_string())
+    }
+
+    /// Request cancellation of a running or pending task.
+    #[tool(
+        name = "bifrost_cancel",
+        description = "Request cancellation of a task by task_id. A running task's process group is killed; a pending task is cancelled before it starts. The task ends in Cancelled state."
+    )]
+    pub async fn cancel(
+        &self,
+        Parameters(req): Parameters<StatusRequest>,
+    ) -> Result<String, String> {
+        use uuid::Uuid;
+        let tid = Uuid::parse_str(&req.task_id).map_err(|e| format!("invalid task_id: {}", e))?;
+        let binding = self.bridge();
+        let bridge: &dyn Bridge = binding.as_ref();
+        bridge
+            .cancel_task(&tid)
+            .map_err(|e| format!("cancel failed: {}", e))?;
+        Ok(serde_json::json!({
+            "task_id": req.task_id,
+            "status": "CancelRequested",
         })
         .to_string())
     }

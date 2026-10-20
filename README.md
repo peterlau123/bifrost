@@ -438,6 +438,37 @@ bifrost server --init  # generate default settings
 | client.* | Yes | -- | Poll interval, heartbeat timeout |
 | daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
 
+#### daemon.* 详解（性能测试常用）
+
+```json
+{
+  "shared_storage": "/data/liuxin/bifrost",
+  "client": { "poll_interval": "5s" },
+  "daemon": {
+    "task_timeout": "1h30m",
+    "max_concurrent": 8,
+    "use_shell": true,
+    "scan_interval": "1s",
+    "stale_marker_timeout": "3h",
+    "max_retries": 3,
+    "gpu_pool": [0, 1, 2, 3, 4, 5, 6, 7],
+    "working_dir": "/workspace/work"
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| task_timeout | 1h30m | 任务未指定 timeout 时的默认值。**不再作为上限**：任务自己写的 `timeout` 优先 |
+| max_concurrent | 10 | 同时执行的任务数（1–100） |
+| use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行 |
+| scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU |
+| stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收——daemon 崩溃不会再让任务永久卡死 |
+| max_retries | 3 | 任务重试次数上限（任务侧 `retry_count` 取更小值）。只对非零退出重试，超时/取消不重试 |
+| gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则不覆盖） |
+
+**超时语义**：`client submit --timeout 0`（默认）= 用 daemon 的 `task_timeout`；传具体秒数则任务自己的值生效，daemon 不再钳制。
+
 ### SSH Bridge (transport = "ssh")
 
 当 Client 与目标机**没有共享文件系统**、但可通过 SSH 访问时，用 SSH 作为传输层：Client 通过 ssh 读写目标机的 `commands/ results/ status/ artifacts/` 目录，目标机上的 daemon 依旧用本地 Protocol 消费任务——两端目录语义完全一致，daemon 无需改动。
@@ -493,6 +524,8 @@ Message: Task completed in 45s
 ```bash
 bifrost client cancel <TASK_ID>
 ```
+
+实现方式：client 在共享存储写入 `cancel/<task_id>.json`，daemon 对**运行中**的任务每 300ms 轮询该文件，命中即 `SIGKILL` 整个进程组（含 `sh -c` 的孙进程），结果状态为 `Cancelled`；对**排队中**的任务则在领取后、执行前直接写 `Cancelled` 结果。任务结束后 cancel 文件自动清理。MCP 侧对应工具为 `bifrost_cancel`。
 
 ### Clean Up Old Tasks (prevent storage growth)
 

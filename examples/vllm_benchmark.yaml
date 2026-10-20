@@ -1,17 +1,25 @@
 name: vllm_benchmark
-description: vLLM serve + benchmark
+description: vLLM serve + benchmark (works with daemon.use_shell=true)
 tasks:
   - name: start_server
+    # 命令经 sh -c 执行，所以 nohup / 重定向 / & 都能用；仍建议显式 sh -c 便于移植
     command: |
-      nohup python -m vllm.entrypoints.openai.api_server
-        --model Qwen/Qwen2.5-7B-Instruct --port 8000
-        > /tmp/vllm.log 2>&1 &
-      echo "PID: $!"
-    timeout: 120
-    env_vars: {CUDA_VISIBLE_DEVICES: "0"}
+      sh -c 'nohup python3 -m vllm.entrypoints.openai.api_server \
+        --model /workspace/Ax/models/Qwen_Qwen3.6-35B-A3B \
+        --served-model-name test-model --port 8000 \
+        > /tmp/vllm.log 2>&1 & echo "PID: $!"'
+    timeout: 300
+    env_vars: { CUDA_VISIBLE_DEVICES: "0" }
     ignore_failure: true
+  - name: wait_ready
+    command: |
+      sh -c 'for i in $(seq 1 120); do curl -sf http://localhost:8000/v1/models && exit 0; sleep 5; done; echo "vllm not ready"; exit 1'
+    timeout: 660
   - name: throughput
-    command: python benchmark/benchmark_throughput.py --backend openai --model Qwen/Qwen2.5-7B-Instruct --api-url http://localhost:8000/v1 --num-prompts 200 --output results/throughput.json
-    timeout: 600
+    command: |
+      sh -c 'python3 benchmark/benchmark_throughput.py --backend openai \
+        --model test-model --api-url http://localhost:8000/v1 \
+        --num-prompts 200 --output results/throughput.json && cat results/throughput.json'
+    timeout: 3600
     artifacts: [results/throughput.json]
     working_dir: /workspace/vllm

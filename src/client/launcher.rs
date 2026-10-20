@@ -7,12 +7,26 @@ use crate::core::models::{Task, TaskStatus, TaskType};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const POLL: Duration = Duration::from_secs(2);
+/// Fallback poll cadence when settings don't specify client.poll_interval.
+pub const DEFAULT_POLL: Duration = Duration::from_secs(2);
+/// Grace added to a task's own timeout before the client gives up on it.
+const TIMEOUT_GRACE: u64 = 30;
+
+/// Client-side deadline for a job task. `None` when the task inherits the
+/// daemon timeout (the daemon is then the only authority on runtime).
+fn task_deadline(timeout: u64) -> Option<Duration> {
+    if timeout == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(timeout + TIMEOUT_GRACE))
+    }
+}
 
 pub fn launch_job(
     bridge: &dyn Bridge,
     job: JobDefinition,
     parallel: bool,
+    poll: Duration,
 ) -> BifrostResult<JobResult> {
     let total = job.tasks.len();
     eprintln!(
@@ -24,7 +38,7 @@ pub fn launch_job(
     let mut jr = JobResult::new(job.name.clone(), total);
 
     if parallel {
-        return launch_job_parallel(bridge, &job, &mut jr);
+        return launch_job_parallel(bridge, &job, &mut jr, poll);
     }
 
     for (i, ti) in job.tasks.iter().enumerate() {
@@ -41,14 +55,19 @@ pub fn launch_job(
         for (k, v) in &ti.env_vars {
             task = task.with_env_var(k.clone(), v.clone());
         }
+        // Declared artifacts must reach the daemon, otherwise nothing is
+        // collected and result.artifacts stays empty.
+        for a in &ti.artifacts {
+            task = task.with_artifact(a.clone());
+        }
         let tid = task.task_id;
         bridge
             .submit_task(&task)
             .map_err(|e| BifrostError::ConfigInvalid(format!("submit: {}", e)))?;
         let start = Instant::now();
-        let limit = Duration::from_secs(ti.timeout + 30);
+        let limit = task_deadline(ti.timeout);
         loop {
-            if start.elapsed() > limit {
+            if limit.is_some_and(|l| start.elapsed() > l) {
                 jr.record_task(JobTaskResult {
                     name: ti.name.clone(),
                     task_id: tid,
@@ -65,7 +84,7 @@ pub fn launch_job(
             match status::query_status(bridge, tid) {
                 Ok(s) => match s.status {
                     TaskStatus::Pending | TaskStatus::Running => {
-                        std::thread::sleep(POLL);
+                        std::thread::sleep(poll);
                     }
                     _ => {
                         let r = fetch_result(bridge, ti, tid, start.elapsed());
@@ -75,7 +94,7 @@ pub fn launch_job(
                     }
                 },
                 Err(BifrostError::TaskNotFound(_)) => {
-                    std::thread::sleep(POLL);
+                    std::thread::sleep(poll);
                 }
                 Err(e) => {
                     jr.record_task(JobTaskResult {
@@ -108,6 +127,7 @@ fn launch_job_parallel(
     bridge: &dyn Bridge,
     job: &JobDefinition,
     jr: &mut JobResult,
+    poll: Duration,
 ) -> BifrostResult<JobResult> {
     // 1. Submit all tasks immediately
     let mut pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
@@ -122,6 +142,9 @@ fn launch_job_parallel(
         for (k, v) in &ti.env_vars {
             task = task.with_env_var(k.clone(), v.clone());
         }
+        for a in &ti.artifacts {
+            task = task.with_artifact(a.clone());
+        }
         let tid = task.task_id;
         bridge
             .submit_task(&task)
@@ -131,13 +154,12 @@ fn launch_job_parallel(
     }
 
     // 2. Poll all until every task reaches terminal state
-    let deadline_grace = 30u64;
     while !pending.is_empty() {
-        std::thread::sleep(POLL);
+        std::thread::sleep(poll);
         let mut still_pending: Vec<(usize, String, Uuid, Instant, u64)> = Vec::new();
         for (i, name, tid, start, timeout) in pending.drain(..) {
-            let limit = Duration::from_secs(timeout + deadline_grace);
-            if start.elapsed() > limit {
+            let limit = task_deadline(timeout);
+            if limit.is_some_and(|l| start.elapsed() > l) {
                 jr.record_task(JobTaskResult {
                     name: name.clone(),
                     task_id: tid,
@@ -308,7 +330,7 @@ mod tests {
             }],
         };
         let (bridge, submitted) = MockBridge::new();
-        let jr = launch_job(&bridge, job, false).unwrap();
+        let jr = launch_job(&bridge, job, false, DEFAULT_POLL).unwrap();
         assert_eq!(jr.completed_tasks, 1);
         let t = submitted.lock().unwrap()[0].clone();
         assert_eq!(t.working_dir, PathBuf::from("/tmp"), "working_dir 必须传递");
@@ -319,5 +341,58 @@ mod tests {
         );
         assert_eq!(t.priority, 5);
         assert_eq!(t.timeout, 30);
+    }
+
+    /// 修复项 7：YAML 里声明的 artifacts 必须传到 Task 上，否则 daemon
+    /// 无从收集，result.artifacts 永远为空。
+    #[test]
+    fn test_launch_job_passes_artifacts() {
+        let job = JobDefinition {
+            name: "a".into(),
+            description: None,
+            tasks: vec![JobTask {
+                name: "produce".into(),
+                command: "echo hi > report.json".into(),
+                timeout: 30,
+                priority: 0,
+                working_dir: Some(PathBuf::from("/tmp")),
+                env_vars: Default::default(),
+                artifacts: vec!["report.json".to_string(), "metrics.json".to_string()],
+                ignore_failure: false,
+                metadata: Default::default(),
+            }],
+        };
+        let (bridge, submitted) = MockBridge::new();
+        let _ = launch_job(&bridge, job, false, DEFAULT_POLL).unwrap();
+        let t = submitted.lock().unwrap()[0].clone();
+        assert_eq!(
+            t.artifacts_expected,
+            vec!["report.json".to_string(), "metrics.json".to_string()],
+            "artifacts 必须从 YAML 传递到 Task"
+        );
+    }
+
+    /// 并行模式同样要传 artifacts。
+    #[test]
+    fn test_launch_job_parallel_passes_artifacts() {
+        let job = JobDefinition {
+            name: "p".into(),
+            description: None,
+            tasks: vec![JobTask {
+                name: "produce".into(),
+                command: "true".into(),
+                timeout: 30,
+                priority: 0,
+                working_dir: None,
+                env_vars: Default::default(),
+                artifacts: vec!["out.bin".to_string()],
+                ignore_failure: false,
+                metadata: Default::default(),
+            }],
+        };
+        let (bridge, submitted) = MockBridge::new();
+        let _ = launch_job(&bridge, job, true, DEFAULT_POLL).unwrap();
+        let t = submitted.lock().unwrap()[0].clone();
+        assert_eq!(t.artifacts_expected, vec!["out.bin".to_string()]);
     }
 }

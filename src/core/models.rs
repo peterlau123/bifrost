@@ -138,7 +138,8 @@ impl Task {
             command,
             task_type,
             priority: 0,
-            timeout: 300,
+            // 0 = inherit the daemon's task_timeout
+            timeout: 0,
             retry_count: 3,
             env_vars: HashMap::new(),
             working_dir: PathBuf::from("."),

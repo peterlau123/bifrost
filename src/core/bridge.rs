@@ -83,4 +83,15 @@ pub trait Bridge: Send + Sync {
 
     /// Remove a task after it has been processed.
     fn remove_task(&self, task_id: &Uuid) -> Result<()>;
+
+    // ── Both sides ────────────────────────────────────────────────
+
+    /// Request cancellation of a task. Transports that cannot signal the
+    /// target machine return an error rather than pretending it worked.
+    fn cancel_task(&self, task_id: &Uuid) -> Result<()> {
+        let _ = task_id;
+        Err(BifrostError::ConfigInvalid(
+            "task cancellation is not supported by this transport".into(),
+        ))
+    }
 }
