@@ -493,7 +493,7 @@ bifrost warmup --storage /data/liuxin/bifrost
 #   ✓ filesystem: xfs
 #   ✓ clock: ok (sleep-driven scanning is safe)
 #   ✓ 8 GPU(s) visible via nvidia-smi
-bifrost server --storage /data/liuxin/bifrost
+bifrost server --storage /data/liuxin/bifrost --gpus 0,1,2,3,4,5,6,7
 ```
 
 ```bash
@@ -525,6 +525,15 @@ sudo chown -R <daemon_uid>:<client_gid> /data/liuxin/bifrost
 sudo setfacl -R -m u:10000:rwX /data/liuxin/bifrost
 sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
 ```
+
+### 停止 / 重启
+
+```bash
+# 前台：Ctrl+C 一次优雅退出（<1s），再按一次强制退出
+# 后台：kill -TERM <pid> 或 systemctl stop bifrost
+```
+
+退出时会先杀掉所有在跑任务的进程组，避免 benchmark 变成孤儿进程继续占用 GPU。
 
 ### 运行期自愈
 

@@ -5,10 +5,12 @@
 // stdout/stderr to log files while keeping a bounded copy for the result.
 
 use chrono::Utc;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::{sleep, timeout, Duration};
@@ -32,6 +34,36 @@ pub const DEFAULT_LOG_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_LOG_BACKUPS: usize = 1;
 /// How long to wait for the reaper / pipe drain after SIGKILL.
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Process groups of tasks currently running in this process. Used to kill
+/// children when the daemon shuts down (otherwise a benchmark keeps running
+/// and keeps holding the GPU).
+fn running_pgids() -> &'static Mutex<HashSet<i32>> {
+    static RUNNING: OnceLock<Mutex<HashSet<i32>>> = OnceLock::new();
+    RUNNING.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// SIGKILL every task process group owned by this daemon. Called on shutdown.
+pub fn kill_all_running() {
+    if let Ok(set) = running_pgids().lock() {
+        for pid in set.iter() {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-*pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+struct PidGuard(i32);
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = running_pgids().lock() {
+            set.remove(&self.0);
+        }
+    }
+}
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Tunables for the executor, derived from daemon settings.
@@ -402,6 +434,13 @@ impl Executor {
             .spawn()
             .map_err(|e| RunError::Spawn(format!("Failed to spawn process: {}", e)))?;
         let pid = child.id();
+        // Register the group so shutdown can clean it up.
+        let _pid_guard = pid.map(|p| {
+            if let Ok(mut set) = running_pgids().lock() {
+                set.insert(p as i32);
+            }
+            PidGuard(p as i32)
+        });
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
 

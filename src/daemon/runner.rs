@@ -259,8 +259,10 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         if sd.load(Ordering::Relaxed) {
             break;
         }
-        tokio::select! {
-            Some(path) = rx.recv() => {
+        // 每 500ms 醒一次：否则安静的 daemon 永远卡在 rx.recv() 上，
+        // Ctrl+C 只置了标志、没人看，进程就"杀不死"（H200 实测）。
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(path)) => {
                 spawn_task(
                     p.clone(),
                     ex.clone(),
@@ -272,6 +274,12 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                     path,
                 );
             }
+            Ok(None) => {
+                // watcher 通道关闭：不再有事件，靠兜底扫描继续消费任务。
+                eprintln!("watcher channel closed; relying on fallback scan");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(_) => {} // 超时：回到循环顶部检查 shutdown
         }
     }
     println!("Server stopped.");

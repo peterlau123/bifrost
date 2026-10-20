@@ -13,6 +13,10 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     storage: Option<PathBuf>,
 
+    /// Override daemon.gpu_pool, e.g. `--gpus 0,1,2,3`. Empty string disables.
+    #[arg(long, global = true, value_name = "ID,ID,...")]
+    gpus: Option<String>,
+
     #[command(subcommand)]
     mode: Mode,
 }
@@ -128,9 +132,14 @@ fn main() {
     }
     let cli = Cli::parse_from(argv);
     let storage = cli.storage.clone();
+    let gpus: Option<Vec<u32>> = cli.gpus.as_ref().map(|raw| {
+        raw.split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect()
+    });
 
     match cli.mode {
-        Mode::Client { command } => handle_client_mode(command, storage),
+        Mode::Client { command } => handle_client_mode(command, storage, gpus),
         Mode::Server {
             init,
             config,
@@ -143,7 +152,7 @@ fn main() {
                 }
                 return;
             }
-            handle_server_mode(config, systemd, storage);
+            handle_server_mode(config, systemd, storage, gpus);
         }
         Mode::Warmup { config } => {
             let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
@@ -164,15 +173,18 @@ fn main() {
             if let Some(dir) = storage {
                 settings.shared_storage = dir;
             }
+            if let Some(ids) = gpus {
+                settings.daemon.gpu_pool = Some(ids);
+            }
             std::process::exit(bifrost::core::warmup::run(&settings));
         }
-        Mode::McpServe { config } => handle_mcp_serve(config, storage),
+        Mode::McpServe { config } => handle_mcp_serve(config, storage, gpus),
     }
 }
 
 /// Handle MCP server mode: expose bifrost tools over stdio
 /// Config resolution order: BIFROST_CONFIG env > -c flag > ~/.bifrost/settings.json > defaults
-fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>) {
+fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>, gpus: Option<Vec<u32>>) {
     use bifrost::core::settings;
 
     // BIFROST_CONFIG env lets any MCP client (OpenCode, Claude Code, etc.)
@@ -200,6 +212,9 @@ fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>) {
     if let Some(dir) = storage {
         settings.shared_storage = dir;
     }
+    if let Some(ids) = gpus {
+        settings.daemon.gpu_pool = Some(ids);
+    }
     let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
     match rt.block_on(bifrost::mcp_server::run(settings)) {
         Ok(()) => {}
@@ -211,7 +226,7 @@ fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>) {
 }
 
 /// Handle client mode operations
-fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>) {
+fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>, gpus: Option<Vec<u32>>) {
     use bifrost::core::bridge::create_bridge;
     use bifrost::core::job::load_job;
     use bifrost::core::models::TaskType;
@@ -234,6 +249,9 @@ fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>) {
     let mut settings = settings;
     if let Some(dir) = storage {
         settings.shared_storage = dir;
+    }
+    if let Some(ids) = gpus {
+        settings.daemon.gpu_pool = Some(ids);
     }
     let shared_storage = settings.shared_storage.clone();
 
@@ -420,7 +438,12 @@ fn handle_client_mode(command: ClientCommand, storage: Option<PathBuf>) {
 }
 
 /// Handle server mode operations
-fn handle_server_mode(config: Option<PathBuf>, systemd: bool, storage: Option<PathBuf>) {
+fn handle_server_mode(
+    config: Option<PathBuf>,
+    systemd: bool,
+    storage: Option<PathBuf>,
+    gpus: Option<Vec<u32>>,
+) {
     use bifrost::core::settings;
     use bifrost::daemon::runner::run_server;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -455,6 +478,9 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool, storage: Option<Pa
     if let Some(dir) = storage {
         settings.shared_storage = dir;
     }
+    if let Some(ids) = gpus {
+        settings.daemon.gpu_pool = Some(ids);
+    }
 
     if systemd {
         println!("  Mode: systemd service");
@@ -469,10 +495,33 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool, storage: Option<Pa
         // tokio::signal::ctrl_c() integrates with tokio's select! for clean shutdown
         let sd = shutdown.clone();
         tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.ok();
-            eprintln!("\nShutdown requested...");
-            sd.store(true, Ordering::SeqCst);
+            // 第一次信号：优雅退出；第二次：直接 exit(130)。
+            // 早先只监听一次 ctrl_c，后续 SIGINT 被 handler 吞掉，
+            // 进程再也杀不掉（H200 上需要连按 ^C）。
+            loop {
+                tokio::signal::ctrl_c().await.ok();
+                if sd.load(Ordering::SeqCst) {
+                    eprintln!("Forced exit.");
+                    std::process::exit(130);
+                }
+                eprintln!("\nShutdown requested... (Ctrl+C again to force)");
+                sd.store(true, Ordering::SeqCst);
+            }
         });
+
+        #[cfg(unix)]
+        {
+            let sd_term = shutdown.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                let Ok(mut term) = signal(SignalKind::terminate()) else {
+                    return;
+                };
+                term.recv().await;
+                eprintln!("SIGTERM received - shutting down");
+                sd_term.store(true, Ordering::SeqCst);
+            });
+        }
 
         if let Err(e) = run_server(settings, shutdown).await {
             eprintln!("Server error: {}", e);
@@ -480,8 +529,8 @@ fn handle_server_mode(config: Option<PathBuf>, systemd: bool, storage: Option<Pa
     });
 
     println!("Server exited.");
-    // Force exit: spawned heartbeat/task futures may still be alive
-    // and block runtime drop. We're done — just leave.
+    // Running tasks would otherwise be orphaned (benchmark keeps burning GPU).
+    bifrost::daemon::executor::kill_all_running();
     std::process::exit(0);
 }
 

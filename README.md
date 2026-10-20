@@ -524,13 +524,14 @@ bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 
 cd /data/liuxin/Ax/bifrost
 cargo build --release                          # 产物：target/release/bifrost
 bifrost warmup  --storage /data/liuxin/bifrost # 必跑：存储可写/时钟/GPU 自检
-bifrost server  --storage /data/liuxin/bifrost # 起 daemon
+bifrost server  --storage /data/liuxin/bifrost --gpus 0,1,2,3,4,5,6,7   # 起 daemon
 
 # ── client 端（任何能看到同一目录的机器）──────────────────
 bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
 ```
 
-- `--storage` 是**全局参数**，覆盖 settings.json 的 `shared_storage`，任意子命令可用
+- `--storage` / `--gpus` 都是**全局参数**，分别覆盖 `shared_storage` 与 `daemon.gpu_pool`，任意子命令可用
+  （`--gpus` 一旦给出，并发上限自动变成 `min(max_concurrent, 卡数)`）
 - 仓库里带了两个预编译二进制（`dist/`，已 gitignore）：`bifrost-linux-x86_64` 是 **musl 静态**，
   任意 x86_64 Linux 直接跑；`-glibc` 那个要求 glibc ≥ 2.39。不确定对方系统版本时用静态版。
 - 首次运行自动建出 `commands/ results/ status/ artifacts/ logs/ cancel/`，并写 `heartbeat.json` / `scan.json`
@@ -551,6 +552,12 @@ bifrost client submit --command "make build" --working-dir /workspace/project --
 # 提交 YAML Job（多步骤顺序执行）
 bifrost client submit --job examples/quick_start.yaml
 ```
+
+### 停止服务
+
+- `Ctrl+C`（SIGINT）：优雅停机，**500ms 内退出**；再次 `Ctrl+C` 立即强制退出（exit 130）
+- `SIGTERM`（`systemctl stop` / `kill`）：同样优雅退出
+- 退出时会 **SIGKILL 所有在跑任务的进程组**，避免 benchmark 变成孤儿进程继续占 GPU
 
 ### Warmup（上线前自检，**在 server 端跑**）
 
