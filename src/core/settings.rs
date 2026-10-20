@@ -172,7 +172,11 @@ pub struct DaemonSection {
     )]
     pub stale_marker_timeout: Option<Duration>,
     /// GPU ids handed out one task at a time; the assigned id is injected as
-    /// CUDA_VISIBLE_DEVICES (unless the task sets it itself). Empty = disabled.
+    /// CUDA_VISIBLE_DEVICES (unless the task sets it itself).
+    ///
+    /// - absent  → auto-detect every GPU on the machine (`nvidia-smi`)
+    /// - `[]`    → disabled (CPU-only scheduling)
+    /// - `[0,1]` → use exactly these ids
     #[serde(default)]
     pub gpu_pool: Option<Vec<u32>>,
     /// How often a running task polls for a cancel request. Default 1s:

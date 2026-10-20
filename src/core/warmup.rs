@@ -150,14 +150,20 @@ pub fn run(settings: &BifrostSettings) -> i32 {
     match gpu_count() {
         Some(n) if n > 0 => {
             ok(&format!("{} GPU(s) visible via nvidia-smi", n));
-            if let Some(pool) = &settings.daemon.gpu_pool {
-                if !pool.is_empty() && pool.len() != n {
-                    warn(&format!(
-                        "daemon.gpu_pool has {} ids but {} GPUs visible",
-                        pool.len(),
-                        n
-                    ));
+            match &settings.daemon.gpu_pool {
+                None => ok(&format!(
+                    "gpu_pool 未配置 -> 自动使用全部 {} 张卡（可设 gpu_pool: [] 关闭）",
+                    n
+                )),
+                Some(pool) if pool.is_empty() => {
+                    warn("gpu_pool 为空 -> 不分配 GPU（任务需要自己设 CUDA_VISIBLE_DEVICES）")
                 }
+                Some(pool) if pool.len() != n => warn(&format!(
+                    "gpu_pool 配了 {} 张卡，但机器上有 {} 张",
+                    pool.len(),
+                    n
+                )),
+                Some(pool) => ok(&format!("gpu_pool 显式配置: {:?}", pool)),
             }
         }
         Some(_) => warn("nvidia-smi reports 0 GPUs"),

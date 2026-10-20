@@ -7,6 +7,43 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Parse `nvidia-smi --query-gpu=index --format=csv,noheader` output.
+fn parse_indices(stdout: &str) -> Vec<u32> {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
+/// 自动探测本机可用 GPU（返回 index 列表）。
+///
+/// 顺序：`--query-gpu=index` → 失败则数 `nvidia-smi -L` 的行数。
+/// 没有 nvidia-smi / 无卡 / 命令失败 → 空列表（等价于不启用 GPU 池）。
+pub fn detect() -> Vec<u32> {
+    use std::process::Command;
+    if let Ok(out) = Command::new("nvidia-smi")
+        .args(["--query-gpu=index", "--format=csv,noheader"])
+        .output()
+    {
+        if out.status.success() {
+            let ids = parse_indices(&String::from_utf8_lossy(&out.stdout));
+            if !ids.is_empty() {
+                return ids;
+            }
+        }
+    }
+    if let Ok(out) = Command::new("nvidia-smi").arg("-L").output() {
+        if out.status.success() {
+            let n = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| l.starts_with("GPU "))
+                .count();
+            return (0..n as u32).collect();
+        }
+    }
+    Vec::new()
+}
+
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A held GPU slot. Dropping it returns the device to the pool.
@@ -78,6 +115,27 @@ impl GpuPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_indices() {
+        assert_eq!(parse_indices("0\n1\n2\n3\n"), vec![0, 1, 2, 3]);
+        assert_eq!(parse_indices("0\n"), vec![0]);
+        assert!(parse_indices("").is_empty());
+        // 非数字行忽略，不 panic
+        assert_eq!(parse_indices("0\nN/A\n2\n"), vec![0, 2]);
+    }
+
+    /// 无 nvidia-smi 的机器上探测结果必须为空（不能凭空造卡）。
+    #[test]
+    fn test_detect_without_gpu_is_empty() {
+        if std::process::Command::new("nvidia-smi")
+            .arg("-L")
+            .output()
+            .is_err()
+        {
+            assert!(detect().is_empty());
+        }
+    }
 
     #[test]
     fn test_disabled_pool() {

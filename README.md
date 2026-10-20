@@ -470,7 +470,7 @@ bifrost server --init  # generate default settings
 | scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU；扫描线程每秒写 `scan.json`（ticks/scanned_at），可据此判断兜底扫描是否还活着 |
 | stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收。回收前校验归属：marker 内记录了 host/pid/task，本机存活进程或本进程正在跑的任务一律跳过；keepalive 自动取 `min(60s, 该值/3)` |
 | max_retries | 不限制 | 任务重试次数的**上限**（不配 = 不设上限）。重试本身是任务侧 opt-in：`client submit --retries 2` 或 YAML `retries: 2`，不写就是跑一次。只对非零退出重试，超时/取消不重试；每次尝试日志单独保存为 `stdout.attemptN.log` |
-| gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则该 id 占租约，不覆盖值）。并发上限自动取 `min(max_concurrent, 卡数)` |
+| gpu_pool | **自动** | **不配置 = 自动使用本机全部 GPU**（`nvidia-smi` 探测）。每个任务独占一张卡并注入 `CUDA_VISIBLE_DEVICES`（任务自己指定则该 id 占租约，不覆盖值）；并发上限取 `min(max_concurrent, 卡数)`。`[]` = 关闭 GPU 分配，`[0,1]` = 只用这两张 |
 | cancel_poll | 1s | 运行中任务检查 cancel 请求的间隔。1s 是可取消性与元数据开销的折中；30s 意味着跑飞的 benchmark 要空转半分钟才被杀 |
 | log_backups | 1 | 保留几个轮转备份（`.1`..`.N`，上限 9）。单流日志固定 64MB 转一次，磁盘占用上界 ≈ `64MB × (log_backups+1)`；最新内容始终在 `stdout.log` |
 | — | 固定 | 结果载荷上限 64MB（头 16MB 上下文 + 尾 48MB 汇总）——benchmark summary 在流尾，尾部权重更大；完整日志另存 `logs/<id>/` |
@@ -524,14 +524,15 @@ bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 
 cd /data/liuxin/Ax/bifrost
 cargo build --release                          # 产物：target/release/bifrost
 bifrost warmup  --storage /data/liuxin/bifrost # 必跑：存储可写/时钟/GPU 自检
-bifrost server  --storage /data/liuxin/bifrost --gpus 0,1,2,3,4,5,6,7   # 起 daemon
+bifrost server  --storage /data/liuxin/bifrost      # GPU 池自动探测本机全部卡
+# 需要限制卡范围时：--gpus 0,3,5；完全不用 GPU：--gpus "" 或配置 "gpu_pool": []
 
 # ── client 端（任何能看到同一目录的机器）──────────────────
 bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
 ```
 
 - `--storage` / `--gpus` 都是**全局参数**，分别覆盖 `shared_storage` 与 `daemon.gpu_pool`，任意子命令可用
-  （`--gpus` 一旦给出，并发上限自动变成 `min(max_concurrent, 卡数)`）
+- GPU 池默认自动探测；`--gpus` 只用于"限制范围"或"关闭"（`--gpus ""`）
 - 仓库里带了两个预编译二进制（`dist/`，已 gitignore）：`bifrost-linux-x86_64` 是 **musl 静态**，
   任意 x86_64 Linux 直接跑；`-glibc` 那个要求 glibc ≥ 2.39。不确定对方系统版本时用静态版。
 - 首次运行自动建出 `commands/ results/ status/ artifacts/ logs/ cancel/`，并写 `heartbeat.json` / `scan.json`

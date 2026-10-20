@@ -13,7 +13,8 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     storage: Option<PathBuf>,
 
-    /// Override daemon.gpu_pool, e.g. `--gpus 0,1,2,3`. Empty string disables.
+    /// Override daemon.gpu_pool, e.g. `--gpus 0,1,2,3`; `--gpus ""` disables.
+    /// Unset (default) = use every GPU on the machine.
     #[arg(long, global = true, value_name = "ID,ID,...")]
     gpus: Option<String>,
 

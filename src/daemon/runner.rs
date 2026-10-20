@@ -89,7 +89,11 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     // only a ceiling: unset means "no cap", not "no retries", so
     // `client submit --retries N` works without daemon-side config.
     let max_retries = s.daemon.max_retries.unwrap_or(u8::MAX);
-    let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
+    // gpu_pool 未配置 = 自动使用本机全部 GPU；显式配置（含空数组）= 按配置来。
+    let (gpu_ids, gpu_auto) = match s.daemon.gpu_pool.clone() {
+        Some(ids) => (ids, false),
+        None => (crate::daemon::gpu_pool::detect(), true),
+    };
     // Keepalive must fire well inside the stale window, otherwise a running
     // task can be mistaken for a crashed one.
     let keepalive = (stale_after / 3).clamp(MARKER_KEEPALIVE_MIN, MARKER_KEEPALIVE_MAX);
@@ -232,12 +236,17 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         println!("  clock: {} (sleep-driven scan)", health.summary());
     }
     println!(
-        "Server ready, watching {} (max_concurrent={}, scan={}ms, shell={}, gpus={:?})",
+        "Server ready, watching {} (max_concurrent={}, scan={}ms, shell={}, gpus={:?}{})",
         cd.display(),
         mc,
         scan_interval.as_millis(),
         use_shell,
-        gpu_ids
+        gpu_ids,
+        if gpu_auto && !gpu_ids.is_empty() {
+            " auto-detected"
+        } else {
+            ""
+        }
     );
 
     // Initial catch-up: tasks submitted before the server started

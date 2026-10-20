@@ -493,8 +493,11 @@ bifrost warmup --storage /data/liuxin/bifrost
 #   ✓ filesystem: xfs
 #   ✓ clock: ok (sleep-driven scanning is safe)
 #   ✓ 8 GPU(s) visible via nvidia-smi
-bifrost server --storage /data/liuxin/bifrost --gpus 0,1,2,3,4,5,6,7
+bifrost server --storage /data/liuxin/bifrost
 ```
+
+GPU 池默认自动探测本机全部卡；要限制范围用 `--gpus 0,1`，要关闭用 `--gpus ""`
+（或在 settings.json 写 `"gpu_pool": []`）。
 
 ```bash
 # ── client 端（同机器或任何能访问该目录的机器）────────────────────
