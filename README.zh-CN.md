@@ -39,10 +39,9 @@ Bifrost 是一个 Rust 框架，用**共享存储**作为通信通道，在离�
   - [时钟自检与兜底扫描](#时钟自检与兜底扫描)
   - [SSH 传输层](#ssh-传输层)
 - [使用](#使用)
-  - [共享目录不是 GPFS 时](#共享目录不是-gpfs-时)
+  - [共享目录与上线自检](#共享目录与上线自检)
   - [提交任务](#提交任务)
   - [停止服务](#停止服务)
-  - [Warmup 自检](#warmup-自检)
   - [查询状态](#查询状态)
   - [取消任务](#取消任务)
   - [清理历史任务](#清理历史任务)
@@ -536,17 +535,15 @@ bifrost server init --storage /mnt/gpfs/bifrost  # 生成 daemon 侧配置
 
 ## 使用
 
-### 共享目录不是 GPFS 时
+### 共享目录与上线自检
 
-bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS。H200 上典型用法：
-
-不管最后用的是 GPFS 还是别的文件系统，第一步都是 `bifrost warmup`（见 [Warmup 自检](#warmup-自检)）。
-下面这段只是把它和 H200 专有的参数放在一起。
+bifrost 只要求**两端都能读写的 POSIX 目录**，不绑定 GPFS；同一个目录在两台机器上甚至可能是不同形态
+（一边是网络挂载、一边是本地路径）。H200 上的典型用法：
 
 ```bash
 # ── H200（server 端）───────────────────────────────────────
 cd /data/liuxin/Ax/bifrost
-cargo build --release                          # 产物：target/release/bifrost
+scripts/build/build.sh --static                # 产物：dist/bifrost-linux-x86_64（musl 静态）
 bifrost warmup  --storage /data/liuxin/bifrost # 必跑：存储可写/时钟/GPU 自检
 bifrost server  --storage /data/liuxin/bifrost      # GPU 池自动探测本机全部卡
 # 需要限制卡范围时：--gpus 0,3,5；完全不用 GPU：--gpus "" 或配置 "gpu_pool": []
@@ -561,6 +558,23 @@ bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
   任意 x86_64 Linux 直接跑；`-glibc` 那个要求 glibc ≥ 2.39。不确定对方系统版本时用静态版。
 - 首次运行自动建出 `commands/ results/ status/ artifacts/ logs/ cancel/`，并写 `heartbeat.json` / `scan.json`
 - 目录若是多机共享的网络文件系统，inotify 可能丢事件 —— 兜底扫描（默认 1s）兜住，不依赖 GPFS
+
+#### 上线自检：`bifrost warmup`
+
+**每次部署的第一步，与文件系统无关** —— GPFS、NFS、Lustre、本地目录都要过一遍。在将要跑 daemon 的
+那台机器上、首次启动之前跑：
+
+```bash
+bifrost warmup --storage /data/liuxin/bifrost   # 或：bifrost --warmup
+```
+
+它检查共享存储可写性与文件系统类型、做时钟自检（`sleep()` 是否会卡死）、读现有 daemon 心跳、报 GPU
+可见性；有阻断项时退出码 1，因此可以直接当部署脚本的门槛 —— `scripts/deploy/deploy-server.sh` 就是这么做的。
+systemd unit 每次启动也会跑它（`ExecStartPost`），但上线前手工跑一次，才能在替换任何东西之前发现路径写错或时钟冻结。
+
+**为什么必须在 server 端跑**：这些检查都是"执行侧"的属性 —— 时钟冻结影响的是 daemon 的兜底扫描线程，
+GPU 只有目标机才有，可写性取决于 daemon 那个用户的权限。在 client 端跑只能证明"client 视角下共享盘可读写"，
+对定位 daemon 启动失败没有帮助（权限不同、机器不同）。
 
 ### 提交任务
 
@@ -583,20 +597,6 @@ bifrost client submit --job examples/quick_start.yaml
 - `Ctrl+C`（SIGINT）：优雅停机，**500ms 内退出**；再次 `Ctrl+C` 立即强制退出（exit 130）
 - `SIGTERM`（`systemctl stop` / `kill`）：同样优雅退出
 - 退出时会 **SIGKILL 所有在跑任务的进程组**，避免 benchmark 变成孤儿进程继续占 GPU
-
-### Warmup 自检
-
-**每次部署的第一步，与文件系统无关** —— GPFS、NFS、Lustre、本地目录都要过一遍。systemd unit 每次
-启动也会跑它（`ExecStartPost`），但首次上线前手工跑一次，才能尽早发现路径写错或时钟冻结。
-
-```bash
-# 在目标机（要跑 daemon 的那台）上执行
-bifrost warmup                     # 或 bifrost --warmup
-```
-
-检查共享存储可写性/文件系统类型、时钟自检（是否会 sleep 卡死）、现有 daemon 心跳、GPU 可见性。有阻断项时退出码 1，可直接接到部署脚本里。
-
-**为什么必须在 server 端**：这些检查都是"执行侧"的属性 —— 时钟冻结影响的是 daemon 的兜底扫描线程，GPU 只有目标机才有，存储可写性取决于 daemon 那个用户的权限。在 client 端跑只能证明"client 视角下共享盘可读写"，对定位 daemon 启动失败没有帮助（权限不同、机器不同）。
 
 ### 查询状态
 

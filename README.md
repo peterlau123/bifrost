@@ -39,10 +39,9 @@ Bifrost is a Rust framework for executing commands on offline / air-gapped machi
   - [Clock self-check and fallback scanning](#clock-self-check-and-fallback-scanning)
   - [SSH Bridge](#ssh-bridge)
 - [Usage](#usage)
-  - [Shared storage that is not GPFS](#shared-storage-that-is-not-gpfs)
+  - [Shared storage and the pre-flight check](#shared-storage-and-the-pre-flight-check)
   - [Submit Tasks](#submit-tasks)
   - [Stopping the service](#stopping-the-service)
-  - [Warmup](#warmup)
   - [Check Status](#check-status)
   - [Cancel Task](#cancel-task)
   - [Clean Up Old Tasks](#clean-up-old-tasks)
@@ -541,17 +540,16 @@ Requirements: passwordless `ssh <host>` from the client (`BatchMode=yes`). File 
 
 ## Usage
 
-### Shared storage that is not GPFS
+### Shared storage and the pre-flight check
 
-Bifrost only requires **a POSIX directory both sides can read and write**; it is not tied to GPFS. A typical H200 setup:
-
-Whichever filesystem you end up with, `bifrost warmup` is step one — see [Warmup](#warmup). The block
-below just keeps it next to the H200-specific flags.
+Bifrost only requires **a POSIX directory both sides can read and write**; it is not tied to GPFS, and
+the same directory may be a network mount on one machine and a local path on the other. A typical H200
+setup:
 
 ```bash
 # ---- on the H200 (server side) ----
 cd /data/liuxin/Ax/bifrost
-cargo build --release                          # artifact: target/release/bifrost
+scripts/build/build.sh --static                # artifact: dist/bifrost-linux-x86_64 (musl)
 bifrost warmup  --storage /data/liuxin/bifrost # required: storage / clock / GPU self-check
 bifrost server  --storage /data/liuxin/bifrost      # GPU pool auto-detects every card on the machine
 # Limit the cards with --gpus 0,3,5; disable GPUs entirely with --gpus "" or "gpu_pool": []
@@ -566,6 +564,27 @@ bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
   runs on any x86_64 Linux; the `-glibc` variant requires glibc ≥ 2.39. Use the static one when you are unsure of the target OS
 - On first run `commands/ results/ status/ artifacts/ logs/ cancel/` are created automatically, along with `heartbeat.json` / `scan.json`
 - If the directory is a network filesystem shared by several machines, inotify may drop events — the fallback scan (1s by default) covers it, so GPFS is not required
+
+#### Pre-flight check: `bifrost warmup`
+
+**Step one of every deployment, whatever the filesystem is** — GPFS, NFS, Lustre or a plain local
+directory all go through it. Run it on the machine that will host the daemon, before the first start:
+
+```bash
+bifrost warmup --storage /data/liuxin/bifrost   # or: bifrost --warmup
+```
+
+It checks shared-storage writability and filesystem type, performs the clock self-check (whether
+`sleep()` can hang), reads the existing daemon heartbeat and reports GPU visibility. It exits 1 on
+blocking findings, so it can gate a deploy script — which is exactly what
+`scripts/deploy/deploy-server.sh` does. The systemd unit also runs it on every start (`ExecStartPost`),
+but doing it once by hand catches a bad path or a frozen clock before anything is replaced.
+
+**Why it has to run on the server side:** every check is a property of the executing side — a frozen clock
+affects the daemon's fallback scan thread, the GPUs only exist on the target machine, and writability
+depends on the daemon user's permissions. Running it on the client only proves "the shared directory is
+writable from the client's point of view", which tells you nothing when the daemon fails to start
+(different user, different machine).
 
 ### Submit Tasks
 
@@ -588,21 +607,6 @@ bifrost client submit --job examples/quick_start.yaml
 - `Ctrl+C` (SIGINT): graceful shutdown, **exits within 500ms**; a second `Ctrl+C` forces an immediate exit (exit 130)
 - `SIGTERM` (`systemctl stop` / `kill`): also a graceful shutdown
 - On exit it **SIGKILLs the process group of every running task**, so benchmarks cannot survive as orphans still holding the GPUs
-
-### Warmup
-
-**Step one of every deployment, regardless of filesystem** — GPFS, NFS, Lustre or a local directory all
-go through it. The systemd unit also runs it on every start (`ExecStartPost`), but running it once by
-hand before the first launch is what catches a bad path or a frozen clock early.
-
-```bash
-# Run this on the target machine (the one that will run the daemon)
-bifrost warmup                     # or: bifrost --warmup
-```
-
-Checks shared-storage writability and filesystem type, performs the clock self-check (whether `sleep()` can hang), looks at the existing daemon heartbeat, and reports GPU visibility. It exits 1 on blocking findings, so it can be wired straight into a deploy script.
-
-**Why it has to run on the server side:** every check is a property of the executing side — a frozen clock affects the daemon's fallback scan thread, the GPUs only exist on the target machine, and writability depends on the daemon user's permissions. Running it on the client only proves "the shared directory is writable from the client's point of view", which tells you nothing when the daemon fails to start (different user, different machine).
 
 ### Check Status
 
