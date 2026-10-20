@@ -529,12 +529,15 @@ bifrost client submit --command "make build" --working-dir /workspace/project --
 bifrost client submit --job examples/quick_start.yaml
 ```
 
-### Warmup（上线前自检）
+### Warmup（上线前自检，**在 server 端跑**）
 
 ```bash
+# 在目标机（要跑 daemon 的那台）上执行
 bifrost warmup                     # 或 bifrost --warmup
 ```
 检查共享存储可写性/文件系统类型、时钟自检（是否会 sleep 卡死）、现有 daemon 心跳、GPU 可见性。有阻断项时退出码 1，可直接接到部署脚本里。
+
+**为什么必须在 server 端**：这些检查都是"执行侧"的属性 —— 时钟冻结影响的是 daemon 的兜底扫描线程，GPU 只有目标机才有，存储可写性取决于 daemon 那个用户的权限。在 client 端跑只能证明"client 视角下共享盘可读写"，对定位 daemon 启动失败没有帮助（权限不同、机器不同）。
 
 ### Check Status
 

@@ -276,5 +276,6 @@ curl -X PATCH -H "Authorization: token $TOKEN" \
 
 现成实现：
 
-- 自检：`src/daemon/clock_probe.rs`（+ `daemon.scan_mode`）
+- 自检：`bifrost warmup`（在**目标机**上跑；client 端跑只验证 client 视角）
+- 时钟探针：`src/daemon/clock_probe.rs`（+ `daemon.scan_mode`）
 - 外部看门狗：`scripts/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄）

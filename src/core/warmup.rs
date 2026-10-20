@@ -80,6 +80,8 @@ pub fn run(settings: &BifrostSettings) -> i32 {
     let mut fatal = false;
     println!("bifrost warmup");
     println!("  shared_storage: {}", settings.shared_storage.display());
+    println!("  note: run this on the SERVER (target machine that runs the daemon).");
+    println!("        On a client this only proves the client's view of the shared dir.");
 
     // 1+2. 存储可写性与文件系统
     let shared = &settings.shared_storage;
