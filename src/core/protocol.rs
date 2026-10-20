@@ -296,12 +296,14 @@ impl Protocol {
 
     /// True when a cancel request is pending for this task.
     pub fn has_cancel(&self, task_id: &Uuid) -> bool {
-        self.cancel_dir.join(format!("{}.json", task_id)).exists()
+        cancel_marker_present(&self.cancel_dir, task_id)
     }
 
-    /// Drop a handled cancel request.
+    /// Drop a handled cancel request (plus the atomic-write lock sidecar).
     pub fn clear_cancel(&self, task_id: &Uuid) {
-        let _ = fs::remove_file(self.cancel_dir.join(format!("{}.json", task_id)));
+        for ext in ["json", "lock"] {
+            let _ = fs::remove_file(self.cancel_dir.join(format!("{}.{}", task_id, ext)));
+        }
     }
 
     /// Query task status by checking results/ then status/ then commands/.
@@ -513,5 +515,21 @@ mod tests {
             vec![format!("{}.processing", ts_prefix(&tid))],
             "remove_command_file 不应删 .processing claim marker"
         );
+    }
+}
+
+/// True when `<dir>/<task_id>.json` exists.
+///
+/// 为什么不用 `Path::exists()`：共享盘是 NFS 时，目录属性缓存会把**负查找**
+/// 结果保留 `acdirmax`（默认 60s），别的主机刚写下的 cancel 文件在那段时间里
+/// `exists()` 一律返回 false —— H200 上实测取消延迟 6~59s 就是这个原因。
+/// `read_dir` 每次都会重新校验目录的 change 属性，所以能立刻看到新文件。
+pub fn cancel_marker_present(dir: &Path, task_id: &Uuid) -> bool {
+    let want = format!("{}.json", task_id);
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy() == want),
+        Err(_) => false,
     }
 }

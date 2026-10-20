@@ -521,7 +521,10 @@ impl Executor {
 
     fn clear_cancel(&self, task_id: Uuid) {
         if let Some(dir) = &self.opts.cancel_dir {
-            let _ = std::fs::remove_file(dir.join(format!("{}.json", task_id)));
+            // atomic_write leaves a .lock sidecar next to the json.
+            for ext in ["json", "lock"] {
+                let _ = std::fs::remove_file(dir.join(format!("{}.{}", task_id, ext)));
+            }
         }
     }
 
@@ -562,22 +565,25 @@ fn collect_artifacts_blocking(task: &Task, dst_dir: &Path) -> Vec<String> {
     let mut collected: Vec<String> = Vec::new();
     for declared in &task.artifacts_expected {
         let raw = Path::new(declared);
-        if raw.is_absolute() {
-            eprintln!(
-                "artifacts: refusing absolute path {} (must be under the working dir)",
-                declared
-            );
-            continue;
-        }
-        let src = base.join(raw);
-        let Ok(src_canon) = src.canonicalize() else {
+        // Absolute paths are allowed as-is: the task author can already run
+        // arbitrary commands, so copying a file they name adds no exposure.
+        // Relative paths are confined to the working dir (no `../` escapes).
+        let src_canon = if raw.is_absolute() {
+            raw.canonicalize()
+        } else {
+            match base.join(raw).canonicalize() {
+                Ok(p) if p.starts_with(&base) => Ok(p),
+                Ok(_) => {
+                    eprintln!("artifacts: {} escapes the working dir, skipped", declared);
+                    continue;
+                }
+                Err(e) => Err(e),
+            }
+        };
+        let Ok(src_canon) = src_canon else {
             eprintln!("artifacts: {} declared but not produced", declared);
             continue;
         };
-        if !src_canon.starts_with(&base) {
-            eprintln!("artifacts: {} escapes the working dir, skipped", declared);
-            continue;
-        }
         let name = src_canon
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -620,15 +626,13 @@ async fn finish_capture(task: tokio::task::JoinHandle<Capture>) -> Capture {
 /// Resolve when a cancel request file appears (never, if cancellation is off).
 async fn cancel_signal(dir: Option<PathBuf>, task_id: Uuid, poll: Duration) {
     match dir {
-        Some(d) => {
-            let path = d.join(format!("{}.json", task_id));
-            loop {
-                if path.exists() {
-                    return;
-                }
-                sleep(poll).await;
+        Some(d) => loop {
+            // readdir 而非 exists()：NFS 负查找缓存会让 exists() 延迟可达 60s。
+            if crate::core::protocol::cancel_marker_present(&d, &task_id) {
+                return;
             }
-        }
+            sleep(poll).await;
+        },
         None => std::future::pending::<()>().await,
     }
 }
@@ -1080,7 +1084,33 @@ mod tests {
         assert_eq!(r.artifacts, vec!["result.json".to_string()]);
     }
 
-    /// 绝对路径 / 越界路径的 artifact 拒绝收集。
+    /// 绝对路径 artifact 应被接受（任务作者本来就能执行任意命令）。
+    #[tokio::test]
+    async fn test_artifact_absolute_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let work = temp_dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let out = temp_dir.path().join("abs_result.json");
+        std::fs::write(&out, "{\"x\":1}").unwrap();
+        let arts = temp_dir.path().join("artifacts");
+        let ex = Executor::with_options(
+            temp_dir.path().join("logs"),
+            ExecutorOptions {
+                default_timeout: Duration::from_secs(30),
+                artifacts_dir: Some(arts.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = Task::new("true".to_string(), crate::core::models::TaskType::Shell)
+            .with_timeout(5)
+            .with_working_dir(work)
+            .with_artifact(out.display().to_string());
+        let r = ex.execute(&task).await.unwrap();
+        assert_eq!(r.artifacts, vec!["abs_result.json".to_string()]);
+    }
+
+    /// 相对路径越界（../）仍然拒绝。
     #[tokio::test]
     async fn test_artifact_path_confinement() {
         let temp_dir = TempDir::new().unwrap();

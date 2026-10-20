@@ -525,8 +525,7 @@ async fn process_one(
 
 /// Resolve when a cancel request file appears for this task.
 async fn wait_cancel(dir: &Path, task_id: uuid::Uuid, poll: Duration) {
-    let path = dir.join(format!("{}.json", task_id));
-    while !path.exists() {
+    while !crate::core::protocol::cancel_marker_present(dir, &task_id) {
         tokio::time::sleep(poll).await;
     }
 }

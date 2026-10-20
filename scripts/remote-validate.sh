@@ -8,17 +8,21 @@
 set -uo pipefail
 
 STORAGE=""
+REMOTE_STORAGE=""   # 任务命令里看到的共享目录路径（跨机时与 STORAGE 不同）
 BINARY="${BIFROST_BIN:-bifrost}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --storage) STORAGE="$2"; shift 2 ;;
+        --remote-storage) REMOTE_STORAGE="$2"; shift 2 ;;
         --binary)  BINARY="$2"; shift 2 ;;
         -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
 [[ -z "$STORAGE" ]] && { echo "必须给 --storage" >&2; exit 1; }
+# 跨机时：client 看到 /workspace/bifrost，daemon 看到 /data/liuxin/bifrost
+REMOTE_STORAGE="${REMOTE_STORAGE:-$STORAGE}"
 
 pass=0; fail=0; failed=()
 chk() { if [[ "$2" == "0" ]]; then pass=$((pass+1)); printf "  \033[32mPASS\033[0m %s\n" "$1";
@@ -90,8 +94,10 @@ s=$(wait_done "$T" 60); [[ "$s" == "Timeout" ]]; chk "per-task timeout -> Timeou
 echo "== 6. cancel 运行中任务 =="
 T=$(submit --command 'sleep 120' --timeout 180)
 sleep 2
+t0=$(date +%s)
 c cancel "$T" >/dev/null 2>&1
-s=$(wait_done "$T" 30); [[ "$s" == "Cancelled" ]]; chk "cancel -> Cancelled (${s})" $?
+s=$(wait_done "$T" 60); t1=$(date +%s)
+[[ "$s" == "Cancelled" ]]; chk "cancel -> Cancelled in $((t1-t0))s" $?
 
 echo "== 7. artifacts 收集 =="
 JOB=$(mktemp /tmp/bifrost-job.XXXXXX.yaml)
@@ -109,12 +115,16 @@ sleep 2
 ls "$STORAGE"/artifacts/*bifrost_artifact.json >/dev/null 2>&1; chk "artifact copied to shared artifacts/" $?
 
 echo "== 8. 默认不重试 / 显式重试 =="
-M=/tmp/bifrost_attempts_$$
-T=$(submit --command "echo x >> $M; exit 3")
+# marker 必须落在共享盘：任务在 H200 上执行，client 在另一台机器
+mkdir -p "$STORAGE/tmp"
+M="$STORAGE/tmp/attempts_$$"
+M_REMOTE="$REMOTE_STORAGE/tmp/attempts_$$"
+T=$(submit --command "echo x >> $M_REMOTE; exit 3")
 wait_done "$T" 30 >/dev/null
 [[ "$(wc -l < "$M" 2>/dev/null || echo 0)" == "1" ]]; chk "no retry by default" $?
-M2=/tmp/bifrost_attempts2_$$
-T=$(submit --command "n=\$(cat $M2 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > $M2; test \$n -ge 3" --retries 2)
+M2="$STORAGE/tmp/attempts2_$$"
+M2_REMOTE="$REMOTE_STORAGE/tmp/attempts2_$$"
+T=$(submit --command "n=\$(cat $M2_REMOTE 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > $M2_REMOTE; test \$n -ge 3" --retries 2)
 wait_done "$T" 60 >/dev/null
 [[ "$(cat "$M2" 2>/dev/null)" == "3" ]]; chk "--retries 2 -> 3 attempts" $?
 
