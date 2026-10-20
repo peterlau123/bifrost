@@ -483,8 +483,9 @@ bifrost 只要求两端可读写的 POSIX 目录，GPFS 不是必需项。H200 �
 cd /data/liuxin/Ax/bifrost            # 仓库已在共享盘上
 
 # 方式 A：直接用仓库里预编译好的静态二进制（推荐，免工具链）
+#   dist/bifrost-linux-x86_64 是 musl 静态链接，glibc 2.35 的宿主实测可跑
 sudo cp dist/bifrost-linux-x86_64 /usr/local/bin/bifrost && sudo chmod +x /usr/local/bin/bifrost
-# 方式 B：本机编译
+# 方式 B：本机编译（宿主没有 Rust 工具链时不可用，见下节）
 #   cargo build --release            # 产物 target/release/bifrost（需 glibc≥2.39 的目标机才用）
 #   scripts/find-binary.sh release   # 让 cargo 报告真实路径
 
@@ -495,6 +496,30 @@ bifrost warmup --storage /data/liuxin/bifrost
 #   ✓ 8 GPU(s) visible via nvidia-smi
 bifrost server --storage /data/liuxin/bifrost
 ```
+
+### 从开发容器构建 → 在宿主机安装（宿主无 Rust 工具链）
+
+实测 H200 宿主（Ubuntu 22.04，glibc 2.35）**没有** cargo/rustc：`command -v cargo` 空，
+`find / -maxdepth 4 -name cargo` 也空。而开发容器里 `cargo build --release` 的产物要
+glibc ≥ 2.39（`objdump -T | grep GLIBC_` 可见 `GLIBC_2.39`），拷到宿主会直接
+`version 'GLIBC_2.39' not found`。所以部署链路固定成 musl 静态二进制：
+
+```
+# ── 开发容器（有 Rust 工具链）────────────────────────────────────
+cd /workspace/Ax/bifrost
+cargo build --release --target x86_64-unknown-linux-musl --bin bifrost
+cp target/x86_64-unknown-linux-musl/release/bifrost dist/bifrost-linux-x86_64
+
+# ── 宿主（root）：安装 + 重启，一条命令，失败自动回滚 ──────────────
+# setsid 必须加：daemon 退出时会清理任务进程组，不脱离会把部署脚本自己杀掉
+bifrost client submit --storage /data/liuxin/bifrost \
+  --command 'setsid nohup bash /data/liuxin/Ax/bifrost/scripts/deploy-h200.sh >/dev/null 2>&1 &'
+```
+
+`scripts/deploy-h200.sh` 做的事：先在新二进制上跑 `--version` 校验它在本机能起
+→ 备份 `/usr/local/bin/bifrost.old` → `install` + `mv` 原子替换 → SIGTERM 旧 daemon
+（实测 1s 内退出）→ `setsid` 起新 daemon → 起不来就回滚到 `.old`。
+日志在 `/tmp/bifrost-deploy.log` 与 `/tmp/bifrost-daemon.log`。
 
 GPU 池默认自动探测本机全部卡；要限制范围用 `--gpus 0,1`，要关闭用 `--gpus ""`
 （或在 settings.json 写 `"gpu_pool": []`）。
@@ -534,6 +559,7 @@ sudo setfacl -R -d -m u:10000:rwX /data/liuxin/bifrost
 ```bash
 # 前台：Ctrl+C 一次优雅退出（<1s），再按一次强制退出
 # 后台：kill -TERM <pid> 或 systemctl stop bifrost
+# 换二进制重启：scripts/deploy-h200.sh（备份 + 原子替换 + 起不来回滚）
 ```
 
 退出时会先杀掉所有在跑任务的进程组，避免 benchmark 变成孤儿进程继续占用 GPU。
