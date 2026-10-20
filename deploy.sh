@@ -74,6 +74,10 @@ fi
 if [[ "$DO_BUILD" == "1" ]]; then
     section "🔨 1/3 编译 release"
     (cd "$BIFROST_DIR" && cargo build --release 2>&1 | tail -3)
+    # cargo 可能因 CARGO_TARGET_DIR / target-dir 配置写到别处，问它自己的路径
+    if resolved=$(bash "${BIFROST_DIR}/scripts/find-binary.sh" release 2>/dev/null); then
+        BINARY="$resolved"
+    fi
     if [[ ! -x "$BINARY" ]]; then
         fail "编译失败, 无 binary 产物"
         exit 1

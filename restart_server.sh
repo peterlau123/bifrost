@@ -35,8 +35,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 校验 ────────────────────────────────────────────────────────────────────
+# 默认路径未命中时，问 cargo 实际把产物放在哪（CARGO_TARGET_DIR 等会改变位置）
+if [[ ! -x "$BINARY" && -x "${BIFROST_DIR}/scripts/find-binary.sh" ]]; then
+    BINARY=$(bash "${BIFROST_DIR}/scripts/find-binary.sh" release 2>/dev/null || true)
+fi
 if [[ ! -x "$BINARY" ]]; then
-    echo "✗ binary 不存在或不可执行: $BINARY"
+    echo "✗ binary 不存在或不可执行: ${BINARY:-<未找到>}"
     echo "  先编译: cd $BIFROST_DIR && cargo build --release"
     exit 1
 fi

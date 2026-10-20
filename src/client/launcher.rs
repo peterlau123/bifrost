@@ -67,6 +67,9 @@ pub fn launch_job(
         for a in &ti.artifacts {
             task = task.with_artifact(a.clone());
         }
+        if let Some(shell) = ti.shell {
+            task = task.with_shell(shell);
+        }
         let tid = task.task_id;
         bridge
             .submit_task(&task)
@@ -152,6 +155,9 @@ fn launch_job_parallel(
         }
         for a in &ti.artifacts {
             task = task.with_artifact(a.clone());
+        }
+        if let Some(shell) = ti.shell {
+            task = task.with_shell(shell);
         }
         let tid = task.task_id;
         bridge
@@ -330,6 +336,7 @@ mod tests {
                 command: "pwd".into(),
                 timeout: 30,
                 retries: 0,
+                shell: None,
                 priority: 5,
                 working_dir: Some(PathBuf::from("/tmp")),
                 env_vars: [("MY_VAR".to_string(), "job-env-ok".to_string())].into(),
@@ -364,6 +371,7 @@ mod tests {
                 command: "echo hi > report.json".into(),
                 timeout: 30,
                 retries: 0,
+                shell: None,
                 priority: 0,
                 working_dir: Some(PathBuf::from("/tmp")),
                 env_vars: Default::default(),
@@ -393,6 +401,7 @@ mod tests {
                 command: "true".into(),
                 timeout: 30,
                 retries: 0,
+                shell: None,
                 priority: 0,
                 working_dir: None,
                 env_vars: Default::default(),

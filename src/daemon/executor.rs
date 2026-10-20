@@ -22,8 +22,14 @@ use crate::daemon::logger::LogManager;
 pub const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 /// Daemon-wide default when neither the task nor settings specify a timeout.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5400;
-/// How often a running task checks for a cancel request file.
-const CANCEL_POLL: Duration = Duration::from_millis(300);
+/// Default cancel poll interval. 1s keeps cancel latency human-scale while
+/// costing one stat per second per running task (30s would let a runaway
+/// benchmark burn half a minute of GPU time before dying).
+const DEFAULT_CANCEL_POLL: Duration = Duration::from_secs(1);
+/// Default per-stream log size before rotation.
+const DEFAULT_LOG_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// Default number of rotated backups kept (stdout.log.1 ... stdout.log.N).
+const DEFAULT_LOG_BACKUPS: usize = 1;
 /// How long to wait for the reaper / pipe drain after SIGKILL.
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,6 +48,13 @@ pub struct ExecutorOptions {
     pub cancel_dir: Option<PathBuf>,
     /// Where declared artifacts are copied (`<task_id>_<name>`).
     pub artifacts_dir: Option<PathBuf>,
+    /// How often a running task checks for a cancel request.
+    pub cancel_poll: Duration,
+    /// Rotate a log file past this size.
+    /// 0 disables rotation.
+    pub log_max_bytes: u64,
+    /// How many rotated files to keep (`.1` .. `.N`). 0 = discard on rotate.
+    pub log_backups: usize,
 }
 
 impl Default for ExecutorOptions {
@@ -52,6 +65,9 @@ impl Default for ExecutorOptions {
             max_retries: 0,
             cancel_dir: None,
             artifacts_dir: None,
+            cancel_poll: DEFAULT_CANCEL_POLL,
+            log_max_bytes: DEFAULT_LOG_MAX_BYTES,
+            log_backups: DEFAULT_LOG_BACKUPS,
         }
     }
 }
@@ -332,7 +348,8 @@ impl Executor {
 
     /// Build the child process for one attempt.
     fn build_command(&self, task: &Task) -> Result<Command, RunError> {
-        let mut cmd = if self.opts.use_shell {
+        let use_shell = task.shell.unwrap_or(self.opts.use_shell);
+        let mut cmd = if use_shell {
             // `sh -c` so pipes, redirects, &&, $VAR and backgrounding work.
             // The command string comes from the task file, which is written
             // by the client into shared storage - same trust boundary as the
@@ -390,8 +407,10 @@ impl Executor {
         // Drain both pipes concurrently into their log files - reading them
         // sequentially deadlocks when the child fills the other pipe, and
         // holding the whole stream in memory OOMs on hour-long logs.
-        let out_task = tokio::spawn(drain_to_file(stdout_pipe, stdout_path));
-        let err_task = tokio::spawn(drain_to_file(stderr_pipe, stderr_path));
+        let max_log = self.opts.log_max_bytes;
+        let backups = self.opts.log_backups;
+        let out_task = tokio::spawn(drain_to_file(stdout_pipe, stdout_path, max_log, backups));
+        let err_task = tokio::spawn(drain_to_file(stderr_pipe, stderr_path, max_log, backups));
 
         // Reaper task owns the Child so the select arms below can still
         // trigger a kill by pid without fighting the borrow checker.
@@ -421,7 +440,7 @@ impl Executor {
                 kill_group(pid);
                 Err(RunError::TimedOut(limit))
             }
-            _ = cancel_signal(cancel_dir, tid) => {
+            _ = cancel_signal(cancel_dir, tid, self.opts.cancel_poll) => {
                 kill_group(pid);
                 Err(RunError::Cancelled)
             }
@@ -464,6 +483,11 @@ impl Executor {
         if let Some(dir) = &self.opts.cancel_dir {
             let _ = std::fs::remove_file(dir.join(format!("{}.json", task_id)));
         }
+    }
+
+    /// How often this executor polls for cancel requests.
+    pub fn cancel_poll(&self) -> Duration {
+        self.opts.cancel_poll
     }
 
     /// Get log manager reference
@@ -554,7 +578,7 @@ async fn finish_capture(task: tokio::task::JoinHandle<Capture>) -> Capture {
 }
 
 /// Resolve when a cancel request file appears (never, if cancellation is off).
-async fn cancel_signal(dir: Option<PathBuf>, task_id: Uuid) {
+async fn cancel_signal(dir: Option<PathBuf>, task_id: Uuid, poll: Duration) {
     match dir {
         Some(d) => {
             let path = d.join(format!("{}.json", task_id));
@@ -562,7 +586,7 @@ async fn cancel_signal(dir: Option<PathBuf>, task_id: Uuid) {
                 if path.exists() {
                     return;
                 }
-                sleep(CANCEL_POLL).await;
+                sleep(poll).await;
             }
         }
         None => std::future::pending::<()>().await,
@@ -597,7 +621,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Drain a child pipe into `path`, keeping a bounded capture for the result.
-async fn drain_to_file<R>(pipe: Option<R>, path: PathBuf) -> Capture
+async fn drain_to_file<R>(pipe: Option<R>, path: PathBuf, max_bytes: u64, backups: usize) -> Capture
 where
     R: AsyncRead + Unpin,
 {
@@ -605,15 +629,7 @@ where
     let Some(mut pipe) = pipe else {
         return cap;
     };
-    let mut file = match std::fs::File::create(&path) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            if !path.as_os_str().is_empty() {
-                eprintln!("cannot create log {}: {}", path.display(), e);
-            }
-            None
-        }
-    };
+    let mut log = RotatingLog::new(path, max_bytes, backups);
 
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -621,9 +637,7 @@ where
             Ok(0) => break,
             Ok(n) => {
                 let chunk = &buf[..n];
-                if let Some(f) = file.as_mut() {
-                    let _ = f.write_all(chunk);
-                }
+                log.write(chunk);
                 cap.push(chunk, MAX_OUTPUT_BYTES);
             }
             Err(e) => {
@@ -632,10 +646,96 @@ where
             }
         }
     }
-    if let Some(mut f) = file {
-        let _ = f.flush();
-    }
+    log.flush();
     cap
+}
+
+/// Append-only log file that rotates once past `max_bytes`, keeping a single
+/// `.1` backup. Rotation happens on chunk boundaries, so a rotated file can
+/// end mid-line (fine for logs, keeps the hot path allocation-free).
+struct RotatingLog {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    written: u64,
+    max_bytes: u64,
+    backups: usize,
+}
+
+impl RotatingLog {
+    fn new(path: PathBuf, max_bytes: u64, backups: usize) -> Self {
+        let file = if path.as_os_str().is_empty() {
+            None
+        } else {
+            match std::fs::File::create(&path) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("cannot create log {}: {}", path.display(), e);
+                    None
+                }
+            }
+        };
+        Self {
+            path,
+            file,
+            written: 0,
+            max_bytes,
+            backups,
+        }
+    }
+
+    fn write(&mut self, chunk: &[u8]) {
+        if self.file.is_none() {
+            return;
+        }
+        // Rotate *before* the write that would overflow, so the newest bytes
+        // always end up in `stdout.log` (never stranded at the top of `.1`).
+        if self.max_bytes > 0
+            && self.written > 0
+            && self.written + chunk.len() as u64 > self.max_bytes
+        {
+            self.rotate();
+        }
+        let Some(f) = self.file.as_mut() else {
+            return;
+        };
+        if let Err(e) = f.write_all(chunk) {
+            eprintln!("log write {} failed: {}", self.path.display(), e);
+            self.file = None;
+            return;
+        }
+        self.written += chunk.len() as u64;
+    }
+
+    fn rotate(&mut self) {
+        drop(self.file.take());
+        // Shift .N-1 -> .N so the newest backup is always .1.
+        for i in (1..self.backups).rev() {
+            let from = PathBuf::from(format!("{}.{}", self.path.display(), i));
+            let to = PathBuf::from(format!("{}.{}", self.path.display(), i + 1));
+            let _ = std::fs::rename(from, to);
+        }
+        if self.backups > 0 {
+            let backup = PathBuf::from(format!("{}.1", self.path.display()));
+            if let Err(e) = std::fs::rename(&self.path, &backup) {
+                eprintln!("log rotate: rename {} failed: {}", self.path.display(), e);
+            }
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+        match std::fs::File::create(&self.path) {
+            Ok(f) => {
+                self.file = Some(f);
+                self.written = 0;
+            }
+            Err(e) => eprintln!("log rotate: recreate {} failed: {}", self.path.display(), e),
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(f) = self.file.as_mut() {
+            let _ = f.flush();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1094,6 +1194,70 @@ mod tests {
         assert_eq!(r.status, TaskStatus::Completed);
         assert!(r.output.stdout.contains("ok"));
         assert_eq!(r.output.stderr.len(), 300_000);
+    }
+
+    /// 日志轮转：超过 log_max_bytes 后生成 .1，内容不丢。
+    #[tokio::test]
+    async fn test_log_rotation() {
+        let temp_dir = TempDir::new().unwrap();
+        let ex = Executor::with_options(
+            temp_dir.path().join("logs"),
+            ExecutorOptions {
+                default_timeout: Duration::from_secs(60),
+                log_max_bytes: 100_000,
+                log_backups: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = Task::new(
+            "python3 -u -c \"import sys; sys.stdout.write('R' * 500000)\"".to_string(),
+            crate::core::models::TaskType::Shell,
+        )
+        .with_timeout(60);
+        let r = ex.execute(&task).await.unwrap();
+        assert_eq!(r.status, TaskStatus::Completed);
+
+        let dir = temp_dir.path().join("logs").join(task.task_id.to_string());
+        let cur = std::fs::metadata(dir.join("stdout.log")).unwrap().len();
+        let b1 = std::fs::metadata(dir.join("stdout.log.1")).unwrap().len();
+        let b2 = std::fs::metadata(dir.join("stdout.log.2")).unwrap().len();
+        assert!(b1 > 0, "超过阈值后应产生 .1 备份");
+        assert!(
+            b2 > 0,
+            "log_backups=2 时应滚动保留 .2（实际磁盘仅 {} 字节）",
+            cur + b1
+        );
+        assert!(
+            cur + b1 + b2 <= 400_000,
+            "轮转后总量应有界: {}+{}+{}",
+            cur,
+            b1,
+            b2
+        );
+        // 末尾内容必须留在当前文件里
+        let tail = std::fs::read_to_string(dir.join("stdout.log")).unwrap();
+        assert!(tail.ends_with('R'));
+    }
+
+    /// 单任务可覆盖 daemon 的 use_shell。
+    #[tokio::test]
+    async fn test_task_shell_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let ex = executor(&temp_dir); // daemon 默认 use_shell=true
+        let task = Task::new(
+            "echo $HOME".to_string(),
+            crate::core::models::TaskType::Shell,
+        )
+        .with_timeout(10)
+        .with_shell(false);
+        let r = ex.execute(&task).await.unwrap();
+        assert_eq!(r.status, TaskStatus::Completed);
+        assert!(
+            r.output.stdout.contains("$HOME"),
+            "shell=false 应保留字面量: {}",
+            r.output.stdout
+        );
     }
 
     #[tokio::test]

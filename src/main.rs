@@ -290,6 +290,10 @@ fn handle_client_mode(command: ClientCommand) {
             let bridge = create_bridge(&settings).expect("Failed to create bridge");
             match Uuid::parse_str(&id) {
                 Ok(parsed_id) => match bridge.cancel_task(&parsed_id) {
+                    Err(bifrost::core::error::BifrostError::TaskNotFound(_)) => {
+                        // Nothing to cancel: stay quiet, write no files.
+                        println!("Task {} not found (already finished?). Nothing to do.", id);
+                    }
                     Ok(()) => {
                         println!("Cancellation requested for {}", id);
                         println!(

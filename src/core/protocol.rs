@@ -248,9 +248,39 @@ impl Protocol {
         &self.cancel_dir
     }
 
+    /// True when a command file for this task still exists in commands/.
+    fn command_file_exists(&self, task_id: &Uuid) -> bool {
+        fs::read_dir(&self.commands_dir)
+            .map(|rd| {
+                rd.flatten().any(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    name.ends_with(".json") && name.contains(&task_id.to_string())
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// Write a cancel request for a task. The daemon polls this file while the
     /// task runs (and checks it before starting one).
+    ///
+    /// Nothing is written for a task that already finished (its result file
+    /// exists) or never existed - a stray `cancel/*.json` would never be
+    /// cleaned up. Unknown ids surface as `TaskNotFound` so the CLI can stay
+    /// quiet instead of leaving a file behind.
     pub fn request_cancel(&self, task_id: &Uuid) -> Result<()> {
+        let running = self.status_dir.join(format!("{}.json", task_id)).exists();
+        let pending = self.command_file_exists(task_id);
+        if !running && !pending {
+            return if self
+                .results_dir
+                .join(format!("{}_result.json", task_id))
+                .exists()
+            {
+                Ok(()) // already finished: nothing to cancel, nothing to leave behind
+            } else {
+                Err(BifrostError::TaskNotFound(*task_id))
+            };
+        }
         if !self.cancel_dir.exists() {
             fs::create_dir_all(&self.cancel_dir).map_err(BifrostError::IoError)?;
         }
@@ -395,6 +425,41 @@ mod tests {
 
     fn ts_prefix(tid: &Uuid) -> String {
         format!("20260824_120000_{}", tid)
+    }
+
+    /// 不存在的任务 cancel：返回 TaskNotFound，且不留下 cancel 文件。
+    #[test]
+    fn test_cancel_unknown_task_writes_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let p = Protocol::new(tmp.path().to_path_buf()).unwrap();
+        let tid = Uuid::new_v4();
+
+        let r = p.request_cancel(&tid);
+        assert!(matches!(r, Err(BifrostError::TaskNotFound(_))));
+        let strays: Vec<_> = fs::read_dir(tmp.path().join("cancel"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(strays.is_empty(), "不存在的任务不得留下 cancel 文件");
+    }
+
+    /// 已结束的任务 cancel：静默成功，同样不写文件。
+    #[test]
+    fn test_cancel_finished_task_writes_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let p = Protocol::new(tmp.path().to_path_buf()).unwrap();
+        let tid = Uuid::new_v4();
+        fs::write(
+            tmp.path()
+                .join("results")
+                .join(format!("{}_result.json", tid)),
+            "{}",
+        )
+        .unwrap();
+
+        assert!(p.request_cancel(&tid).is_ok());
+        let strays = fs::read_dir(tmp.path().join("cancel")).unwrap().count();
+        assert_eq!(strays, 0, "已结束任务不得留下 cancel 文件");
     }
 
     /// remove_task 必须删除 .json + .lock 伴生文件，但**绝不删 .processing**

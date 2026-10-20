@@ -160,6 +160,21 @@ pub struct DaemonSection {
     /// CUDA_VISIBLE_DEVICES (unless the task sets it itself). Empty = disabled.
     #[serde(default)]
     pub gpu_pool: Option<Vec<u32>>,
+    /// How often a running task polls for a cancel request. Default 1s:
+    /// fast enough to stop a runaway benchmark, cheap enough for shared FS.
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration"
+    )]
+    pub cancel_poll: Option<Duration>,
+    /// Rotate a per-task log file past this size. Default 64MB;
+    /// 0 disables rotation.
+    #[serde(default)]
+    pub log_max_bytes: Option<u64>,
+    /// How many rotated files to keep (`.1` .. `.N`). Default 1, max 9.
+    #[serde(default)]
+    pub log_backups: Option<usize>,
 }
 
 impl BifrostSettings {
@@ -189,6 +204,14 @@ impl BifrostSettings {
                 return Err(SettingsError::Duration {
                     value: c.to_string(),
                     reason: "max_concurrent must be 1-100".into(),
+                });
+            }
+        }
+        if let Some(b) = self.daemon.log_backups {
+            if b > 9 {
+                return Err(SettingsError::Duration {
+                    value: b.to_string(),
+                    reason: "log_backups must be <= 9".into(),
                 });
             }
         }

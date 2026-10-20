@@ -67,6 +67,10 @@ pub struct Task {
     /// Number of retry attempts (0 = run once; opt-in).
     #[serde(default)]
     pub retry_count: u8,
+    /// Per-task override for shell execution. None = use daemon.use_shell.
+    /// Set false for tasks whose arguments contain literal `$`, `*`, quotes.
+    #[serde(default)]
+    pub shell: Option<bool>,
     /// Environment variables for the task
     pub env_vars: HashMap<String, String>,
     /// Working directory for command execution
@@ -145,6 +149,7 @@ impl Task {
             timeout: 0,
             // Retries are opt-in: 0 means run once.
             retry_count: 0,
+            shell: None,
             env_vars: HashMap::new(),
             working_dir: PathBuf::from("."),
             artifacts_expected: Vec::new(),
@@ -169,6 +174,12 @@ impl Task {
     /// Set retry count
     pub fn with_retry_count(mut self, retry_count: u8) -> Self {
         self.retry_count = retry_count;
+        self
+    }
+
+    /// Run this task with (or without) a shell.
+    pub fn with_shell(mut self, shell: bool) -> Self {
+        self.shell = Some(shell);
         self
     }
 

@@ -264,6 +264,11 @@ env_vars:
 
 ### Build
 
+> 构建产物的位置可能被 `CARGO_TARGET_DIR` 或 `target-dir` 配置改掉。脚本请用
+> `scripts/find-binary.sh [release|debug]` 取真实路径，不要写死 `target/release/bifrost`：
+> 它让 cargo 自己报告产物（`--message-format=json`），deploy.sh / restart_server.sh /
+> systemd-setup.sh 都已改成这样。
+
 编译环境需要 Rust 1.70+。如果没有 Rust 工具链，可以在任意有 Rust 的机器上编译，然后分发单一二进制文件（静态编译，无运行时依赖）。
 
 ```bash
@@ -461,11 +466,14 @@ bifrost server --init  # generate default settings
 |-------|---------|-------------|
 | task_timeout | 1h30m | 任务未指定 timeout 时的默认值。**不再作为上限**：任务自己写的 `timeout` 优先 |
 | max_concurrent | 10 | 同时执行的任务数（1–100） |
-| use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行 |
+| use_shell | true | 命令经 `sh -c` 执行，管道/重定向/`&&`/`$VAR`/`&` 均可用；设 false 退回 argv 直执行。单个任务可用 `shell: false` 覆盖（YAML 里给字面量 `$`/`*` 的任务用） |
 | scan_interval | 1s | inotify 之外的兜底扫描周期。空闲 daemon 不再忙轮询占 CPU；扫描线程每秒写 `scan.json`（ticks/scanned_at），可据此判断兜底扫描是否还活着 |
 | stale_marker_timeout | 2×task_timeout | `.processing` 抢占标记超过此年龄即回收。回收前校验归属：marker 内记录了 host/pid/task，本机存活进程或本进程正在跑的任务一律跳过；keepalive 自动取 `min(60s, 该值/3)` |
 | max_retries | 0 | 任务重试次数上限（任务侧 `retry_count` 取更小值）。**默认关闭**，需显式开启：`client submit --retries 2` 或 YAML `retries: 2`。只对非零退出重试，超时/取消不重试；每次尝试的日志单独保存为 `stdout.attemptN.log` |
-| gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则不覆盖） |
+| gpu_pool | 空 | 开启后每个任务独占一个 GPU，id 注入为 `CUDA_VISIBLE_DEVICES`（任务自己指定则该 id 占租约，不覆盖值）。并发上限自动取 `min(max_concurrent, 卡数)` |
+| cancel_poll | 1s | 运行中任务检查 cancel 请求的间隔。1s 是可取消性与元数据开销的折中；30s 意味着跑飞的 benchmark 要空转半分钟才被杀 |
+| log_max_bytes | 64MB | 单流日志超过该值即轮转：`stdout.log` → `stdout.log.1` → … ；0 关闭轮转。结果载荷另有 8MB 上限（头 4MB + 尾 4MB） |
+| log_backups | 1 | 保留几个轮转备份（`.1`..`.N`，上限 9）。磁盘占用上限 ≈ `log_max_bytes × (log_backups + 1)`，最新内容始终在 `stdout.log` |
 
 **超时语义**：`client submit --timeout 0`（默认）= 用 daemon 的 `task_timeout`；传具体秒数则任务自己的值生效，daemon 不再钳制。
 

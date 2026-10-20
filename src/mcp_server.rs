@@ -165,14 +165,20 @@ impl McpServer {
         let tid = Uuid::parse_str(&req.task_id).map_err(|e| format!("invalid task_id: {}", e))?;
         let binding = self.bridge();
         let bridge: &dyn Bridge = binding.as_ref();
-        bridge
-            .cancel_task(&tid)
-            .map_err(|e| format!("cancel failed: {}", e))?;
-        Ok(serde_json::json!({
-            "task_id": req.task_id,
-            "status": "CancelRequested",
-        })
-        .to_string())
+        match bridge.cancel_task(&tid) {
+            Ok(()) => Ok(serde_json::json!({
+                "task_id": req.task_id,
+                "status": "CancelRequested",
+            })
+            .to_string()),
+            // Unknown / already-finished tasks are a no-op, not an error.
+            Err(crate::core::error::BifrostError::TaskNotFound(_)) => Ok(serde_json::json!({
+                "task_id": req.task_id,
+                "status": "NotFound",
+            })
+            .to_string()),
+            Err(e) => Err(format!("cancel failed: {}", e)),
+        }
     }
 
     /// Check whether the daemon (server) on the offline node is alive.

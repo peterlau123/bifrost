@@ -29,7 +29,10 @@ SERVICE_NAME="bifrost.service"
 # Step 1: Build release binary
 echo -e "${YELLOW}[1/6] Building release binary...${NC}"
 cargo build --release
-BINARY_PATH="target/release/${BINARY_NAME}"
+# 尊重 CARGO_TARGET_DIR / target-dir：让 cargo 报告真实产物路径
+if ! BINARY_PATH=$(bash "$(dirname "$0")/find-binary.sh" release 2>/dev/null); then
+    BINARY_PATH="target/release/${BINARY_NAME}"
+fi
 
 if [ ! -f "$BINARY_PATH" ]; then
     echo -e "${RED}Error: Binary not found at ${BINARY_PATH}${NC}"

@@ -19,6 +19,9 @@ pub struct JobTask {
     /// Retry budget for this task (0 = run once). Capped by daemon.max_retries.
     #[serde(default)]
     pub retries: u8,
+    /// Per-task shell override (None = daemon.use_shell).
+    #[serde(default)]
+    pub shell: Option<bool>,
     #[serde(default)]
     pub priority: u8,
     pub working_dir: Option<PathBuf>,

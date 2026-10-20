@@ -71,6 +71,9 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         .stale_marker_timeout
         .unwrap_or_else(|| default_timeout.saturating_mul(2));
     let use_shell = s.daemon.use_shell.unwrap_or(true);
+    let cancel_poll = s.daemon.cancel_poll.unwrap_or(Duration::from_secs(1));
+    let log_max_bytes = s.daemon.log_max_bytes.unwrap_or(64 * 1024 * 1024);
+    let log_backups = s.daemon.log_backups.unwrap_or(1);
     // Retries are opt-in: 0 here means a task's retry_count is ignored.
     let max_retries = s.daemon.max_retries.unwrap_or(0);
     let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
@@ -87,6 +90,9 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             max_retries,
             cancel_dir: Some(cancel_dir.clone()),
             artifacts_dir: Some(artifacts_dir),
+            cancel_poll,
+            log_max_bytes,
+            log_backups,
         },
     )
     .map_err(|e| format!("e: {}", e))?;
@@ -372,14 +378,14 @@ async fn process_one(
                 tokio::select! {
                     biased;
                     l = gpu.clone().acquire_specific(id) => l,
-                    _ = wait_cancel(&cancel_dir, tid) => None,
+                    _ = wait_cancel(&cancel_dir, tid, ex.cancel_poll()) => None,
                 }
             }
             None => {
                 tokio::select! {
                     biased;
                     l = gpu.clone().acquire() => l,
-                    _ = wait_cancel(&cancel_dir, tid) => None,
+                    _ = wait_cancel(&cancel_dir, tid, ex.cancel_poll()) => None,
                 }
             }
         };
@@ -463,10 +469,10 @@ async fn process_one(
 }
 
 /// Resolve when a cancel request file appears for this task.
-async fn wait_cancel(dir: &Path, task_id: uuid::Uuid) {
+async fn wait_cancel(dir: &Path, task_id: uuid::Uuid, poll: Duration) {
     let path = dir.join(format!("{}.json", task_id));
     while !path.exists() {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(poll).await;
     }
 }
 
