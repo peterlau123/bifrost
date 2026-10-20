@@ -484,7 +484,13 @@ fn handle_server_mode(
     }
 
     if systemd {
+        // 被 supervisor 管着：日志进 journal，退出走 SIGTERM，就绪要显式上报
         println!("  Mode: systemd service");
+        if std::env::var("NOTIFY_SOCKET").is_err() {
+            eprintln!(
+                "WARN: --systemd 但 $NOTIFY_SOCKET 未设置 —— 不是 systemd 拉起的？READY=1 发不出去"
+            );
+        }
     }
 
     println!("  Shared storage: {}", settings.shared_storage.display());
@@ -512,6 +518,7 @@ fn handle_server_mode(
 
         #[cfg(unix)]
         {
+            let notify_systemd_term = systemd;
             let sd_term = shutdown.clone();
             tokio::spawn(async move {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -520,11 +527,15 @@ fn handle_server_mode(
                 };
                 term.recv().await;
                 eprintln!("SIGTERM received - shutting down");
+                if notify_systemd_term {
+                    // 告诉 systemd 这是优雅停止，不是崩溃（别当成 failed 记一次）
+                    let _ = bifrost::core::sdnotify::stopping();
+                }
                 sd_term.store(true, Ordering::SeqCst);
             });
         }
 
-        if let Err(e) = run_server(settings, shutdown).await {
+        if let Err(e) = run_server(settings, shutdown, systemd).await {
             eprintln!("Server error: {}", e);
         }
     });

@@ -41,7 +41,11 @@ const RETRY_BACKOFF: Duration = Duration::from_millis(200);
 const MARKER_KEEPALIVE_MAX: Duration = Duration::from_secs(60);
 const MARKER_KEEPALIVE_MIN: Duration = Duration::from_secs(2);
 
-pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), String> {
+pub async fn run_server(
+    s: BifrostSettings,
+    sd: Arc<AtomicBool>,
+    notify_systemd: bool,
+) -> Result<(), String> {
     let ss = s.shared_storage.clone();
     let cd = ss.join("commands");
     let ld = ss.join("logs");
@@ -248,6 +252,24 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
             ""
         }
     );
+
+    // systemd 就绪上报：放在这里而不是进程启动处 —— 此刻目录已建好、时钟已探过、
+    // 扫描循环已起来，是"真的能收任务"的唯一时刻。Type=notify 的 unit 会等这一行。
+    if notify_systemd {
+        let status = format!(
+            "watching {} (max_concurrent={}, scan={}ms, gpus={:?})",
+            cd.display(),
+            mc,
+            scan_interval.as_millis(),
+            gpu_ids
+        );
+        match crate::core::sdnotify::ready(&status) {
+            Ok(()) => println!("  systemd: READY=1 sent"),
+            Err(e) => eprintln!(
+                "WARN: sd_notify 失败: {e} —— unit 若是 Type=notify 会因等不到就绪而启动超时"
+            ),
+        }
+    }
 
     // Initial catch-up: tasks submitted before the server started
     // (e.g. during restart) must not be silently lost.

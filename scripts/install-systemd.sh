@@ -45,12 +45,17 @@ Documentation=https://github.com/peterlau123/bifrost
 After=network.target
 
 [Service]
-Type=simple
+# Type=notify：等 daemon 真正就绪（目录建好、时钟探过、扫描循环起来）才认为启动完成。
+# --systemd 让它把 READY=1 + STATUS= 发到 NOTIFY_SOCKET（systemd 注入的环境变量），
+# 卡死由 TimeoutStartSec 兜住。
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60
 User=root
 # 任务默认 cwd 由此决定（daemon.working_dir 可覆盖）
 WorkingDirectory=$STORAGE
-ExecStart=$INSTALL server --storage $STORAGE
-# 上线自检：结果进 journal，不阻断启动
+ExecStart=$INSTALL server --storage $STORAGE --systemd
+# 上线自检：结果进 journal，不阻断启动（就绪之后跑）
 ExecStartPost=-$INSTALL warmup --storage $STORAGE
 
 # SIGTERM → daemon 自己杀干净所有任务的进程组，再退出
@@ -82,9 +87,30 @@ if [[ "$DRY_RUN" == "1" ]]; then
     exit 0
 fi
 
-# 1) 停掉手起的 daemon，避免同一个 storage 上跑两个 daemon（任务会被执行两次）
+# ── 自我搬家：unit 在跑时，本脚本也在 daemon 的 cgroup 里 ─────────────
+# `systemctl restart` 会杀掉整个 cgroup，把脚本自己一起干掉（setsid 挡不住 cgroup
+# kill）。所以先用 systemd-run 搬进一个 transient unit，再动手。
+if [[ "${BIFROST_INSTALL_IN_TRANSIENT:-}" != "1" ]] \
+   && systemctl is-active --quiet "$SERVICE" 2>/dev/null \
+   && command -v systemd-run >/dev/null; then
+    TN="bifrost-install-$(date +%s)"
+    if systemd-run --collect --unit="$TN" --property=Type=oneshot \
+            --setenv=BIFROST_INSTALL_IN_TRANSIENT=1 \
+            /bin/bash "$0" "$@" >/dev/null 2>&1; then
+        echo "已在 transient unit $TN 里执行（不在 daemon cgroup）"
+        echo "输出: journalctl -u $TN"
+        exit 0
+    fi
+    echo "WARN: systemd-run 失败，继续在当前进程里执行（restart 时可能被打断）"
+fi
+
+# 1) 停掉**手起**的 daemon，避免同一个 storage 上跑两个 daemon（任务会被执行两次）。
+#    unit 已经在跑时跳过：那个进程是 systemd 的，杀掉会被 Restart= 立刻拉起来，
+#    再叠加下面的 systemctl restart 等于白重启一次。
 PATTERN="bifrost server --storage $STORAGE"
-if pgrep -f "$PATTERN" >/dev/null; then
+if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+    echo "unit $SERVICE 已在跑，跳过 pkill（交给 systemctl restart）"
+elif pgrep -f "$PATTERN" >/dev/null; then
     echo "停止手起的 daemon: pid $(pgrep -f "$PATTERN" | tr '\n' ' ')"
     pkill -TERM -f "$PATTERN"
     for _ in $(seq 1 40); do pgrep -f "$PATTERN" >/dev/null || break; sleep 0.5; done
@@ -119,6 +145,8 @@ if [[ ! -f "$HB" ]] || [[ "$(stat -c %Y "$HB")" -lt "$START_EPOCH" ]]; then
 fi
 
 echo "OK: $SERVICE active ($(systemctl show -p MainPID --value "$SERVICE")), heartbeat fresh"
+echo "    type=$(systemctl show -p Type --value "$SERVICE") status=\"$(systemctl show -p StatusText --value "$SERVICE")\""
+echo "    （StatusText 就是 daemon 上报的 STATUS=，能显示出来说明 READY=1 走通了）"
 echo "    unit:    $UNIT_PATH"
 echo "    logs:    journalctl -u $SERVICE -f"
 echo "    restart: systemctl restart $SERVICE"

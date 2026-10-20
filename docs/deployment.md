@@ -530,9 +530,10 @@ bifrost client submit --storage /data/liuxin/bifrost \
    存储可写、文件系统类型（缓存型会提示 inotify 不可靠）、时钟不自旋、
    `nvidia-smi` 可见卡数、`gpu_pool` 与实际卡数是否一致
 
-过了门槛才备份 `.old` → `install` + `mv` 原子替换 → SIGTERM 旧 daemon（实测 1s 内退出）
-→ `setsid` 起新 daemon → 等心跳比本次启动更新 → 用 `client submit` 真跑一条任务做
-smoke（过了才算部署成功，否则自动回滚）。
+过了门槛才备份 `.old` → `install` + `mv` 原子替换 → 重启（有 unit 走
+`systemctl restart`，它自己会阻塞到 `READY=1`）→ 等心跳比本次启动更新（`Type=simple`
+或无 systemd 时的兜底）→ 用 `client submit` 真跑一条任务做 smoke（过了才算部署成功，
+否则自动回滚）。
 日志：`/tmp/bifrost-deploy.log`、`/tmp/bifrost-daemon.log`。
 
 GPU 池默认自动探测本机全部卡；要限制范围用 `--gpus 0,1`，要关闭用 `--gpus ""`
@@ -585,6 +586,14 @@ journalctl -u bifrost -f          # 日志（含每次启动的 warmup 自检）
 模板，直接套共享盘布局会启动失败（WorkingDirectory 和 `--config` 都不存在）。所以用
 `install-systemd.sh` 按 `--storage` 现场渲染，unit 里几个刻意的选择：
 
+- `Type=notify` + `NotifyAccess=main` + `TimeoutStartSec=60`，`ExecStart` 带 `--systemd`：
+  daemon 在**真正就绪**时（目录建好、时钟探过、扫描循环起来、`Server ready` 打完）
+  发 `READY=1` + `STATUS=...`，所以 `systemctl restart` 返回 = 已经能收任务。
+  实测 `restart_ms=563`，返回那一刻 `heartbeat_age=0s`、`StatusText` 已是
+  `watching /data/liuxin/bifrost/commands (max_concurrent=8, ...)`。
+  对比 `Type=simple`：返回只代表 fork 成功，调用方得自己轮询心跳猜就绪。
+  启动卡死由 `TimeoutStartSec=60` 兜住；停止时 daemon 发 `STOPPING=1`，
+  systemd 不会把它记成 failed。
 - `KillSignal=SIGTERM` + `KillMode=mixed`：只给主进程发 SIGTERM，让 daemon 自己先杀
   干净所有任务的进程组，超时才整组 SIGKILL（默认 control-group 会先打任务）。
 - `Restart=on-failure` + `RestartSec=5`：实测 `kill -9` 主进程后 5s 由 systemd 拉起来，
