@@ -253,3 +253,28 @@ curl -X PATCH -H "Authorization: token $TOKEN" \
 ---
 
 *Last updated: 2026-08-03*
+
+## 5. 设计约定：先探查，再兜底
+
+在虚拟化 / 共享存储这类"环境不可信"的场景里，容易出现一种坏设计：**为了绕开某个
+环境缺陷，让所有机器都背成本**。历史例子：H20 的 CLOCK_MONOTONIC 冻死导致
+`sleep()` 不返回，于是兜底扫描写成 busy-poll，结果每台机器都常驻吃一个核。
+
+约定（新代码请照此处理）：
+
+1. **默认走无成本路径**。正常实现的成本必须接近 0（sleep、事件驱动、按需计算）。
+2. **启动时做一次自检**，只花几十到几百毫秒，判定当前环境是否真的存在该缺陷。
+   判定要同时看两个独立来源（如墙钟与单调时钟、/proc 与 syscall 返回值），
+   避免"用一个坏掉的时钟去测另一个坏掉的时钟"。
+3. **只有自检确认存在缺陷，才切到兜底实现**，并在日志里显式打印原因
+   （bifrost 的做法：`clock: ok (sleep-driven scan)` /
+   `WARNING: ... busy-poll`）。
+4. **兜底实现必须可强制覆盖**（`daemon.scan_mode = auto|sleep|spin`），
+   运维能在自检误判时手动纠正。
+5. **进程内自查不能当作唯一保障**：该缺陷也可能让自查本身停摆。需要外部看门狗
+   （cron / systemd timer 读心跳与扫描信标），因为它不与 daemon 共享故障域。
+
+现成实现：
+
+- 自检：`src/daemon/clock_probe.rs`（+ `daemon.scan_mode`）
+- 外部看门狗：`scripts/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄）

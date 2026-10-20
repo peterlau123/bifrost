@@ -19,7 +19,8 @@
 //     CUDA_VISIBLE_DEVICES (unless the task sets it itself).
 use crate::core::models::{Task, TaskOutput, TaskResult, TaskStatus};
 use crate::core::protocol::Protocol;
-use crate::core::settings::BifrostSettings;
+use crate::core::settings::{BifrostSettings, ScanMode};
+use crate::daemon::clock_probe;
 use crate::daemon::executor::{Executor, ExecutorOptions, DEFAULT_TIMEOUT_SECS};
 use crate::daemon::gpu_pool::GpuPool;
 use crate::daemon::heartbeat::Heartbeat;
@@ -74,6 +75,16 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
     let cancel_poll = s.daemon.cancel_poll.unwrap_or(Duration::from_secs(1));
     let log_max_bytes = s.daemon.log_max_bytes.unwrap_or(64 * 1024 * 1024);
     let log_backups = s.daemon.log_backups.unwrap_or(1);
+
+    // 启动自检：只有确认单调时钟不可靠才背 busy-poll 的 CPU 成本。
+    // H20 上记录过时钟冻死导致 sleep 永不返回；H200 等新机器大概率正常。
+    let scan_mode = s.daemon.scan_mode;
+    let health = match scan_mode {
+        ScanMode::Sleep => clock_probe::ClockHealth::Ok,
+        ScanMode::Spin => clock_probe::probe(), // 仍然探一次，仅用于日志
+        ScanMode::Auto => clock_probe::probe(),
+    };
+    let spin = matches!(scan_mode, ScanMode::Spin) || health.is_frozen();
     // Retries are opt-in: 0 here means a task's retry_count is ignored.
     let max_retries = s.daemon.max_retries.unwrap_or(0);
     let gpu_ids = s.daemon.gpu_pool.clone().unwrap_or_default();
@@ -154,7 +165,19 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
             let mut ticks: u64 = 0;
+            let mut yields: u32 = 0;
             while !sd_s.load(Ordering::Relaxed) {
+                // spin 模式不依赖任何定时器；sleep 模式正常节流。
+                let should_scan = if spin {
+                    yields = yields.wrapping_add(1);
+                    yields.is_multiple_of(10_000)
+                } else {
+                    true
+                };
+                if !should_scan {
+                    std::thread::yield_now();
+                    continue;
+                }
                 ticks += 1;
                 // Liveness beacon: the MCP health check can tell a dead scan
                 // thread from a quiet one without relying on this thread's
@@ -176,7 +199,11 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                         });
                     }
                 }
-                std::thread::sleep(scan_interval);
+                if spin {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(scan_interval);
+                }
             }
         });
     }
@@ -192,6 +219,15 @@ pub async fn run_server(s: BifrostSettings, sd: Arc<AtomicBool>) -> Result<(), S
                 std::thread::sleep(Duration::from_secs(10));
             }
         });
+    }
+    if spin {
+        eprintln!(
+            "WARNING: clock self-check says {} - fallback scan switched to busy-poll \
+             (this costs ~1 CPU core; set daemon.scan_mode=\"sleep\" to override)",
+            health.summary()
+        );
+    } else {
+        println!("  clock: {} (sleep-driven scan)", health.summary());
     }
     println!(
         "Server ready, watching {} (max_concurrent={}, scan={}ms, shell={}, gpus={:?})",

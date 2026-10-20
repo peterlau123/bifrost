@@ -479,6 +479,18 @@ bifrost server --init  # generate default settings
 
 **客户端上限**：`client.wait_timeout`（默认 12h）是客户端等待单个 job 任务的硬上限，防止 daemon 挂掉后 client 永远阻塞。
 
+### 时钟自检与兜底扫描（daemon.scan_mode）
+
+某些虚拟化环境（H20 上记录过）会出现 CLOCK_MONOTONIC 冻结：`sleep()` 的 deadline 永不到达，线程永久卡住，daemon 表现为"心跳正常但不消费任务"。H200 等新机器大概率没有这个问题，所以**默认不背这个成本**：
+
+| scan_mode | 行为 |
+|---|---|
+| `auto`（默认） | 启动时花 ~200ms 自检：同时看墙钟与单调时钟，只有确认二者脱节才切到 spin |
+| `sleep` | 强制定时器驱动（最低 CPU），适合确认健康的机器 |
+| `spin` | 强制 busy-poll（~1 核），只给确有时钟问题的机器 |
+
+自检结果会打在启动日志里：`clock: ok (sleep-driven scan)` 或 `WARNING: ... busy-poll`。运行时若仍怀疑停摆，用外部看门狗 `scripts/watchdog.sh`（读 `heartbeat.json` / `scan.json` 年龄，超阈值重启）——它跑在 cron/systemd timer 里，不和 daemon 共享故障域。
+
 ### SSH Bridge (transport = "ssh")
 
 当 Client 与目标机**没有共享文件系统**、但可通过 SSH 访问时，用 SSH 作为传输层：Client 通过 ssh 读写目标机的 `commands/ results/ status/ artifacts/` 目录，目标机上的 daemon 依旧用本地 Protocol 消费任务——两端目录语义完全一致，daemon 无需改动。

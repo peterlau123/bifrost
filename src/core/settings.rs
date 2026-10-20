@@ -113,6 +113,19 @@ pub struct ClientSection {
     pub wait_timeout: Option<Duration>,
 }
 
+/// How the fallback scanner is driven.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanMode {
+    /// Probe the clock at startup and only spin when it looks frozen.
+    #[default]
+    Auto,
+    /// Always timer-driven (lowest CPU). Safe on healthy machines.
+    Sleep,
+    /// Always busy-poll. Only for machines whose monotonic clock freezes.
+    Spin,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DaemonSection {
     #[serde(
@@ -168,6 +181,11 @@ pub struct DaemonSection {
         serialize_with = "ser_duration"
     )]
     pub cancel_poll: Option<Duration>,
+    /// Fallback-scan driver: `auto` (default) probes the clock at startup and
+    /// only busy-polls when the monotonic clock looks frozen; `sleep` forces
+    /// timer-driven scanning; `spin` forces busy-polling.
+    #[serde(default)]
+    pub scan_mode: ScanMode,
     /// Rotate a per-task log file past this size. Default 64MB;
     /// 0 disables rotation.
     #[serde(default)]
@@ -300,6 +318,36 @@ mod tests {
     fn test_invalid_duration() {
         assert!(serde_json::from_str::<BifrostSettings>(
             r#"{"shared_storage":"/t","client":{"poll_interval":"blargh"},"daemon":{}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_scan_mode_default_and_parse() {
+        let s: BifrostSettings =
+            serde_json::from_str(r#"{"shared_storage":"/t","daemon":{}}"#).unwrap();
+        assert_eq!(
+            s.daemon.scan_mode,
+            ScanMode::Auto,
+            "默认应为 auto（先探后兜底）"
+        );
+
+        for (raw, want) in [
+            ("\"auto\"", ScanMode::Auto),
+            ("\"sleep\"", ScanMode::Sleep),
+            ("\"spin\"", ScanMode::Spin),
+        ] {
+            let j = format!(
+                r#"{{"shared_storage":"/t","daemon":{{"scan_mode":{}}}}}"#,
+                raw
+            );
+            let s: BifrostSettings = serde_json::from_str(&j).unwrap();
+            assert_eq!(s.daemon.scan_mode, want, "解析 {}", raw);
+        }
+
+        // 未知值必须报错，不能静默回退
+        assert!(serde_json::from_str::<BifrostSettings>(
+            r#"{"shared_storage":"/t","daemon":{"scan_mode":"turbo"}}"#
         )
         .is_err());
     }

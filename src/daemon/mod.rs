@@ -1,3 +1,4 @@
+pub mod clock_probe;
 pub mod executor;
 pub mod gpu_monitor;
 pub mod gpu_pool;
