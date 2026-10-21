@@ -24,6 +24,10 @@ CONFIG="${BENCH_ENV:-$HERE/bench.env}"
 # shellcheck disable=SC1090
 source "$CONFIG"
 
+# 接到压测专用 daemon（若配置了）；docker CLI 原生认 DOCKER_HOST
+[[ -n "${DOCKER_HOST_BENCH:-}" ]] && export DOCKER_HOST="$DOCKER_HOST_BENCH"
+[[ "${KEEP_IMAGE:-0}" == "1" ]] && KEEP=1
+
 IMAGE=""; VERSION=""; KEEP=0; DRY=0; PRINT_CFG=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,14 +56,26 @@ PROGRESS="$OUTPUT_ROOT/progress.log"
 SUMMARY="$OUTPUT_ROOT/summary.tsv"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$PROGRESS"; }
-free_gb() { df -BG --output=avail / | tail -1 | tr -dc '0-9'; }
+# 空间要看 docker daemon 自己的 data-root：压测跑在独立 daemon 上，
+# 它的 root 在 14T 卷的 ext4 loop 里，和宿主 / 完全是两回事。
+DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+[[ -n "$DOCKER_ROOT" ]] || DOCKER_ROOT=/
+free_gb() { df -BG --output=avail "$DOCKER_ROOT" | tail -1 | tr -dc '0-9'; }
 cleanup_container() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 
+# 独立 daemon 无 bridge，用 host 网络 + vLLM 自身 --port，省掉 NAT 也避免端口冲突
+if [[ "${NETWORK_MODE:-bridge}" == "host" ]]; then
+    NET_ARGS=(--network host); PORT_ARGS=(--port "$PORT"); SERVE_URL="http://127.0.0.1:$PORT"
+else
+    NET_ARGS=(-p "$PORT:8000"); PORT_ARGS=(); SERVE_URL="http://127.0.0.1:$PORT"
+fi
+
 SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$SHM_SIZE"
-    -p "$PORT:8000" -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
+    "${NET_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
     "$TAG"
     --model "$MODEL_MOUNT/$(basename "$MODEL_HOST")" --served-model-name "$SERVED_NAME"
     $PARALLEL_ARGS $RECIPE_ARGS
+    "${PORT_ARGS[@]}"
     --gpu-memory-utilization "$GPU_MEM_UTIL"
     --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
 
@@ -67,7 +83,7 @@ SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$
 # 拿它去 HF 加载会报 "Can't load the configuration of 'm2.7'"，所以必须显式给容器内模型路径。
 BENCH_CMD=(docker exec "$CONTAINER" vllm bench serve
     --backend "$BACKEND" --model "$SERVED_NAME" --tokenizer "$MODEL_MOUNT/$(basename "$MODEL_HOST")" \
-    --base-url "http://127.0.0.1:8000"
+    --base-url "$SERVE_URL"
     --endpoint "$ENDPOINT" --dataset-name "$DATASET"
     --random-input-len "$IN_LEN" --random-output-len "$OUT_LEN"
     --num-prompts "$NUM_PROMPTS" --max-concurrency "$CONCURRENCY"
@@ -76,6 +92,8 @@ BENCH_CMD=(docker exec "$CONTAINER" vllm bench serve
 if [[ $PRINT_CFG -eq 1 ]]; then
     cat <<EOF
 配置文件   : $CONFIG
+docker     : ${DOCKER_HOST:-默认 /var/run/docker.sock}
+网络       : ${NETWORK_MODE:-bridge}   serve=$SERVE_URL
 镜像       : $TAG
 tar        : $TAR
 模型       : $MODEL_HOST → $MODEL_MOUNT/$(basename "$MODEL_HOST")（served as $SERVED_NAME）
@@ -103,7 +121,7 @@ record() { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$@" >> "$SUMMARY"; }
 wait_healthy() {   # 0=ready 2=container died 1=timeout
     local deadline=$(( $(date +%s) + SERVE_TIMEOUT ))
     while [[ $(date +%s) -lt $deadline ]]; do
-        curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && return 0
+        curl -sf "$SERVE_URL/health" >/dev/null 2>&1 && return 0
         docker ps --format '{{.Names}}' | grep -qx "$CONTAINER" || return 2
         sleep 10
     done
