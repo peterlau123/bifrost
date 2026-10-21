@@ -26,6 +26,7 @@ ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --from) FROM="$2"; shift 2 ;;
+        --model-key) MODEL_KEY_ARG="$2"; shift 2 ;;
         -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) ARGS+=("$1"); shift ;;
     esac
@@ -61,7 +62,7 @@ echo "== 结果: $OUTPUT_ROOT/summary.tsv"
 
 for v in "${VERSIONS[@]}"; do
     # 每个版本开跑前再确认一次机器没被别人占（有人占就停下，不硬顶）
-    "$HERE/vllm_bench_one.sh" --version "$v" --config "$CONFIG"
+    "$HERE/vllm_bench_one.sh" --version "$v" --config "$CONFIG" ${MODEL_KEY_ARG:+--model-key "$MODEL_KEY_ARG"}
 done
 
 echo "===== 全部结束，汇总: $OUTPUT_ROOT/summary.tsv ====="

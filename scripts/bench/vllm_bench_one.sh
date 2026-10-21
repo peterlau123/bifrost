@@ -36,10 +36,19 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY=1; shift ;;
         --print-config) PRINT_CFG=1; shift ;;
         --config) CONFIG="$2"; source "$CONFIG"; shift 2 ;;
+        --model-key) MODEL_KEY_ARG="$2"; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
+
+# 叠加模型专属口径：基础 bench.env（运行时/负载）+ models/<key>.env（模型/并行/额外参数）
+if [[ -n "${MODEL_KEY_ARG:-}" ]]; then
+    MFILE="$HERE/models/$MODEL_KEY_ARG.env"
+    [[ -f "$MFILE" ]] || { echo "找不到模型配置: $MFILE" >&2; exit 1; }
+    # shellcheck disable=SC1090
+    source "$MFILE"
+fi
 
 # 镜像保留策略：--keep-image 或 bench.env 的 KEEP_IMAGE=1（注意别被 KEEP=0 的初始化覆盖）
 KEEP="${KEEP_OVERRIDE:-${KEEP_IMAGE:-0}}"
