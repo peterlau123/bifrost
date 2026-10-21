@@ -63,8 +63,11 @@ SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$
     --gpu-memory-utilization "$GPU_MEM_UTIL"
     --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
 
+# 注意 --tokenizer：bench 客户端要自己加载分词器，--model 传的是 API 里的 served name（m2.7），
+# 拿它去 HF 加载会报 "Can't load the configuration of 'm2.7'"，所以必须显式给容器内模型路径。
 BENCH_CMD=(docker exec "$CONTAINER" vllm bench serve
-    --backend "$BACKEND" --model "$SERVED_NAME" --base-url "http://127.0.0.1:8000"
+    --backend "$BACKEND" --model "$SERVED_NAME" --tokenizer "$MODEL_MOUNT/$(basename "$MODEL_HOST")" \
+    --base-url "http://127.0.0.1:8000"
     --endpoint "$ENDPOINT" --dataset-name "$DATASET"
     --random-input-len "$IN_LEN" --random-output-len "$OUT_LEN"
     --num-prompts "$NUM_PROMPTS" --max-concurrency "$CONCURRENCY"
