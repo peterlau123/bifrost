@@ -44,6 +44,15 @@ if [[ -n "$FROM" ]]; then
     VERSIONS=("${TMP[@]}")
 fi
 
+# 单实例锁：bifrost daemon 宕机恢复会把旧任务重新拉起，两个矩阵共存会抢同一个
+# 容器名/端口，互相把对方的服务打掉（实测出现过 v0.19.1 与 v0.31.0 同时加载）。
+mkdir -p "$OUTPUT_ROOT"
+exec 9>"$OUTPUT_ROOT/.matrix.lock"
+if ! flock -n 9; then
+    echo "已有矩阵在跑（$OUTPUT_ROOT/.matrix.lock 被占用），本次退出" >&2
+    exit 1
+fi
+
 echo "== 口径: $CONFIG"
 echo "== 并行: $PARALLEL_NAME [$PARALLEL_ARGS]"
 echo "== 负载: in=$IN_LEN out=$OUT_LEN prompts=$NUM_PROMPTS concurrency=$CONCURRENCY"
