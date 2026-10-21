@@ -27,10 +27,18 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --from) FROM="$2"; shift 2 ;;
         --model-key) MODEL_KEY_ARG="$2"; shift 2 ;;
+        --mode) BENCH_MODE="$2"; shift 2 ;;
         -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
+
+case "${BENCH_MODE:-eager}" in
+    eager) export ENFORCE_EAGER=1 ;;
+    graph) export ENFORCE_EAGER=0 ;;
+    *) echo "未知 --mode: $BENCH_MODE（eager|graph）" >&2; exit 1 ;;
+esac
+export BENCH_MODE="${BENCH_MODE:-eager}"
 
 VERSIONS=("${ARGS[@]}")
 if [[ ${#VERSIONS[@]} -eq 0 ]]; then

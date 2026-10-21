@@ -63,6 +63,11 @@ TAG="$IMAGE"
 REPO="${IMAGE%%:*}"; REPO="${REPO##*/}"      # vllm/vllm-openai → vllm-openai
 TAR="$IMAGES_DIR/vllm_${REPO}-${IMAGE##*:}.tar"   # → vllm_vllm-openai-v0.31.0.tar
 
+# BENCH_MODE=graph|eager 时把结果分目录，避免两种模式互相覆盖
+if [[ -n "${BENCH_MODE:-}" && "$OUTPUT_ROOT" != *-"$BENCH_MODE" ]]; then
+    OUTPUT_ROOT="${OUTPUT_ROOT}-${BENCH_MODE}"
+fi
+
 DIR="$OUTPUT_ROOT/$VERSION"
 PROGRESS="$OUTPUT_ROOT/progress.log"
 SUMMARY="$OUTPUT_ROOT/summary.tsv"
@@ -90,6 +95,8 @@ else
 fi
 
 # ENFORCE_EAGER=1 → 全平台禁用 CUDA graph（0.25/0.26 的图捕获会崩，统一走 eager 才可比）
+# BENCH_MODE=graph 显式覆盖（供直接调用 one.sh 时也正确）
+[[ "${BENCH_MODE:-}" == "graph" ]] && ENFORCE_EAGER=0
 EAGER_ARGS=()
 [[ "${ENFORCE_EAGER:-0}" == "1" ]] && EAGER_ARGS=(--enforce-eager)
 

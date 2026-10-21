@@ -33,19 +33,19 @@ echo "[$(date -u +%FT%TZ)] watch start interval=${INTERVAL}s bench_container=$BE
 while [[ ! -f "$STOP" ]]; do
     cid=$(docker inspect -f '{{.Id}}' "$BENCH_CONTAINER" 2>/dev/null | cut -c1-12)
     foreign=""
-    for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d ' '); do
-        [[ -z "$pid" ]] && continue
+    # 只认真实占卡：用显存 >= 512MiB 且进程名非空的条目。
+    # nvidia-smi 自己、dcgm/persistenced 之类的探针会瞬态出现在列表里但 used_memory=0、
+    # 名字为空，之前把这些当"外部占用"造成过两次假警报。
+    while IFS=', ' read -r pid pname mem; do
+        [[ -z "${pid:-}" ]] && continue
+        mem=${mem%% *}; mem=${mem%.*}
+        [[ "${mem:-0}" =~ ^[0-9]+$ ]] || mem=0
+        [[ "$mem" -lt 512 ]] && continue
         cg=$(grep -o 'docker-[0-9a-f]\{12\}' "/proc/$pid/cgroup" 2>/dev/null | head -1 | sed 's/docker-//')
         if [[ -z "$cid" || "$cg" != "$cid" ]]; then
-            pname=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | grep "^$pid," | cut -d, -f2-)
-            foreign+="pid=$pid container=${cg:-无} ${pname}; "
+            foreign+="pid=$pid container=${cg:-无} name=${pname:-?} mem=${mem}MiB; "
         fi
-    done
-    # 没有压测容器时（版本间隙 / load 阶段）不做判定：此时任何进程都会被算成"外部"，
-    # 会把自己上一轮没清干净的孤儿容器误报成"别人占卡"。
-    if [[ -z "$cid" ]]; then
-        foreign=""
-    fi
+    done < <(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
     if [[ -n "$foreign" ]]; then
         {
             echo "[$(date -u +%FT%TZ)] ALERT 有外部进程占用 GPU: $foreign"
