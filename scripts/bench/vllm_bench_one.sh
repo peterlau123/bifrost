@@ -163,11 +163,19 @@ wait_healthy() {   # 0=ready 2=container died 1=timeout
 
 log "===== $TAG start (free $(free_gb)G, config=$PARALLEL_NAME) ====="
 
-# 8 卡被占时直说，不要让它伪装成 vLLM 的报错
-busy=$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null)
+# 8 卡被占时直说，不要让它伪装成 vLLM 的报错。
+# 先清掉自己上一轮可能残留的容器（否则自己会被自己判成"被占用"）；
+# 只认显存 >=512MiB 的进程（nvidia-smi/dcgm 探针会瞬态出现且 used_memory=0）。
+cleanup_container
+busy=""
+while IFS=', ' read -r pid pname mem; do
+    [[ -z "${pid:-}" ]] && continue
+    mem=${mem%% *}; mem=${mem%.*}; [[ "${mem:-0}" =~ ^[0-9]+$ ]] || mem=0
+    [[ "$mem" -lt 512 ]] && continue
+    busy+="pid=$pid name=${pname:-?} mem=${mem}MiB; "
+done < <(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
 if [[ -n "$busy" ]]; then
-    log "$TAG ABORT: GPU 被占用，先腾卡:"
-    echo "$busy" | sort -u | sed 's/^/    /' | tee -a "$PROGRESS"
+    log "$TAG ABORT: GPU 被占用，先腾卡: $busy"
     record "$VERSION" "$PARALLEL_NAME" gpu_busy "" "" "" "" "" ""; exit 1
 fi
 
