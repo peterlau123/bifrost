@@ -27,13 +27,10 @@ WAIT_GPU_MIN=0     # GPU 被别的任务占用时，最多等多少分钟（0 = 
 # 官方 recipe（recipes.vllm.ai/MiniMaxAI/MiniMax-M2.7）明确写了：
 #   Pure TP=8 不支持（fp8 block_n=128 不整除 192）；
 #   占满 8 卡要用 single_node_tep（TP+EP）或 single_node_dep（DP+EP）。
-CONFIG_NAMES=("TP8+EP" "DP8+EP" "TP4+EP" "TP4")
-CONFIG_ARGS=(
-    "--tensor-parallel-size 8 --enable-expert-parallel"
-    "--data-parallel-size 8 --enable-expert-parallel"
-    "--tensor-parallel-size 4 --enable-expert-parallel"
-    "--tensor-parallel-size 4"
-)
+# 固定一套并行配置，所有版本都用它 —— 一旦某个版本起不来，就记为"该配置不支持"，
+# 不切到别的策略，否则不同版本的数字不可比。
+PARALLEL_NAME="TP8+EP"
+PARALLEL_ARGS="--tensor-parallel-size 8 --enable-expert-parallel"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,10 +47,19 @@ while [[ $# -gt 0 ]]; do
         --serve-timeout) SERVE_TIMEOUT="$2"; shift 2 ;;
         --keep-image) KEEP=1; shift ;;
         --wait-gpu) WAIT_GPU_MIN="$2"; shift 2 ;;
+        --parallel) PARALLEL_NAME="$2"; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
+case "$PARALLEL_NAME" in
+    TP8+EP) PARALLEL_ARGS="--tensor-parallel-size 8 --enable-expert-parallel" ;;
+    DP8+EP) PARALLEL_ARGS="--data-parallel-size 8 --enable-expert-parallel" ;;
+    TP4+EP) PARALLEL_ARGS="--tensor-parallel-size 4 --enable-expert-parallel" ;;
+    TP4)    PARALLEL_ARGS="--tensor-parallel-size 4" ;;
+    *) echo "未知 --parallel: $PARALLEL_NAME（TP8+EP|DP8+EP|TP4+EP|TP4）" >&2; exit 1 ;;
+esac
+
 [[ -n "$MODEL" && -n "$IMAGES_DIR" && -n "$OUTPUT" && -n "$VERSIONS" ]] || {
     echo "必选: --model --images-dir --output --versions" >&2; exit 1; }
 
@@ -130,10 +136,10 @@ for ver in ${VERSIONS//,/ }; do
     load_s=$(( $(date +%s) - t0 ))
     log "$ver loaded in ${load_s}s (free $(free_gb)G)"
 
-    # ── 按降级链找第一个能起来的并行配置 ───────────────────────────
-    WORKED_CFG=""; WORKED_ARGS=""; startup_s=""
-    for i in "${!CONFIG_NAMES[@]}"; do
-        cfg="${CONFIG_NAMES[$i]}"; args="${CONFIG_ARGS[$i]}"
+    # ── 固定并行配置启动（不做降级，保证跨版本可比）─────────────────
+    WORKED_CFG="$PARALLEL_NAME"; WORKED_ARGS="$PARALLEL_ARGS"; startup_s=""
+    {
+        cfg="$PARALLEL_NAME"; args="$PARALLEL_ARGS"
         cleanup_container
         t1=$(date +%s)
         # shellcheck disable=SC2086
@@ -147,18 +153,18 @@ for ver in ${VERSIONS//,/ }; do
             > "$DIR/run-$cfg.log" 2>&1
         wait_healthy; hc=$?
         if [[ $hc -eq 0 ]]; then
-            WORKED_CFG="$cfg"; WORKED_ARGS="$args"; startup_s=$(( $(date +%s) - t1 ))
-            log "$ver config=$cfg ready in ${startup_s}s"
-            break
+            startup_s=$(( $(date +%s) - t1 ))
+            log "$ver [$cfg] ready in ${startup_s}s"
+        else
+            docker logs "$CONTAINER" > "$DIR/fail-$cfg.log" 2>&1
+            log "$ver [$cfg] 起不来(hc=$hc): $(grep -m1 -E 'ValueError|RuntimeError|CUDA out of memory|assert|not divisible' "$DIR/fail-$cfg.log" | cut -c1-160)"
+            cleanup_container
         fi
-        docker logs "$CONTAINER" > "$DIR/fail-$cfg.log" 2>&1
-        log "$ver config=$cfg 失败(hc=$hc): $(grep -m1 -E 'ValueError|RuntimeError|CUDA out of memory|assert' "$DIR/fail-$cfg.log" | cut -c1-140)"
-        cleanup_container
-    done
+    }
 
-    if [[ -z "$WORKED_CFG" ]]; then
-        log "$ver FAIL: 所有并行配置都起不来"
-        record "$ver" "-" all_configs_failed "$load_s" "" "" "" "" ""
+    if [[ -z "$startup_s" ]]; then
+        log "$ver FAIL: 该并行配置($PARALLEL_NAME)起不来"
+        record "$ver" "$PARALLEL_NAME" unsupported_config "$load_s" "" "" "" "" ""
         docker rmi "$TAG" >/dev/null 2>&1; continue
     fi
 
