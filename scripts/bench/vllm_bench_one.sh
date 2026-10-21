@@ -67,6 +67,10 @@ cleanup_container() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 
 # 独立 daemon 无 bridge，用 host 网络 + vLLM 自身 --port，省掉 NAT 也避免端口冲突
 # 两个 URL 不能混：健康检查在宿主侧（映射端口 PORT），压测在容器内侧（vLLM 监听 8000）
+# EXTRA_ENV 是空格分隔的 KEY=VALUE 列表，逐个变成 docker -e
+ENV_ARGS=()
+for kv in ${EXTRA_ENV:-}; do ENV_ARGS+=(-e "$kv"); done
+
 if [[ "${NETWORK_MODE:-bridge}" == "host" ]]; then
     NET_ARGS=(--network host); PORT_ARGS=(--port "$PORT")
     HEALTH_URL="http://127.0.0.1:$PORT"; BENCH_URL="http://127.0.0.1:$PORT"
@@ -76,7 +80,7 @@ else
 fi
 
 SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$SHM_SIZE"
-    "${NET_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
+    "${NET_ARGS[@]}" "${ENV_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
     "$TAG"
     --model "$MODEL_MOUNT/$(basename "$MODEL_HOST")" --served-model-name "$SERVED_NAME"
     $PARALLEL_ARGS $RECIPE_ARGS
@@ -104,6 +108,7 @@ tar        : $TAR
 模型       : $MODEL_HOST → $MODEL_MOUNT/$(basename "$MODEL_HOST")（served as $SERVED_NAME）
 并行策略   : $PARALLEL_NAME   [$PARALLEL_ARGS]
 高性能参数 : gpu-mem-util=$GPU_MEM_UTIL max-num-seqs=$MAX_NUM_SEQS max-num-batched-tokens=$MAX_NUM_BATCHED_TOKENS max-model-len=auto
+环境变量   : ${EXTRA_ENV:-（无）}
 功能参数   : $RECIPE_ARGS
 压测负载   : $BACKEND $ENDPOINT $DATASET in=$IN_LEN out=$OUT_LEN prompts=$NUM_PROMPTS concurrency=$CONCURRENCY
 输出       : $DIR
