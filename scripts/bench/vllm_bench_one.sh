@@ -89,11 +89,15 @@ else
     HEALTH_URL="http://127.0.0.1:$PORT"; BENCH_URL="http://127.0.0.1:8000"
 fi
 
+# ENFORCE_EAGER=1 → 全平台禁用 CUDA graph（0.25/0.26 的图捕获会崩，统一走 eager 才可比）
+EAGER_ARGS=()
+[[ "${ENFORCE_EAGER:-0}" == "1" ]] && EAGER_ARGS=(--enforce-eager)
+
 SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$SHM_SIZE"
     "${NET_ARGS[@]}" "${ENV_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
     "$TAG"
     --model "$MODEL_MOUNT/$(basename "$MODEL_HOST")" --served-model-name "$SERVED_NAME"
-    $PARALLEL_ARGS $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-} ${CLI_EXTRA_SERVE_ARGS:-}
+    $PARALLEL_ARGS $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-} "${EAGER_ARGS[@]}" ${CLI_EXTRA_SERVE_ARGS:-}
     "${PORT_ARGS[@]}"
     --gpu-memory-utilization "$GPU_MEM_UTIL"
     --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
@@ -118,6 +122,7 @@ tar        : $TAR
 模型       : $MODEL_HOST → $MODEL_MOUNT/$(basename "$MODEL_HOST")（served as $SERVED_NAME）
 并行策略   : $PARALLEL_NAME   [$PARALLEL_ARGS]
 高性能参数 : gpu-mem-util=$GPU_MEM_UTIL max-num-seqs=$MAX_NUM_SEQS max-num-batched-tokens=$MAX_NUM_BATCHED_TOKENS max-model-len=auto
+CUDA graph : $([[ ${ENFORCE_EAGER:-0} == 1 ]] && echo "禁用（--enforce-eager）" || echo "启用")
 环境变量   : ${EXTRA_ENV:-（无）}
 临时追加   : ${CLI_EXTRA_SERVE_ARGS:-（无）}
 功能参数   : $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-}
