@@ -26,14 +26,13 @@ source "$CONFIG"
 
 # 接到压测专用 daemon（若配置了）；docker CLI 原生认 DOCKER_HOST
 [[ -n "${DOCKER_HOST_BENCH:-}" ]] && export DOCKER_HOST="$DOCKER_HOST_BENCH"
-[[ "${KEEP_IMAGE:-0}" == "1" ]] && KEEP=1
 
 IMAGE=""; VERSION=""; KEEP=0; DRY=0; PRINT_CFG=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --image) IMAGE="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
-        --keep-image) KEEP=1; shift ;;
+        --keep-image) KEEP_OVERRIDE=1; shift ;;
         --dry-run) DRY=1; shift ;;
         --print-config) PRINT_CFG=1; shift ;;
         --config) CONFIG="$2"; source "$CONFIG"; shift 2 ;;
@@ -41,6 +40,9 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
+
+# 镜像保留策略：--keep-image 或 bench.env 的 KEEP_IMAGE=1（注意别被 KEEP=0 的初始化覆盖）
+KEEP="${KEEP_OVERRIDE:-${KEEP_IMAGE:-0}}"
 
 # --version → --image（tar 名规则：vllm_vllm-openai-<ver>.tar）
 [[ -n "$VERSION" && -z "$IMAGE" ]] && IMAGE="vllm/vllm-openai:$VERSION"
