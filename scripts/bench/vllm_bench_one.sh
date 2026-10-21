@@ -64,10 +64,13 @@ free_gb() { df -BG --output=avail "$DOCKER_ROOT" | tail -1 | tr -dc '0-9'; }
 cleanup_container() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 
 # 独立 daemon 无 bridge，用 host 网络 + vLLM 自身 --port，省掉 NAT 也避免端口冲突
+# 两个 URL 不能混：健康检查在宿主侧（映射端口 PORT），压测在容器内侧（vLLM 监听 8000）
 if [[ "${NETWORK_MODE:-bridge}" == "host" ]]; then
-    NET_ARGS=(--network host); PORT_ARGS=(--port "$PORT"); SERVE_URL="http://127.0.0.1:$PORT"
+    NET_ARGS=(--network host); PORT_ARGS=(--port "$PORT")
+    HEALTH_URL="http://127.0.0.1:$PORT"; BENCH_URL="http://127.0.0.1:$PORT"
 else
-    NET_ARGS=(-p "$PORT:8000"); PORT_ARGS=(); SERVE_URL="http://127.0.0.1:$PORT"
+    NET_ARGS=(-p "$PORT:8000"); PORT_ARGS=()
+    HEALTH_URL="http://127.0.0.1:$PORT"; BENCH_URL="http://127.0.0.1:8000"
 fi
 
 SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$SHM_SIZE"
@@ -83,7 +86,7 @@ SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$
 # 拿它去 HF 加载会报 "Can't load the configuration of 'm2.7'"，所以必须显式给容器内模型路径。
 BENCH_CMD=(docker exec "$CONTAINER" vllm bench serve
     --backend "$BACKEND" --model "$SERVED_NAME" --tokenizer "$MODEL_MOUNT/$(basename "$MODEL_HOST")" \
-    --base-url "$SERVE_URL"
+    --base-url "$BENCH_URL"
     --endpoint "$ENDPOINT" --dataset-name "$DATASET"
     --random-input-len "$IN_LEN" --random-output-len "$OUT_LEN"
     --num-prompts "$NUM_PROMPTS" --max-concurrency "$CONCURRENCY"
@@ -93,7 +96,7 @@ if [[ $PRINT_CFG -eq 1 ]]; then
     cat <<EOF
 配置文件   : $CONFIG
 docker     : ${DOCKER_HOST:-默认 /var/run/docker.sock}
-网络       : ${NETWORK_MODE:-bridge}   serve=$SERVE_URL
+网络       : ${NETWORK_MODE:-bridge}   健康检查=$HEALTH_URL  容器内压测=$BENCH_URL
 镜像       : $TAG
 tar        : $TAR
 模型       : $MODEL_HOST → $MODEL_MOUNT/$(basename "$MODEL_HOST")（served as $SERVED_NAME）
@@ -121,7 +124,7 @@ record() { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$@" >> "$SUMMARY"; }
 wait_healthy() {   # 0=ready 2=container died 1=timeout
     local deadline=$(( $(date +%s) + SERVE_TIMEOUT ))
     while [[ $(date +%s) -lt $deadline ]]; do
-        curl -sf "$SERVE_URL/health" >/dev/null 2>&1 && return 0
+        curl -sf "$HEALTH_URL/health" >/dev/null 2>&1 && return 0
         docker ps --format '{{.Names}}' | grep -qx "$CONTAINER" || return 2
         sleep 10
     done
@@ -192,16 +195,23 @@ if [[ $bench_rc -ne 0 || -z "$RES" ]]; then
     log "$TAG FAIL: bench 失败 rc=$bench_rc"
     record "$VERSION" "$PARALLEL_NAME" bench_failed "$load_s" "$startup_s" "$bench_s" "" "" ""
 else
-    read -r tput ttft < <(python3 - "$RES" <<'PY'
+    read -r tput ttft completed failed < <(python3 - "$RES" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 req = d.get("request_throughput") or d.get("requests_per_second") or 0
 ttft = d.get("mean_ttft_ms") or d.get("median_ttft_ms") or 0
-print(f"{req:.2f} {ttft:.1f}")
+print(f"{req:.2f} {ttft:.1f} {d.get('completed',0)} {d.get('failed',0)}")
 PY
 )
-    log "$TAG OK: ${tput} req/s, TTFT ${ttft}ms"
-    record "$VERSION" "$PARALLEL_NAME" ok "$load_s" "$startup_s" "$bench_s" "$tput" "$ttft" "$DIR/result.json"
+    # 全部请求失败时 vllm bench 仍会写出全 0 的 result.json 且 exit 0，
+    # 不校验的话汇总表里会出现漂亮的 "0.00 req/s" 假成功。
+    if [[ "${completed:-0}" -eq 0 ]]; then
+        log "$TAG FAIL: 压测 ${completed:-0} 成功 / ${failed:-0} 失败 —— 全 0 结果不可用，见 $DIR/bench.log"
+        record "$VERSION" "$PARALLEL_NAME" bench_all_failed "$load_s" "$startup_s" "$bench_s" "" "" "$DIR/result.json"
+    else
+        log "$TAG OK: ${tput} req/s, TTFT ${ttft}ms (ok ${completed}/${NUM_PROMPTS})"
+        record "$VERSION" "$PARALLEL_NAME" ok "$load_s" "$startup_s" "$bench_s" "$tput" "$ttft" "$DIR/result.json"
+    fi
 fi
 
 cleanup_container
