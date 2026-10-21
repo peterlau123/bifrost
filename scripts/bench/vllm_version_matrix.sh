@@ -16,20 +16,23 @@ set -uo pipefail
 
 MODEL=""; SERVED="m2.7"; IMAGES_DIR=""; OUTPUT=""; VERSIONS=""
 PORT=19000; CONTAINER="bifrost-bench"
-GPU_MEM_UTIL="0.90"; MAX_LEN=32768; MAX_SEQS=256; MAX_BATCHED_TOKENS=16384
-IN_LEN=4096; OUT_LEN=512; NUM_PROMPTS=200; CONCURRENCY=64
+GPU_MEM_UTIL="0.95"; MAX_SEQS=256; MAX_BATCHED_TOKENS=8192   # recipe 的 performance tuning 取值
+RECIPE_ARGS="--trust-remote-code --tool-call-parser minimax_m2 --reasoning-parser minimax_m2 --enable-auto-tool-choice"
+IN_LEN=2048; OUT_LEN=1024; NUM_PROMPTS=100; CONCURRENCY=10   # recipe 的 bench 口径
 SERVE_TIMEOUT=2400
 KEEP=0
 WAIT_GPU_MIN=0     # GPU 被别的任务占用时，最多等多少分钟（0 = 直接中止）
 
 # 并行配置降级链：都占满 8 卡，只是分法不同
-CONFIG_NAMES=("TP8" "TP8+EP" "TP4+DP2" "TP4+DP2+EP" "TP2+DP4")
+# 官方 recipe（recipes.vllm.ai/MiniMaxAI/MiniMax-M2.7）明确写了：
+#   Pure TP=8 不支持（fp8 block_n=128 不整除 192）；
+#   占满 8 卡要用 single_node_tep（TP+EP）或 single_node_dep（DP+EP）。
+CONFIG_NAMES=("TP8+EP" "DP8+EP" "TP4+EP" "TP4")
 CONFIG_ARGS=(
-    "--tensor-parallel-size 8"
     "--tensor-parallel-size 8 --enable-expert-parallel"
-    "--tensor-parallel-size 4 --data-parallel-size 2"
-    "--tensor-parallel-size 4 --data-parallel-size 2 --enable-expert-parallel"
-    "--tensor-parallel-size 2 --data-parallel-size 4"
+    "--data-parallel-size 8 --enable-expert-parallel"
+    "--tensor-parallel-size 4 --enable-expert-parallel"
+    "--tensor-parallel-size 4"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -138,10 +141,9 @@ for ver in ${VERSIONS//,/ }; do
             -p "$PORT:8000" -v "$(dirname "$MODEL"):/models:ro" \
             "$TAG" \
             --model "/models/$(basename "$MODEL")" --served-model-name "$SERVED" \
-            $args \
-            --gpu-memory-utilization "$GPU_MEM_UTIL" --max-model-len "$MAX_LEN" \
+            $args $RECIPE_ARGS \
+            --gpu-memory-utilization "$GPU_MEM_UTIL" \
             --max-num-seqs "$MAX_SEQS" --max-num-batched-tokens "$MAX_BATCHED_TOKENS" \
-            --enable-chunked-prefill --trust-remote-code \
             > "$DIR/run-$cfg.log" 2>&1
         wait_healthy; hc=$?
         if [[ $hc -eq 0 ]]; then
@@ -163,7 +165,7 @@ for ver in ${VERSIONS//,/ }; do
     # ── 压测 ───────────────────────────────────────────────────────
     t2=$(date +%s)
     docker exec "$CONTAINER" vllm bench serve \
-        --model "$SERVED" --base-url "http://127.0.0.1:8000" \
+        --backend vllm --model "$SERVED" --base-url "http://127.0.0.1:8000" --endpoint /v1/completions \
         --dataset-name random --random-input-len "$IN_LEN" --random-output-len "$OUT_LEN" \
         --num-prompts "$NUM_PROMPTS" --max-concurrency "$CONCURRENCY" \
         --save-result --result-dir /tmp \
