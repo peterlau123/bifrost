@@ -37,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --print-config) PRINT_CFG=1; shift ;;
         --config) CONFIG="$2"; source "$CONFIG"; shift 2 ;;
         --model-key) MODEL_KEY_ARG="$2"; shift 2 ;;
+        --extra-serve-args) CLI_EXTRA_SERVE_ARGS="$2"; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
@@ -92,7 +93,7 @@ SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$
     "${NET_ARGS[@]}" "${ENV_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
     "$TAG"
     --model "$MODEL_MOUNT/$(basename "$MODEL_HOST")" --served-model-name "$SERVED_NAME"
-    $PARALLEL_ARGS $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-}
+    $PARALLEL_ARGS $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-} ${CLI_EXTRA_SERVE_ARGS:-}
     "${PORT_ARGS[@]}"
     --gpu-memory-utilization "$GPU_MEM_UTIL"
     --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
@@ -118,6 +119,7 @@ tar        : $TAR
 并行策略   : $PARALLEL_NAME   [$PARALLEL_ARGS]
 高性能参数 : gpu-mem-util=$GPU_MEM_UTIL max-num-seqs=$MAX_NUM_SEQS max-num-batched-tokens=$MAX_NUM_BATCHED_TOKENS max-model-len=auto
 环境变量   : ${EXTRA_ENV:-（无）}
+临时追加   : ${CLI_EXTRA_SERVE_ARGS:-（无）}
 功能参数   : $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-}
 压测负载   : $BACKEND $ENDPOINT $DATASET in=$IN_LEN out=$OUT_LEN prompts=$NUM_PROMPTS concurrency=$CONCURRENCY
 输出       : $DIR

@@ -48,15 +48,30 @@ ValueError: The output_size of gate's and up's weight = 192
 
 官方 recipe 也写明 pure TP8 不支持，要求 TP4 或 TP+EP。**处置**：该模型固定 TP4。
 
-## 3. DeepGEMM 与当前驱动不兼容（0.25 / 0.26）
+## 3. 0.25 / 0.26 的 CUDA graph 捕获会崩溃
+
+**现象**：起服务约 90 s 后 worker 崩：
 
 ```
-RuntimeError: CUDA driver error (.../deepgemm-src/csrc/.../jit/handle.hpp:154)
-torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+buf7 = torch.ops.vllm.dynamic_flashinfer_deepgemm_blockscale_gemm.default(...)
+RuntimeError: CUDA driver error (.../deepgemm-src/csrc/jit/handle.hpp:154):
+                700 (CUDA_ERROR_ILLEGAL_ADDRESS, an illegal memory access was encountered)
 ```
 
-关掉 custom all-reduce 后仍崩，说明是 GEMM kernel 本身。0.17/0.19/0.22/0.29/0.31 均正常。
-要拿这两版数字只能换 MoE backend（`--moe-backend triton`），属偏离统一口径，需单独成表。
+**不是 DeepGEMM 本身的问题**，逐步排除证据：
+
+| 试验 | 结果 |
+|---|---|
+| 默认（graph + DeepGEMM） | 崩在 fp8 线性 GEMM |
+| `--moe-backend triton` | 仍崩（不是 MoE 路径） |
+| `--linear-backend cutlass` | 走更远（到 CUDA graph profiling）后 worker 死（不是某个 GEMM 实现） |
+| **`--enforce-eager`（禁用 CUDA graph）** | **正常启动，32/32 成功** |
+
+**结论**：0.25 / 0.26 的 CUDA graph 捕获/显存剖析路径在本机（驱动 595.45.04 + fp8 权重）会非法访存；
+0.17/0.19/0.22/0.29/0.31 的捕获路径正常。属这两个版本的缺陷区间。
+
+**处置**：跑这两版必须加 `--enforce-eager`，并接受解码性能损失（实测 req/s 0.047 vs 0.14，
+TPOT 79 ms vs 22 ms）。要严格可比，就 7 个版本统一 eager 重跑一组。
 
 ## 4. 长任务必须脱离任务调度器 cgroup
 
