@@ -18,9 +18,9 @@ CONFIG="${BENCH_ENV:-$HERE/bench.env}"
 # shellcheck disable=SC1090
 source "$CONFIG"
 
-# recipe 要求 vLLM ≥ 0.20.0；v0.17.1 的 tar 已损坏、v0.19.1 低于最低版本（EP 会在
-# shm_broadcast 死锁），两者都不在默认序列里，需要时可显式传版本名复现。
-DEFAULT_VERSIONS="v0.22.1 v0.25.1 v0.26.0 v0.29.0 v0.31.0"
+# 默认从最高版本往下（用户指定顺序）。v0.19.1 / v0.17.1 低于 recipe 的 min_vllm_version=0.20.0，
+# 仍按同一口径跑，起不来的话状态会明确记为 below_recipe_min / startup_failed。
+DEFAULT_VERSIONS="v0.31.0 v0.29.0 v0.26.0 v0.25.1 v0.22.1 v0.19.1 v0.17.1"
 FROM=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -51,6 +51,7 @@ echo "== 版本: ${VERSIONS[*]}"
 echo "== 结果: $OUTPUT_ROOT/summary.tsv"
 
 for v in "${VERSIONS[@]}"; do
+    # 每个版本开跑前再确认一次机器没被别人占（有人占就停下，不硬顶）
     "$HERE/vllm_bench_one.sh" --version "$v" --config "$CONFIG"
 done
 
