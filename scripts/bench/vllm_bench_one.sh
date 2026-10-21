@@ -83,7 +83,7 @@ SERVE_CMD=(docker run -d --name "$CONTAINER" --gpus all --ipc=host --shm-size "$
     "${NET_ARGS[@]}" "${ENV_ARGS[@]}" --ulimit memlock=-1 -v "$(dirname "$MODEL_HOST"):$MODEL_MOUNT:ro"
     "$TAG"
     --model "$MODEL_MOUNT/$(basename "$MODEL_HOST")" --served-model-name "$SERVED_NAME"
-    $PARALLEL_ARGS $RECIPE_ARGS
+    $PARALLEL_ARGS $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-}
     "${PORT_ARGS[@]}"
     --gpu-memory-utilization "$GPU_MEM_UTIL"
     --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
@@ -109,7 +109,7 @@ tar        : $TAR
 并行策略   : $PARALLEL_NAME   [$PARALLEL_ARGS]
 高性能参数 : gpu-mem-util=$GPU_MEM_UTIL max-num-seqs=$MAX_NUM_SEQS max-num-batched-tokens=$MAX_NUM_BATCHED_TOKENS max-model-len=auto
 环境变量   : ${EXTRA_ENV:-（无）}
-功能参数   : $RECIPE_ARGS
+功能参数   : $RECIPE_ARGS ${EXTRA_SERVE_ARGS:-}
 压测负载   : $BACKEND $ENDPOINT $DATASET in=$IN_LEN out=$OUT_LEN prompts=$NUM_PROMPTS concurrency=$CONCURRENCY
 输出       : $DIR
 EOF

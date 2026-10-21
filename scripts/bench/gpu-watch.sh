@@ -41,6 +41,11 @@ while [[ ! -f "$STOP" ]]; do
             foreign+="pid=$pid container=${cg:-无} ${pname}; "
         fi
     done
+    # 没有压测容器时（版本间隙 / load 阶段）不做判定：此时任何进程都会被算成"外部"，
+    # 会把自己上一轮没清干净的孤儿容器误报成"别人占卡"。
+    if [[ -z "$cid" ]]; then
+        foreign=""
+    fi
     if [[ -n "$foreign" ]]; then
         {
             echo "[$(date -u +%FT%TZ)] ALERT 有外部进程占用 GPU: $foreign"
