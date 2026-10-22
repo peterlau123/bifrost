@@ -1,0 +1,60 @@
+version: "1.0"
+name: 构建、部署到自有主机
+displayName: 构建、部署到自有主机
+stages:
+- name: 构建
+  displayName: 构建
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@rust
+    name: ""
+    displayName: Rust 构建
+    rustVersion: "1.69"
+    commands:
+    - cargo build
+    artifacts:
+    - name: BUILD_ARTIFACT
+      path:
+      - ./target
+      type: .tar.gz
+    notify: []
+    strategy:
+      retry: "0"
+      resource:
+        cpu: "2"
+        memory: "4"
+- name: 部署
+  displayName: 部署
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: deploy@agent
+    name: 57a4b295
+    displayName: 主机部署
+    deployArtifact:
+    - name: output
+      target: "~/gitee_go/deploy"
+      source: build
+      dependArtifact: BUILD_ARTIFACT
+      artifactRepository: default
+      artifactName: output
+      artifactVersion: latest
+    script: |-
+      # 功能：部署脚本会在部署主机组的每台机器上执行
+      # 使用场景：先将制品包解压缩到指定目录中，再执行启动脚本deploy.sh，脚本示例地址：https://gitee.com/gitee-go/spring-boot-maven-deploy-case/blob/master/deploy.sh
+      # mkdir -p /home/admin/app
+      # tar zxvf ~/gitee_go/deploy/output.tar.gz -C /home/admin/app
+      # sh /home/admin/app/deploy.sh restart
+      # 如果你是php之类的无需制品包的制品方式，可以使用 git clone 或者 git pull 将源代码更新到服务器，再执行其他命令
+      # git clone ***@***.git
+      echo 'Hello Gitee Go!'
+    hostGroupID:
+      ID: ""
+    strategy:
+      retry: "0"
+triggers:
+  trigger: manual
+notify: []
+strategy:
+  blocking: true
