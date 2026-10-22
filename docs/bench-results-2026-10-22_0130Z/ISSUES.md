@@ -1,5 +1,7 @@
 # vLLM 多版本评测 · 问题记录
 
+> 记录时间：2026-10-22 01:30 UTC　｜　共 23 条，覆盖本次评测全过程
+
 > 机器：H200 × 8（驱动 595.45.04，Open Kernel Module，NVSwitch 在位，NVLink 26.562 GB/s）
 > 评测对象：MiniMax-M2.7 / Qwen3.6-35B-A3B / Qwen3.8-Flash-Next / Qwen3.5-397B-A17B
 > 镜像：`vllm/vllm-openai` v0.17.1 / v0.19.1 / v0.22.1 / v0.25.1 / v0.26.0 / v0.29.0 / v0.31.0
