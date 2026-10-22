@@ -19,6 +19,7 @@
 - [MiniMax-M2.7 · recipe 负载 · graph](#minimax-m27--recipe-负载--graph)
 - [MiniMax-M2.7 · recipe 负载 · eager](#minimax-m27--recipe-负载--eager)
 - [MiniMax-M2.7 · recipe 负载 · 8 卡 · eager](#minimax-m27--recipe-负载--8-卡--eager)
+- [各模型测试状态矩阵](#各模型测试状态矩阵)
 - [完成度与还缺什么](#完成度与还缺什么)
 - [已知环境限制](#已知环境限制详见-scriptsbenchenvironmentmd)
 - [原始数据](#原始数据)
@@ -211,6 +212,40 @@ TPOT 73.9–83.2 ms，v0.19.1 最优，版本间差异明显小于 M2.7。
 参数：TP8 + --enable-expert-parallel + --enforce-eager · 同上负载
 
 > 未运行（时间成本过高，按要求停止）。
+
+## 各模型测试状态矩阵
+
+图例：**✅ 已测出数据**　**❌ 未测（原因见下表）**　`*` 该行数字由 eager 模式代跑（graph 不可用）
+
+| 版本 | M2.7<br>64k · graph | M2.7<br>64k · eager | M2.7<br>recipe · graph | M2.7<br>recipe · eager | M2.7<br>recipe · TP8+EP eager | Qwen3.6<br>graph | Qwen3.6<br>eager | Qwen3.8<br>graph | Qwen3.8<br>eager | Qwen3.5-397B<br>graph | Qwen3.5-397B<br>eager |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **v0.31.0** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **v0.29.0** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **v0.26.0** | ✅* | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **v0.25.1** | ✅* | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **v0.22.1** | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **v0.19.1** | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **v0.17.1** | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+合计：**34 个（模型×条件×版本）组合产出数据**，共 77 个组合，覆盖率 44%。
+
+### ❌ 未测的具体原因
+
+| 数据集合 | 未测版本 | 原因 | 可否补跑 |
+|---|---|---|---|
+| M2.7 · 64k · graph | v0.26.0 / v0.25.1 | 这两版的 CUDA graph 捕获在本机必崩（`illegal memory access`），graph 模式无法启动；已用 eager 代跑，表内标 `*` | 不可（版本缺陷） |
+| M2.7 · recipe · graph | v0.26.0 / v0.25.1 | 同上，graph 捕获崩溃 | 不可（版本缺陷） |
+| M2.7 · recipe · graph | v0.22.1 / v0.19.1 / v0.17.1 | 跑这轮时别人起了 `pr-pp-kv`（sglang）占了 GPU 4/5/6，按公平性要求中止，这三个版本被跳过 | 可补跑（约 30 min） |
+| M2.7 · recipe · eager | 全部 7 版 | 整轮排队中被打断（外部占卡 + 用户叫停），尚未开跑 | 可补跑（约 1.5 h） |
+| M2.7 · recipe · TP8+EP eager | 全部 7 版 | 整轮未开跑；TP8+EP+eager 已单独验证可启动（KV 3.5M tokens），只是没进矩阵 | 可补跑（约 2 h） |
+| Qwen3.6 · graph | v0.26.0 / v0.25.1 | CUDA graph 捕获崩溃（同 M2.7），eager 下 7/7 全通过 | 不可（版本缺陷） |
+| Qwen3.8 · graph / eager | v0.26.0 及更早 5 版 | Transformers/vLLM 不认识 `qwen4_exp` 架构（`does not recognize this architecture`），加载即失败；只有 v0.29.0 / v0.31.0 支持 | 不可（需更新镜像） |
+| Qwen3.5-397B · graph | v0.26.0 | `CUDA error: CUBLAS_STATUS_EXECUTION_FAILED`（同一 graph 缺陷的表现） | 不可（版本缺陷） |
+| Qwen3.5-397B · graph | v0.25.1 | 按用户要求中止（单版加载 6~20 分钟，时间成本过高） | 可补跑 |
+| Qwen3.5-397B · graph | v0.22.1 / v0.19.1 / v0.17.1 | 同上，未排期 | 可补跑（约 1.5 h） |
+| Qwen3.5-397B · eager | 全部 7 版 | 整轮未开跑（时间成本，用户叫停） | 可补跑（约 4~6 h） |
+
+> 说明：M2.7 的 64k 与 recipe 是**两套评测负载**（64k 长上下文 vs 官方 recipe 的 2048/1024），两者不可互换比较；TP8+EP 是唯一能用满 8 卡的配置，只在 recipe 负载下排期。
 
 ## 完成度与还缺什么
 
