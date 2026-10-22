@@ -92,6 +92,28 @@ ValueError: The output_size of gate's and up's weight = 192
 
 ---
 
+### 5b. 补充实测：TP8 + EP 在 eager 下是**可以跑**的
+
+**现象**：M2.7 用 `--tensor-parallel-size 8 --enable-expert-parallel --enforce-eager` 启动，成功进入服务状态：
+
+```
+Available KV cache memory: 103.56 GiB
+GPU KV cache size: 3,503,008 tokens, Maximum concurrency for 204,800 tokens per request: 17.10x
+GET /health HTTP/1.1" 200 OK
+```
+8 卡各占 136.9 GB，容器稳定运行。
+
+**原因分析**
+- EP（专家并行）按专家维度切分，`moe_intermediate_size=1536` 在每个 rank 上保持完整，所以绕开了 fp8 `block_n=128` 的整除约束（第 4 条）。
+- 之前 EP 失败的两次都不是 EP 本身：v0.19.1 是 `shm_broadcast` 死锁（版本缺陷），v0.25.1 是 CUDA graph 捕获崩溃（第 3 条）。
+- 关掉 graph 之后，这两个坑都不触发，EP 可用。
+
+**结论**
+- 想用满 8 卡跑 M2.7：`TP8 + --enable-expert-parallel + --enforce-eager`，可行。
+- 本次主表仍用 TP4（与已产出的 7 个版本数据保持同口径），EP 8 卡作为备选方案记录在此。
+
+---
+
 ## 二、vLLM 版本自身
 
 ### 6. 老版本不认识新模型架构

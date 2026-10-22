@@ -1,0 +1,4 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP4	ok	84	342	127	0.88	372.8	/data/liuxin/bifrost/bench/m2.7-recipe-graph/v0.31.0/result.json
+v0.29.0	TP4	ok	77	343	124	0.92	502.1	/data/liuxin/bifrost/bench/m2.7-recipe-graph/v0.29.0/result.json
+v0.26.0	TP4	startup_failed	70					

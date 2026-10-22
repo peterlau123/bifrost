@@ -1,0 +1,8 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP4	ok	84	253	853	0.04	6876.7	/data/liuxin/bifrost/bench/m2.7-eager/v0.31.0/result.json
+v0.29.0	TP4	ok	80	272	749	0.04	6877.1	/data/liuxin/bifrost/bench/m2.7-eager/v0.29.0/result.json
+v0.26.0	TP4	ok	71	302	718	0.05	7027.5	/data/liuxin/bifrost/bench/m2.7-eager/v0.26.0/result.json
+v0.25.1	TP4	ok	72	162	721	0.05	7669.8	/data/liuxin/bifrost/bench/m2.7-eager/v0.25.1/result.json
+v0.22.1	TP4	ok	99	282	870	0.04	7225.2	/data/liuxin/bifrost/bench/m2.7-eager/v0.22.1/result.json
+v0.19.1	TP4	ok	84	372	850	0.04	7630.1	/data/liuxin/bifrost/bench/m2.7-eager/v0.19.1/result.json
+v0.17.1	TP4	ok	79	382	866	0.04	7600.2	/data/liuxin/bifrost/bench/m2.7-eager/v0.17.1/result.json

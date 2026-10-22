@@ -1,0 +1,8 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP4	ok	82	131	671	0.05	2922.8	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.31.0/result.json
+v0.29.0	TP4	ok	77	162	676	0.05	2597.2	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.29.0/result.json
+v0.26.0	TP4	ok	71	191	682	0.05	2880.9	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.26.0/result.json
+v0.25.1	TP4	ok	70	161	694	0.05	2949.5	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.25.1/result.json
+v0.22.1	TP4	ok	96	142	674	0.05	3557.4	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.22.1/result.json
+v0.19.1	TP4	ok	81	131	649	0.05	3074.6	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.19.1/result.json
+v0.17.1	TP4	ok	77	141	724	0.05	3047.6	/data/liuxin/bifrost/bench/qwen3.6-35b-eager/v0.17.1/result.json

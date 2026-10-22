@@ -1,0 +1,8 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP4	ok	84	353	156	0.25	7168.1	/data/liuxin/bifrost/bench/qwen3.8-flash-graph/v0.31.0/result.json
+v0.29.0	TP4	ok	79	292	176	0.22	8893.1	/data/liuxin/bifrost/bench/qwen3.8-flash-graph/v0.29.0/result.json
+v0.26.0	TP4	startup_failed	73					
+v0.25.1	TP4	startup_failed	70					
+v0.22.1	TP4	startup_failed	97					
+v0.19.1	TP4	startup_failed	82					
+v0.17.1	TP4	startup_failed	76					

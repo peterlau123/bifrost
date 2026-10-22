@@ -1,0 +1,5 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP8	ok	84	1207	180	0.21	7359.7	/data/liuxin/bifrost/bench/qwen3.5-397b-graph/v0.31.0/result.json
+v0.29.0	TP8	ok	85	352	179	0.22	7632.0	/data/liuxin/bifrost/bench/qwen3.5-397b-graph/v0.29.0/result.json
+v0.26.0	TP8	startup_failed	73					
+v0.25.1	TP8	startup_failed	72					

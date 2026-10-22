@@ -1,0 +1,8 @@
+version	config	status	load_s	startup_s	bench_s	req_per_s	ttft_ms	result_json
+v0.31.0	TP4	ok	85	212	104	0.42	4127.2	/data/liuxin/bifrost/bench/qwen3.6-35b-graph/v0.31.0/result.json
+v0.29.0	TP4	ok	79	232	105	0.43	4183.1	/data/liuxin/bifrost/bench/qwen3.6-35b-graph/v0.29.0/result.json
+v0.26.0	TP4	startup_failed	72					
+v0.25.1	TP4	startup_failed	70					
+v0.22.1	TP4	ok	96	222	119	0.35	5007.0	/data/liuxin/bifrost/bench/qwen3.6-35b-graph/v0.22.1/result.json
+v0.19.1	TP4	ok	81	212	125	0.33	5003.3	/data/liuxin/bifrost/bench/qwen3.6-35b-graph/v0.19.1/result.json
+v0.17.1	TP4	ok	77	191	124	0.33	4567.6	/data/liuxin/bifrost/bench/qwen3.6-35b-graph/v0.17.1/result.json
