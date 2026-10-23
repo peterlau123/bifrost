@@ -4,6 +4,27 @@
 
 > `⚙` = 该版本加了 workaround `--compilation-config {"pass_config":{"fuse_allreduce_rms":false}}`（0.25.1/0.26.0 不加会崩，见第 6 节）
 
+## 速览
+
+| 问题 | 答案 |
+|---|---|
+| 满 8 卡值不值？ | **值**。M2.7 从 TP4 的 0.13–0.14 req/s 提到 TP8+EP 的 0.16–0.20，TTFT 从 ~10.5 s 降到 ~7.0 s |
+| 哪个版本最快？ | 轻负载（2K/1K）看 **v0.29.0**；重负载（64K）7 个版本基本打平，差异被 prefill 吃掉 |
+| 有没有性能回退？ | 有 1 处：**v0.25.1 在 2K/1K 上 0.47 req/s（TTFT 5.3 s）**，比 v0.26.0 的 0.74/438 ms 差一个量级，两次复测一致 |
+| 0.25/0.26 为什么崩？ | FlashInfer `mnnvl` 融合 allreduce 需要 NVSwitch 多播，本机没有；加 `fuse_allreduce_rms=false` 后 7 个组合全部正常（第 6 节） |
+| 还缺什么？ | 千问三模型的 TP8+EP 全量矩阵（因外部占卡暂停）；M2.7 recipe 负载 5 个版本（第 7 节） |
+
+## 目录
+
+- [0. 复现命令](#0-复现命令)
+- [1. 测试口径（控制变量）](#1-测试口径控制变量)
+- [2. MiniMax-M2.7](#2-minimax-m27)
+- [3. Qwen3.6-35B-A3B](#3-qwen36-35b-a3b)
+- [4. Qwen3.8-Flash-Next](#4-qwen38-flash-next)
+- [5. Qwen3.5-397B-A17B](#5-qwen35-397b-a17b)
+- [6. 工程性问题：0.25.1 / 0.26.0 开 CUDA Graph 必崩](#6-工程性问题0251--0260-开-cuda-graph-必崩)
+- [7. 覆盖度与缺口](#7-覆盖度与缺口)
+
 ---
 
 ## 0. 复现命令
@@ -175,11 +196,24 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 
 同一模型跨版本的所有参数完全一致，只换镜像标签。
 
+**本文各表速查**
+
+| 表 | 模型 | 并行 | 负载 | 版本数 |
+|---|---|---|---|---|
+| 2.1 | M2.7 | TP4 | A：64K→2K，并发 8 | 7 ✅ |
+| 2.2 | M2.7 | TP4 | B：2K→1K，并发 8 | 7 ✅ |
+| 2.3 | M2.7 | TP8+EP | A：64K→2K，并发 8 | 7 ✅ |
+| 2.4 | M2.7 | TP4 | recipe：2K→1K，并发 10 | 2 |
+| 2.5 | M2.7 | TP4 | A（eager 对照） | 7 ✅ |
+| 3.1 / 3.2 | Qwen3.6-35B | TP4 | A（graph / eager） | 7 ✅ / 7 ✅ |
+| 4.1 / 4.2 | Qwen3.8-Flash | TP4 | A（graph / eager） | 2 / 2 |
+| 5.1 | Qwen3.5-397B | TP8 | A（graph） | 7 ✅ |
+
 ---
 
 ## 2. MiniMax-M2.7
 
-#### 2.1 TP4 · 负载 A（64K→2K，并发 8）· graph
+### 2.1 TP4 · 负载 A（64K→2K，并发 8）· graph
 
 | 版本 | req/s | 输出 tok/s | 总 tok/s | TTFT 均值 | TTFT p99 | TPOT | 状态 |
 |---|---|---|---|---|---|---|---|
@@ -191,7 +225,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | 0.13 | 265 | 8756 | 10720 ms | 29316 ms | 24.9 ms | ✅ |
 | v0.17.1 | 0.13 | 267 | 8795 | 10624 ms | 28931 ms | 24.8 ms | ✅ |
 
-#### 2.2 TP4 · 负载 B（2K→1K，并发 8）· graph
+### 2.2 TP4 · 负载 B（2K→1K，并发 8）· graph
 
 *v0.19.1 首次 warmup 偶发 cudaErrorNotPermitted，重试通过*
 
@@ -205,7 +239,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | 0.58 | 597 | 1792 | 1309 ms | 8564 ms | 12.1 ms | ✅ |
 | v0.17.1 | 0.58 | 598 | 1794 | 1312 ms | 8145 ms | 12.1 ms | ✅ |
 
-#### 2.3 TP8+EP · 负载 A（64K→2K，并发 8）· graph
+### 2.3 TP8+EP · 负载 A（64K→2K，并发 8）· graph
 
 *8 卡满配；0.17.1/0.19.1 的 EP 老死锁未复现*
 
@@ -219,7 +253,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | 0.16 | 329 | 10850 | 7307 ms | 21428 ms | 20.7 ms | ✅ |
 | v0.17.1 | 0.16 | 328 | 10814 | 6655 ms | 21000 ms | 21.1 ms | ✅ |
 
-#### 2.4 TP4 · 官方 recipe 负载（2K→1K，并发 10，100 prompts）· graph
+### 2.4 TP4 · 官方 recipe 负载（2K→1K，并发 10，100 prompts）· graph
 
 *早期批次，仅跑通 2 版（外部占卡打断）*
 
@@ -233,7 +267,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | — | — | — | — | — | — | 未测 |
 | v0.17.1 | — | — | — | — | — | — | 未测 |
 
-#### 2.5 历史对照 · TP4 · 负载 A · eager
+### 2.5 历史对照 · TP4 · 负载 A · eager
 
 *eager 关闭全部图与编译，吞吐仅为 graph 的 1/3～1/5*
 
@@ -258,7 +292,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 
 ## 3. Qwen3.6-35B-A3B
 
-#### 3.1 TP4 · 负载 A · graph
+### 3.1 TP4 · 负载 A · graph
 
 | 版本 | req/s | 输出 tok/s | 总 tok/s | TTFT 均值 | TTFT p99 | TPOT | 状态 |
 |---|---|---|---|---|---|---|---|
@@ -270,7 +304,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | 0.33 | 676 | 22303 | 5003 ms | 15599 ms | 9.3 ms | ✅ |
 | v0.17.1 | 0.33 | 673 | 22202 | 4568 ms | 15204 ms | 9.6 ms | ✅ |
 
-#### 3.2 TP4 · 负载 A · eager
+### 3.2 TP4 · 负载 A · eager
 
 | 版本 | req/s | 输出 tok/s | 总 tok/s | TTFT 均值 | TTFT p99 | TPOT | 状态 |
 |---|---|---|---|---|---|---|---|
@@ -288,7 +322,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 
 ## 4. Qwen3.8-Flash-Next
 
-#### 4.1 TP4 · 负载 A · graph
+### 4.1 TP4 · 负载 A · graph
 
 | 版本 | req/s | 输出 tok/s | 总 tok/s | TTFT 均值 | TTFT p99 | TPOT | 状态 |
 |---|---|---|---|---|---|---|---|
@@ -300,7 +334,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 | v0.19.1 | — | — | — | — | — | — | ❌ startup_failed |
 | v0.17.1 | — | — | — | — | — | — | ❌ startup_failed |
 
-#### 4.2 TP4 · 负载 A · eager
+### 4.2 TP4 · 负载 A · eager
 
 | 版本 | req/s | 输出 tok/s | 总 tok/s | TTFT 均值 | TTFT p99 | TPOT | 状态 |
 |---|---|---|---|---|---|---|---|
@@ -318,7 +352,7 @@ bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
 
 ## 5. Qwen3.5-397B-A17B
 
-#### 5.1 TP8 · 负载 A · graph
+### 5.1 TP8 · 负载 A · graph
 
 *bf16 权重 752 GB，必须 TP8 占满 8 卡*
 
