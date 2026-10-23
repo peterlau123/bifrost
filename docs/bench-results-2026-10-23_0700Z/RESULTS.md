@@ -6,6 +6,160 @@
 
 ---
 
+## 0. 复现命令
+
+### 0.1 共用前缀
+
+```bash
+# 7 个镜像标签，逐个替换 <VER>
+VER=v0.31.0                 # v0.31.0 v0.29.0 v0.26.0 v0.25.1 v0.22.1 v0.19.1 v0.17.1
+IMG=vllm/vllm-openai:$VER
+
+# docker 启动的公共部分（端口 19000 只是宿主映射，压测走容器内 8000）
+DC="docker run -d --name bifrost-bench --gpus all --ipc=host --shm-size 32g \
+    -p 19000:8000 -e NCCL_NVLS_ENABLE=0 --ulimit memlock=-1 \
+    -v /data/liuxin/Ax/models:/models:ro"
+
+# 所有模式共用的服务端参数
+COMMON_SERVE="--gpu-memory-utilization 0.95 --max-num-seqs 256 --max-num-batched-tokens 8192"
+
+# 所有模式共用的压测命令模板
+BENCH_BASE="docker exec bifrost-bench vllm bench serve --backend vllm \
+  --base-url http://127.0.0.1:8000 --endpoint /v1/completions --dataset-name random \
+  --save-result --result-dir /tmp"
+```
+
+### 0.2 M2.7 · TP4 · 负载 A（64K→2K，并发 8）· graph
+
+```bash
+$DC $IMG \
+  --model /models/MiniMax_MiniMax-M2.7 --served-model-name m2.7 \
+  --tensor-parallel-size 4 \
+  --trust-remote-code --tool-call-parser minimax_m2 --reasoning-parser minimax_m2 --enable-auto-tool-choice \
+  --disable-custom-all-reduce $COMMON_SERVE
+
+# 等 /health 返回 200 后压测
+$BENCH_BASE --model m2.7 --tokenizer /models/MiniMax_MiniMax-M2.7 \
+  --random-input-len 65536 --random-output-len 2048 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.3 M2.7 · TP4 · 负载 A · eager
+
+与 0.2 完全相同，只在 `--disable-custom-all-reduce` 后加一个开关：
+
+```bash
+  ... --disable-custom-all-reduce --enforce-eager $COMMON_SERVE
+```
+
+### 0.4 M2.7 · TP4 · 负载 A · ⚙ workaround（仅 v0.26.0 / v0.25.1 需要）
+
+与 0.2 完全相同，只多一个参数（**不加则启动阶段崩溃**，见第 6 节）：
+
+```bash
+  ... --disable-custom-all-reduce \
+      --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}' \
+      $COMMON_SERVE
+```
+
+### 0.5 M2.7 · TP4 · 负载 B（2K→1K，并发 8）· graph
+
+服务端与 0.2 **完全一致**，只改压测长度（这是控制变量的关键）：
+
+```bash
+$BENCH_BASE --model m2.7 --tokenizer /models/MiniMax_MiniMax-M2.7 \
+  --random-input-len 2048 --random-output-len 1024 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.6 M2.7 · TP8+EP · 负载 A · graph（8 卡满配）
+
+```bash
+$DC $IMG \
+  --model /models/MiniMax_MiniMax-M2.7 --served-model-name m2.7 \
+  --tensor-parallel-size 8 --enable-expert-parallel \
+  --trust-remote-code --tool-call-parser minimax_m2 --reasoning-parser minimax_m2 --enable-auto-tool-choice \
+  --disable-custom-all-reduce \
+  --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}' $COMMON_SERVE
+
+$BENCH_BASE --model m2.7 --tokenizer /models/MiniMax_MiniMax-M2.7 \
+  --random-input-len 65536 --random-output-len 2048 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.7 M2.7 · TP4 · 官方 recipe 负载（2K→1K，并发 10，100 prompts）
+
+服务端同 0.2，压测参数不同：
+
+```bash
+$BENCH_BASE --model m2.7 --tokenizer /models/MiniMax_MiniMax-M2.7 \
+  --random-input-len 2048 --random-output-len 1024 --num-prompts 100 --max-concurrency 10
+```
+
+### 0.8 Qwen3.6-35B-A3B
+
+```bash
+# TP4 · graph
+$DC $IMG --model /models/Qwen_Qwen3.6-35B-A3B --served-model-name qwen3.6-35b \
+  --tensor-parallel-size 4 --trust-remote-code --disable-custom-all-reduce $COMMON_SERVE
+
+# TP4 · eager：同上再加 --enforce-eager
+
+# TP8+EP · graph（本轮仅 v0.26.0 / v0.25.1 跑过，其余待补）
+$DC $IMG --model /models/Qwen_Qwen3.6-35B-A3B --served-model-name qwen3.6-35b \
+  --tensor-parallel-size 8 --enable-expert-parallel --trust-remote-code \
+  --disable-custom-all-reduce \
+  --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}' $COMMON_SERVE
+
+$BENCH_BASE --model qwen3.6-35b --tokenizer /models/Qwen_Qwen3.6-35B-A3B \
+  --random-input-len 65536 --random-output-len 2048 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.9 Qwen3.8-Flash-Next
+
+```bash
+$DC $IMG --model /models/Qwen_Qwen3.8-Flash-Next --served-model-name qwen3.8-flash \
+  --tensor-parallel-size 4 --trust-remote-code --disable-custom-all-reduce $COMMON_SERVE
+# eager：再加 --enforce-eager
+
+$BENCH_BASE --model qwen3.8-flash --tokenizer /models/Qwen_Qwen3.8-Flash-Next \
+  --random-input-len 65536 --random-output-len 2048 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.10 Qwen3.5-397B-A17B（bf16 752 GB，必须占满 8 卡）
+
+```bash
+# TP8 · graph
+$DC $IMG --model /models/Qwen_Qwen3.5-397B-A17B --served-model-name qwen3.5-397b \
+  --tensor-parallel-size 8 --trust-remote-code --disable-custom-all-reduce $COMMON_SERVE
+
+# TP8+EP · graph（本轮仅 v0.26.0 / v0.25.1 跑过）
+$DC $IMG --model /models/Qwen_Qwen3.5-397B-A17B --served-model-name qwen3.5-397b \
+  --tensor-parallel-size 8 --enable-expert-parallel --trust-remote-code \
+  --disable-custom-all-reduce \
+  --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}' $COMMON_SERVE
+
+$BENCH_BASE --model qwen3.5-397b --tokenizer /models/Qwen_Qwen3.5-397B-A17B \
+  --random-input-len 65536 --random-output-len 2048 --num-prompts 32 --max-concurrency 8
+```
+
+### 0.11 用评测脚本一键复现（上面命令的实际出处）
+
+```bash
+cd /data/liuxin/Ax/bifrost
+
+# 打印某个模式在指定版本下将要执行的完整命令（不启容器）
+bash scripts/bench/vllm_bench_one.sh --model-key m2.7-tp8ep-graph --version v0.31.0 --dry-run
+
+# 跑单个版本
+bash scripts/bench/vllm_bench_one.sh --model-key m2.7-tp8ep-graph --version v0.31.0
+
+# 跑一整轮矩阵（严格串行，带 flock 单实例锁）
+bash scripts/bench/vllm_matrix.sh --model-key m2.7-tp8ep-graph --mode graph \
+  v0.31.0 v0.29.0 v0.26.0 v0.25.1 v0.22.1 v0.19.1 v0.17.1
+```
+
+`--model-key` 对应 `scripts/bench/models/<key>.env`，模型路径、并行策略、负载、输出目录都在其中；`--mode graph|eager` 只切换是否加 `--enforce-eager`。
+
+---
+
 ## 1. 测试口径（控制变量）
 
 | 项 | 取值 |
