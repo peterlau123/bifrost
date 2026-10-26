@@ -15,6 +15,7 @@ PREFIX="${PREFIX:-/usr/local/bin}"
 MCP_NAME="bifrost"
 STORAGE=""
 NO_HERMES=0
+FORCE=0
 SETTINGS="${BIFROST_CONFIG:-$HOME/.bifrost/settings.json}"
 
 while [ $# -gt 0 ]; do
@@ -23,6 +24,7 @@ while [ $# -gt 0 ]; do
         --storage)  STORAGE="$2"; shift 2 ;;
         --name)     MCP_NAME="$2"; shift 2 ;;
         --settings) SETTINGS="$2"; shift 2 ;;
+        --force)    FORCE=1; shift ;;
         --no-hermes) NO_HERMES=1; shift ;;
         -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
@@ -44,7 +46,11 @@ BIN="$PREFIX/bifrost"
 echo "✓ 二进制: $BIN  ($("$BIN" --version 2>&1))"
 
 # ---- 2. settings.json ----
-if [ -n "$STORAGE" ] || [ ! -f "$SETTINGS" ]; then
+if [ -f "$SETTINGS" ] && [ -n "$STORAGE" ] && [ "$FORCE" != "1" ]; then
+    echo "! 配置已存在，未覆盖（加 --force 才会改写）: $SETTINGS"
+    echo "  当前 shared_storage: $(grep -o '"shared_storage"[^,]*' "$SETTINGS" 2>/dev/null)"
+    echo "  想改:  $0 --storage $STORAGE --force"
+elif [ -n "$STORAGE" ] || [ ! -f "$SETTINGS" ]; then
     mkdir -p "$(dirname "$SETTINGS")"
     cat > "$SETTINGS" <<EOF
 {
