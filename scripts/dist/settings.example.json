@@ -1,0 +1,12 @@
+{
+  "shared_storage": "/data/liuxin/bifrost",
+  "transport": "shared",
+  "client": {
+    "poll_interval": "2s",
+    "heartbeat_timeout": "3m",
+    "wait_timeout": "12h"
+  },
+  "daemon": {
+    "scan_mode": "auto"
+  }
+}

@@ -8,3 +8,7 @@ results/
 status/
 /.pi/dist/
 dist/
+
+# 打包脚本要进仓库（产物不进）
+!scripts/dist/
+!scripts/dist/**
