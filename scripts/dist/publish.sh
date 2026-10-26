@@ -63,7 +63,7 @@ case "$REPO" in
 esac
 
 # 待上传文件：tar.gz + .sha256（可选 BUILD_INFO 之类不单独传）
-mapfile -t ASSETS < <(ls -1 "$DIST"/*.tar.gz "$DIST"/*.sha256 2>/dev/null)
+mapfile -t ASSETS < <(ls -1 "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.sha256 2>/dev/null)
 [ ${#ASSETS[@]} -gt 0 ] || { echo "FAIL: $DIST 里没有 .tar.gz / .sha256" >&2; exit 1; }
 
 REF="${REF:-${GITEE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo main)}}"

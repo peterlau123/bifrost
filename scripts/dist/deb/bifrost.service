@@ -1,0 +1,28 @@
+[Unit]
+Description=Bifrost offline command execution daemon
+Documentation=https://gitee.com/peterlau/bifrost
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60
+User=root
+# 任务默认 cwd；共享盘布局下可在 /etc/bifrost/settings.json 的 daemon.working_dir 覆盖
+WorkingDirectory=/var/lib/bifrost
+ExecStart=/usr/bin/bifrost server --config /etc/bifrost/settings.json --systemd
+ExecStartPost=-/usr/bin/bifrost warmup --config /etc/bifrost/settings.json
+KillSignal=SIGTERM
+# mixed: 先只给主进程 SIGTERM（daemon 自己杀任务进程组），超时才整组 SIGKILL
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+TasksMax=4096
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

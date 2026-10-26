@@ -1,0 +1,17 @@
+Package: bifrost
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Peter Lau <liuxin_signal@163.com>
+Installed-Size: @SIZE@
+Section: utils
+Priority: optional
+Homepage: https://gitee.com/peterlau/bifrost
+Description: offline machine command execution framework over shared storage
+ Bifrost runs commands on machines that share a filesystem (GPFS/xfs/NFS) or
+ over SSH, with a client/server split, GPU pinning per task, timeouts,
+ cancellation and an MCP server for agent integration.
+ .
+ The package contains a statically linked binary, so it needs neither a Rust
+ toolchain nor a matching glibc. After installation:
+   bifrost-setup client --storage <DIR>   # 客户端（提交任务 / MCP 工具）
+   bifrost-setup server --storage <DIR>   # 服务端（systemd 服务，开机自启）

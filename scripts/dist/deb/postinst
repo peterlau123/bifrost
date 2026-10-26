@@ -1,0 +1,32 @@
+#!/bin/sh
+# postinst —— 建配置与共享目录，加载 systemd unit；默认不自动启动服务（客户端场景）
+set -e
+
+case "$1" in
+    configure)
+        # 配置：只在缺失时生成，dpkg 已把 /etc/bifrost/settings.json 注册为 conffile
+        if [ ! -f /etc/bifrost/settings.json ]; then
+            install -d /etc/bifrost
+            cp /usr/share/bifrost/settings.example.json /etc/bifrost/settings.json
+            chmod 644 /etc/bifrost/settings.json
+        fi
+        install -d /var/lib/bifrost
+
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
+        # 设置了 BIFROST_SERVER=1 才自动启服务（apt 装完默认当客户端）
+        if [ -f /etc/default/bifrost ] && grep -qE '^[[:space:]]*BIFROST_SERVER=1' /etc/default/bifrost; then
+            systemctl enable --now bifrost >/dev/null 2>&1 || \
+                echo "bifrost: 服务启动失败，看 journalctl -u bifrost -n 40" >&2
+        else
+            echo "bifrost 已安装（客户端可用，直接 bifrost --version）。"
+            echo "  当服务端用: sudo bifrost-setup server --storage /data/liuxin/bifrost"
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,19 @@
+#!/bin/sh
+# postrm —— 彻底卸载时清理 unit 注册；purge 时删配置（共享盘数据一律不动）
+set -e
+
+case "$1" in
+    remove)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable bifrost >/dev/null 2>&1 || true
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+    purge)
+        rm -rf /etc/bifrost /etc/default/bifrost /var/lib/bifrost 2>/dev/null || true
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+exit 0

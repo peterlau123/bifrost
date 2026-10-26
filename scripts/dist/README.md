@@ -3,12 +3,32 @@
 一个包同时能装**客户端**（提交任务、当 Hermes 的 MCP 工具）和**服务端**（跑 daemon、执行任务）。
 包内是静态 musl 二进制，目标机**不需要 Rust 工具链、不需要 glibc 匹配**，任何 x86_64 Linux 直接跑。
 
-## 装（二选一）
+## 装（三种方式，任选）
+
+**A. Debian/Ubuntu 包（apt / dpkg，推荐）**
+
+```bash
+sudo dpkg -i bifrost_<版本>-1_amd64.deb      # 或 sudo apt install ./bifrost_<版本>-1_amd64.deb
+bifrost --version
+
+# 装完之后按角色配一次共享盘路径（apt 安装不能带参数，所以单独一步）
+bifrost-setup client --storage /data/liuxin/bifrost              # 客户端
+sudo bifrost-setup server --storage /data/liuxin/bifrost         # 服务端（systemd，开机自启）
+```
+
+包内已含：`/usr/bin/bifrost`、`/usr/bin/bifrost-setup`、`/lib/systemd/system/bifrost.service`、
+`/etc/default/bifrost`（conffile，`BIFROST_SERVER=1` 时 postinst 自动起服务）。
+服务默认**不启用**，所以 apt 装完当客户端用完全没问题；`bifrost-setup server` 会写
+`/etc/bifrost/settings.json` 并 `systemctl enable --now bifrost`。
+
+**B. tar.gz 包（任意 x86_64 Linux，不需要 dpkg）**
 
 ```bash
 tar xzf bifrost-<版本>-x86_64-linux-musl.tar.gz
 cd bifrost-<版本>-x86_64-linux-musl
 ```
+
+**C. 源码**（有 Rust 工具链时）：`cargo build --release` 或 `scripts/dist/pack.sh`。
 
 **客户端**（提交任务 + 注册成 Hermes MCP 工具）：
 

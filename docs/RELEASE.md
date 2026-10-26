@@ -27,14 +27,32 @@ release 阶段（scripts/ci/release.sh）
 - 同一个版本重复构建不会覆盖已发布内容，而是出 `v0.1.0-b12` 这种构建号 tag。
 - 打包失败在 musl 上会自动退回 gnu 构建，包名与 `BUILD_INFO.txt` 里会标出链接方式。
 
-## 安装包内容
+## 发布产物
 
-`bifrost`（静态二进制）、`install.sh`（`--role client|server|both`）、`bootstrap.sh`、
-`README.md`、`SKILL.md`、`settings.example.json`、`LICENSE`、`BUILD_INFO.txt`。
+每次发布上传四个文件：
+
+| 文件 | 用途 |
+|---|---|
+| `bifrost_<版本>-1_amd64.deb` | Debian/Ubuntu：`apt install ./xxx.deb` 或 `dpkg -i` |
+| `bifrost-<版本>-x86_64-linux-musl.tar.gz` | 任意 x86_64 Linux 的便携包（含 install.sh） |
+| 两个 `.sha256` | 校验和 |
+
+`.deb` 里是 `/usr/bin/bifrost` + `/usr/bin/bifrost-setup` + systemd unit（默认不启用）+
+`/etc/default/bifrost`（conffile）。装完用 `bifrost-setup client|server --storage <DIR>` 定角色，
+因为 apt 安装无法带参数，而共享盘路径每台机器不同。
+
+tar.gz 里是 `bifrost`（静态二进制）、`install.sh`（`--role client|server|both`）、
+`bootstrap.sh`、`README.md`、`SKILL.md`、`settings.example.json`、`LICENSE`、`BUILD_INFO.txt`。
 
 目标机不需要 Rust，也不需要匹配 glibc：
 
 ```bash
+# Debian/Ubuntu
+sudo dpkg -i bifrost_<版本>-1_amd64.deb
+bifrost-setup client --storage /data/liuxin/bifrost            # 客户端
+sudo bifrost-setup server --storage /data/liuxin/bifrost       # 服务端（systemd）
+
+# 其它发行版
 tar xzf bifrost-<版本>-x86_64-linux-musl.tar.gz && cd bifrost-<版本>-x86_64-linux-musl
 ./install.sh --role client --storage /data/liuxin/bifrost      # 客户端
 sudo ./install.sh --role server --storage /data/liuxin/bifrost # 服务端（systemd）

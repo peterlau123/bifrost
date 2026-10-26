@@ -1,0 +1,15 @@
+#!/bin/sh
+# prerm —— 卸载/升级前先停服务（升级时 systemd 会自动重启）
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet bifrost 2>/dev/null; then
+            systemctl stop bifrost >/dev/null 2>&1 || true
+        fi
+        ;;
+    upgrade|failed-upgrade)
+        ;;
+esac
+
+exit 0

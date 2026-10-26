@@ -29,14 +29,32 @@ stage release (scripts/ci/release.sh)
 - Rebuilding an existing version never overwrites it; it produces a `v0.1.0-b12`-style tag.
 - If musl is unavailable the build falls back to gnu; the package name and `BUILD_INFO.txt` say so.
 
-## Package contents
+## Release assets
 
-`bifrost` (static binary), `install.sh` (`--role client|server|both`), `bootstrap.sh`,
-`README.md`, `SKILL.md`, `settings.example.json`, `LICENSE`, `BUILD_INFO.txt`.
+Four files per release:
+
+| File | Use |
+|---|---|
+| `bifrost_<ver>-1_amd64.deb` | Debian/Ubuntu: `apt install ./x.deb` or `dpkg -i` |
+| `bifrost-<ver>-x86_64-linux-musl.tar.gz` | portable package for any x86_64 Linux |
+| two `.sha256` files | checksums |
+
+The `.deb` ships `/usr/bin/bifrost`, `/usr/bin/bifrost-setup`, a systemd unit (not enabled) and
+`/etc/default/bifrost` (conffile). Run `bifrost-setup client|server --storage <DIR>` afterwards:
+apt cannot take arguments and the shared-storage path differs per machine.
+
+The tarball ships `bifrost` (static binary), `install.sh` (`--role client|server|both`),
+`bootstrap.sh`, `README.md`, `SKILL.md`, `settings.example.json`, `LICENSE`, `BUILD_INFO.txt`.
 
 Target machines need neither Rust nor a matching glibc:
 
 ```bash
+# Debian/Ubuntu
+sudo dpkg -i bifrost_<ver>-1_amd64.deb
+bifrost-setup client --storage /data/liuxin/bifrost             # client
+sudo bifrost-setup server --storage /data/liuxin/bifrost        # server (systemd)
+
+# other distros
 tar xzf bifrost-<ver>-x86_64-linux-musl.tar.gz && cd bifrost-<ver>-x86_64-linux-musl
 ./install.sh --role client --storage /data/liuxin/bifrost       # client
 sudo ./install.sh --role server --storage /data/liuxin/bifrost  # server (systemd)

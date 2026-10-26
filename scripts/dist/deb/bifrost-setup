@@ -1,0 +1,88 @@
+#!/bin/bash
+# bifrost-setup —— apt/dpkg 装完之后的角色配置（client / server）
+#
+# 用法:
+#   sudo bifrost-setup server --storage /data/liuxin/bifrost     # 写 /etc 配置 + 启 systemd 服务
+#   bifrost-setup client --storage /data/liuxin/bifrost          # 写 ~/.bifrost/settings.json（可选注册 Hermes）
+#   sudo bifrost-setup server --storage /data/liuxin/bifrost --no-start
+#
+# 为什么要有它：apt install 不能带参数，而共享盘路径因机器而异。装包只装二进制和 unit，
+# 角色与路径在这里确定，避免"装完还得手抄一份 settings.json"。
+set -uo pipefail
+
+ROLE="client"
+STORAGE=""
+NO_START=0
+MCP_NAME="bifrost"
+NO_HERMES=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        client|server) ROLE="$1"; shift ;;
+        --role)      ROLE="$2"; shift 2 ;;
+        --storage)   STORAGE="$2"; shift 2 ;;
+        --name)      MCP_NAME="$2"; shift 2 ;;
+        --no-start)  NO_START=1; shift ;;
+        --no-hermes) NO_HERMES=1; shift ;;
+        -h|--help)   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "未知参数: $1" >&2; exit 1 ;;
+    esac
+done
+
+BIN="/usr/bin/bifrost"
+[ -x "$BIN" ] || { echo "FAIL: 找不到 $BIN（先 apt install bifrost）" >&2; exit 1; }
+[ -n "$STORAGE" ] || { echo "FAIL: 需要 --storage <共享盘目录>（例如 /data/liuxin/bifrost）" >&2; exit 1; }
+[ "$ROLE" = "server" ] || [ "$ROLE" = "client" ] || { echo "FAIL: 角色只能是 client|server" >&2; exit 1; }
+
+write_settings() {
+    local cfg="$1"
+    install -d "$(dirname "$cfg")"
+    cat > "$cfg" <<EOF
+{
+  "shared_storage": "$STORAGE",
+  "transport": "shared",
+  "client": { "poll_interval": "2s", "heartbeat_timeout": "3m", "wait_timeout": "12h" },
+  "daemon": { "scan_mode": "auto" }
+}
+EOF
+    echo "✓ 配置: $cfg → shared_storage=$STORAGE"
+}
+
+case "$ROLE" in
+    server)
+        [ "$(id -u)" = "0" ] || { echo "FAIL: server 角色需要 root（sudo）" >&2; exit 1; }
+        write_settings /etc/bifrost/settings.json
+        install -d /var/lib/bifrost
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable bifrost >/dev/null 2>&1 || true
+            if [ "$NO_START" = "0" ]; then
+                systemctl restart bifrost || { echo "FAIL: 服务没起来，看 journalctl -u bifrost -n 40" >&2; exit 1; }
+                sleep 2
+                systemctl is-active --quiet bifrost && echo "✓ 服务运行中: $(systemctl is-active bifrost)" \
+                    || { echo "FAIL: 服务未激活" >&2; exit 1; }
+            else
+                echo "· 已 enable，未启动（--no-start）: systemctl start bifrost"
+            fi
+        else
+            echo "· 没有 systemctl，手工启动: $BIN server --config /etc/bifrost/settings.json"
+        fi
+        "$BIN" warmup --storage "$STORAGE" >/dev/null 2>&1 && echo "✓ warmup 通过" \
+            || echo "! warmup 未通过（不阻断服务）: $BIN warmup --storage $STORAGE"
+        ;;
+    client)
+        CFG="$HOME/.bifrost/settings.json"
+        write_settings "$CFG"
+        if [ "$NO_HERMES" = "0" ]; then
+            if command -v hermes >/dev/null 2>&1; then
+                printf 'y\n' | hermes mcp add "$MCP_NAME" --connect-timeout 30 \
+                    --env BIFROST_CONFIG="$CFG" --command "$BIN" --args mcp-serve \
+                    && echo "✓ 已注册到 Hermes: hermes mcp test $MCP_NAME"
+            else
+                echo "· 没有 hermes，跳过 MCP 注册。手工:"
+                echo "  hermes mcp add $MCP_NAME --env BIFROST_CONFIG=$CFG --command $BIN --args mcp-serve"
+            fi
+        fi
+        echo "✓ 客户端就绪。试一条: bifrost client submit --storage $STORAGE --command 'nvidia-smi'"
+        ;;
+esac

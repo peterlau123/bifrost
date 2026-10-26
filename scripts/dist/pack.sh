@@ -21,6 +21,7 @@ VERSION=""
 TARGET="x86_64-unknown-linux-musl"
 SKIP_BUILD=0
 BINARY=""
+WITH_DEB=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -29,6 +30,7 @@ while [ $# -gt 0 ]; do
         --target)     TARGET="$2"; shift 2 ;;
         --binary)     BINARY="$2"; SKIP_BUILD=1; shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
+        --no-deb)     WITH_DEB=0; shift ;;
         -h|--help)    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
@@ -96,6 +98,11 @@ chmod 0755 "$STAGE/bifrost" "$STAGE/install.sh" "$STAGE/bootstrap.sh"
 mkdir -p "$OUT"
 tar czf "$OUT/$PKG.tar.gz" -C "$STAGE_ROOT" "$PKG"
 ( cd "$OUT" && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
+
+if [ "$WITH_DEB" = "1" ] && command -v dpkg-deb >/dev/null; then
+    bash "$HERE/build-deb.sh" --binary "$BINARY" --version "$VERSION" --out "$OUT" || \
+        echo "! .deb 构建失败（tar.gz 仍然可用）" >&2
+fi
 
 echo "✓ $OUT/$PKG.tar.gz  ($(du -h "$OUT/$PKG.tar.gz" | cut -f1), link=$LINK_KIND)"
 echo "  sha256: $(cut -d' ' -f1 "$OUT/$PKG.tar.gz.sha256")"
