@@ -88,7 +88,7 @@ pub struct SshSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub connect_timeout: Option<Duration>,
 }
@@ -99,14 +99,14 @@ pub struct ClientSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub poll_interval: Option<Duration>,
     #[serde(
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub heartbeat_timeout: Option<Duration>,
     /// Hard ceiling on how long a client waits for one job task when the task
@@ -116,7 +116,7 @@ pub struct ClientSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub wait_timeout: Option<Duration>,
 }
@@ -140,14 +140,14 @@ pub struct DaemonSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub poll_interval: Option<Duration>,
     #[serde(
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub task_timeout: Option<Duration>,
     /// Ceiling for per-task retries. Unset = no cap (the task's own
@@ -158,7 +158,7 @@ pub struct DaemonSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub heartbeat_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,7 +174,7 @@ pub struct DaemonSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub scan_interval: Option<Duration>,
     /// Age after which an orphaned `.processing` claim marker counts as stale
@@ -184,7 +184,7 @@ pub struct DaemonSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub stale_marker_timeout: Option<Duration>,
     /// GPU ids handed out one task at a time; the assigned id is injected as
@@ -201,7 +201,7 @@ pub struct DaemonSection {
         default,
         deserialize_with = "deser_duration",
         serialize_with = "ser_duration",
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Option::is_none"
     )]
     pub cancel_poll: Option<Duration>,
     /// Fallback-scan driver: `auto` (default) probes the clock at startup and
@@ -329,7 +329,10 @@ pub fn init_for(
 ) -> Result<InitOutcome, SettingsError> {
     let p = path.unwrap_or_else(BifrostSettings::path);
     if p.exists() && !force {
-        return Ok(InitOutcome { path: p, created: false });
+        return Ok(InitOutcome {
+            path: p,
+            created: false,
+        });
     }
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
@@ -363,7 +366,10 @@ pub fn init_for(
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, &j)?;
     std::fs::rename(&tmp, &p)?;
-    Ok(InitOutcome { path: p, created: true })
+    Ok(InitOutcome {
+        path: p,
+        created: true,
+    })
 }
 
 /// Legacy entry point (`bifrost server --init`): always overwrite with defaults.
@@ -394,7 +400,8 @@ mod tests {
         )
         .unwrap();
         assert!(out.created);
-        let s: BifrostSettings = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let s: BifrostSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(s.shared_storage, PathBuf::from("/shared/bifrost"));
         assert_eq!(s.client.poll_interval, Some(Duration::from_secs(2)));
         assert_eq!(s.client.wait_timeout, Some(Duration::from_secs(12 * 3600)));
@@ -414,7 +421,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let s: BifrostSettings = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let s: BifrostSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(s.daemon.max_concurrent, Some(10));
         assert_eq!(s.daemon.task_timeout, Some(Duration::from_secs(5400)));
         assert_eq!(s.daemon.use_shell, Some(true));
@@ -427,16 +435,36 @@ mod tests {
     fn test_init_does_not_clobber_without_force() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("s.json");
-        init_for(InitRole::Server, Some(PathBuf::from("/a")), Some(path.clone()), false).unwrap();
-        let again = init_for(InitRole::Server, Some(PathBuf::from("/b")), Some(path.clone()), false).unwrap();
+        init_for(
+            InitRole::Server,
+            Some(PathBuf::from("/a")),
+            Some(path.clone()),
+            false,
+        )
+        .unwrap();
+        let again = init_for(
+            InitRole::Server,
+            Some(PathBuf::from("/b")),
+            Some(path.clone()),
+            false,
+        )
+        .unwrap();
         assert!(!again.created, "第二次不该覆盖");
-        let s: BifrostSettings = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let s: BifrostSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(s.shared_storage, PathBuf::from("/a"));
 
         // --force 才覆盖
-        let forced = init_for(InitRole::Server, Some(PathBuf::from("/b")), Some(path.clone()), true).unwrap();
+        let forced = init_for(
+            InitRole::Server,
+            Some(PathBuf::from("/b")),
+            Some(path.clone()),
+            true,
+        )
+        .unwrap();
         assert!(forced.created);
-        let s: BifrostSettings = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let s: BifrostSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(s.shared_storage, PathBuf::from("/b"));
     }
 

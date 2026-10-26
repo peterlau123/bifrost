@@ -420,6 +420,22 @@ impl Bridge for Protocol {
     }
 }
 
+/// True when `<dir>/<task_id>.json` exists.
+///
+/// 为什么不用 `Path::exists()`：共享盘是 NFS 时，目录属性缓存会把**负查找**
+/// 结果保留 `acdirmax`（默认 60s），别的主机刚写下的 cancel 文件在那段时间里
+/// `exists()` 一律返回 false —— H200 上实测取消延迟 6~59s 就是这个原因。
+/// `read_dir` 每次都会重新校验目录的 change 属性，所以能立刻看到新文件。
+pub fn cancel_marker_present(dir: &Path, task_id: &Uuid) -> bool {
+    let want = format!("{}.json", task_id);
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy() == want),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,21 +531,5 @@ mod tests {
             vec![format!("{}.processing", ts_prefix(&tid))],
             "remove_command_file 不应删 .processing claim marker"
         );
-    }
-}
-
-/// True when `<dir>/<task_id>.json` exists.
-///
-/// 为什么不用 `Path::exists()`：共享盘是 NFS 时，目录属性缓存会把**负查找**
-/// 结果保留 `acdirmax`（默认 60s），别的主机刚写下的 cancel 文件在那段时间里
-/// `exists()` 一律返回 false —— H200 上实测取消延迟 6~59s 就是这个原因。
-/// `read_dir` 每次都会重新校验目录的 change 属性，所以能立刻看到新文件。
-pub fn cancel_marker_present(dir: &Path, task_id: &Uuid) -> bool {
-    let want = format!("{}.json", task_id);
-    match fs::read_dir(dir) {
-        Ok(entries) => entries
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy() == want),
-        Err(_) => false,
     }
 }

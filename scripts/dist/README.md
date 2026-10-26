@@ -1,77 +1,90 @@
-# bifrost MCP 便携包
+# bifrost 安装包（Linux x86_64，client / server 通用）
 
-把 bifrost 作为 Hermes 的 MCP 工具搬到另一台机器，**不需要 Rust 工具链、不需要重新编译**。
-包内是 x86_64 **静态 musl** 二进制（6.8 MB，不依赖 glibc），任何 x86_64 Linux 直接可用。
+一个包同时能装**客户端**（提交任务、当 Hermes 的 MCP 工具）和**服务端**（跑 daemon、执行任务）。
+包内是静态 musl 二进制，目标机**不需要 Rust 工具链、不需要 glibc 匹配**，任何 x86_64 Linux 直接跑。
 
-## 一条命令装好
-
-```bash
-tar xzf bifrost-mcp-0.1.0-x86_64-linux-musl.tar.gz
-cd bifrost-mcp-0.1.0-x86_64-linux-musl
-./install.sh --storage /data/liuxin/bifrost
-```
-
-它做三件事：装二进制到 `/usr/local/bin/bifrost`、写 `~/.bifrost/settings.json`、
-`hermes mcp add bifrost ...` 注册工具并自动发现。
-
-无 root 权限时：
+## 装（二选一）
 
 ```bash
-PREFIX=$HOME/.local/bin ./install.sh --storage /data/liuxin/bifrost
+tar xzf bifrost-<版本>-x86_64-linux-musl.tar.gz
+cd bifrost-<版本>-x86_64-linux-musl
 ```
+
+**客户端**（提交任务 + 注册成 Hermes MCP 工具）：
+
+```bash
+./install.sh --role client --storage /data/liuxin/bifrost
+```
+
+无 root 权限时：`PREFIX=$HOME/.local/bin ./install.sh --role client --storage ...`
+
+**服务端**（装 systemd 服务，开机自启，daemon 执行任务）：
+
+```bash
+sudo ./install.sh --role server --storage /data/liuxin/bifrost
+systemctl status bifrost
+```
+
+同一台机器两样都要：
+
+```bash
+sudo ./install.sh --role both --storage /data/liuxin/bifrost
+```
+
+## install.sh 都做了什么
+
+| 角色 | 二进制 | 配置 | 服务 / 工具 |
+|---|---|---|---|
+| client | `/usr/local/bin/bifrost` | `~/.bifrost/settings.json` | MCP stdio 自检 + `hermes mcp add` |
+| server | `/usr/local/bin/bifrost` | `/etc/bifrost/settings.json` | 渲染 `/etc/systemd/system/bifrost.service`、enable + start、`warmup` 自检 |
+| both | 同上 | 同上两份 | 两者都做 |
+
+常用参数：`--storage DIR`（共享盘）、`--prefix DIR`（装到别处）、`--config FILE`、`--name NAME`
+（MCP 注册名）、`--force`（覆盖已有配置）、`--no-hermes`、`--no-service`（只写 unit 不启动，
+容器/离线镜像里用）、`--dry-run`。
+
+## 关键前提：共享盘
+
+bifrost 通过**共享存储**通信（client 写 `commands/`，server 写 `results/`），两端必须看到同一个目录：
+
+| 机器 | `shared_storage` 应填 |
+|---|---|
+| GPU 宿主 | `/data/liuxin/bifrost` |
+| 容器内 | `/workspace/bifrost`（同一块盘的另一挂载点） |
+| 无共享盘 | 用 `transport: ssh` + SSH 配置（见 `docs/deployment.zh-CN.md`） |
 
 ## 手工版（不想用脚本）
 
 ```bash
 install -m 0755 bifrost /usr/local/bin/bifrost
+# 客户端
 mkdir -p ~/.bifrost && cp settings.example.json ~/.bifrost/settings.json   # 改 shared_storage
 hermes mcp add bifrost --env BIFROST_CONFIG=$HOME/.bifrost/settings.json \
   --command /usr/local/bin/bifrost --args mcp-serve
-hermes mcp test bifrost
+# 服务端（共享盘布局）
+bifrost server --storage /data/liuxin/bifrost
 ```
-
-## 关键前提：共享盘
-
-bifrost 的 MCP 侧**只通过共享存储与 daemon 通信**（`mcp-serve` 是 stdio，没有 HTTP 传输）。
-所以新机器必须能访问同一个共享目录：
-
-| 机器 | `shared_storage` 应填 |
-|---|---|
-| H200 宿主 | `/data/liuxin/bifrost` |
-| 装了 NFS 的其它机器 | 该机器上的挂载点（如 `/mnt/liuxin/bifrost`） |
-
-daemon 不必在新机器上跑 —— 只要共享盘可见、且 H200 上的 `bifrost.service` 活着，新机器就能提交任务。
 
 ## 验证
 
 ```bash
-hermes mcp list                 # bifrost / stdio / N tools / ✓ enabled
-hermes mcp test bifrost         # 打印工具清单与连接耗时
+bifrost --version
+bifrost warmup --storage /data/liuxin/bifrost          # 存储/时钟/daemon/GPU 四项自检
+bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi'
+hermes mcp test bifrost                                 # 客户端侧
 ```
 
-新会话里工具名是 `mcp_bifrost_*`；已开着的会话要 `/reload-mcp`。
+## 这个包是怎么来的
 
-## 多集群并存
+`scripts/dist/pack.sh` 编 musl 静态二进制并打包；CI 在 main 分支上自动构建、打 tag、
+发 Gitee Release（见仓库 `docs/RELEASE.md`）。包内 `BUILD_INFO.txt` 记录 commit / 目标三元组 /
+链接方式 / 构建时间，出问题时先看它。
 
-同一个 Hermes 里接两个 bifrost（比如 H200 和另一台 H100）：
+下载：
 
 ```bash
-./install.sh --name bifrost-h200 --storage /data/liuxin/bifrost --prefix /opt/bifrost-h200/bin
-./install.sh --name bifrost-h100 --storage /data/other/h100/bifrost --prefix /opt/bifrost-h100/bin
+BASE=https://gitee.com/peterlau/bifrost/releases/download/<tag>
+curl -fLO $BASE/bifrost-<版本>-x86_64-linux-musl.tar.gz
+curl -fLO $BASE/bifrost-<版本>-x86_64-linux-musl.tar.gz.sha256
+sha256sum -c bifrost-<版本>-x86_64-linux-musl.tar.gz.sha256
 ```
-
-工具会分别注册成 `mcp_bifrost_h200_*` 和 `mcp_bifrost_h100_*`。
-
-## 包内容
-
-```
-bifrost                       静态 musl 二进制，bifrost 0.1.0
-settings.example.json         配置模板
-install.sh                    一键安装 + Hermes 注册
-README.md                     本文件
-```
-
-## 升级
-
-换新包后重跑 `./install.sh`。若本机已有 `~/.bifrost/settings.json`，脚本不会覆盖它；
-需要改共享盘路径时显式传 `--storage`。

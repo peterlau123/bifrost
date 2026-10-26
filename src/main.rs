@@ -177,10 +177,7 @@ fn main() {
             command,
         } => {
             // 两种写法等价：`bifrost server init`（推荐）与旧的 `bifrost server --init`
-            let init_req = match command {
-                Some(ServerCommand::Init { path, force }) => Some((path, force)),
-                None => None,
-            };
+            let init_req = command.map(|ServerCommand::Init { path, force }| (path, force));
             if let Some((path, force)) = init_req {
                 report_init(
                     bifrost::core::settings::init_for(
@@ -282,10 +279,7 @@ fn handle_mcp_serve(config: Option<PathBuf>, storage: Option<PathBuf>, gpus: Opt
 /// Handle client mode operations
 /// Print the outcome of an init and the natural next step for that role.
 fn report_init(
-    res: Result<
-        bifrost::core::settings::InitOutcome,
-        bifrost::core::settings::SettingsError,
-    >,
+    res: Result<bifrost::core::settings::InitOutcome, bifrost::core::settings::SettingsError>,
     role: &str,
     storage_given: bool,
 ) {
@@ -301,7 +295,10 @@ fn report_init(
                 );
             }
             if o.path != bifrost::core::settings::BifrostSettings::path() {
-                println!("  point clients/servers at it with: export BIFROST_CONFIG={}", o.path.display());
+                println!(
+                    "  point clients/servers at it with: export BIFROST_CONFIG={}",
+                    o.path.display()
+                );
             }
             if !storage_given {
                 eprintln!(
@@ -820,10 +817,14 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_cli_parse_client_init() {
         let cli = Cli::try_parse_from([
-            "bifrost", "client", "init", "--storage", "/shared/bifrost", "--force",
+            "bifrost",
+            "client",
+            "init",
+            "--storage",
+            "/shared/bifrost",
+            "--force",
         ])
         .unwrap();
         match cli.mode {
@@ -837,19 +838,37 @@ mod tests {
             _ => panic!("expected Client mode"),
         }
         // 全局 --storage 照旧可用（init 靠它拿共享目录）
-        assert_eq!(cli.storage.as_deref(), Some(std::path::Path::new("/shared/bifrost")));
+        assert_eq!(
+            cli.storage.as_deref(),
+            Some(std::path::Path::new("/shared/bifrost"))
+        );
     }
 
     #[test]
     fn test_cli_parse_server_init() {
         let cli = Cli::try_parse_from([
-            "bifrost", "server", "init", "--storage", "/shared/bifrost", "--path", "/etc/bifrost/settings.json",
+            "bifrost",
+            "server",
+            "init",
+            "--storage",
+            "/shared/bifrost",
+            "--path",
+            "/etc/bifrost/settings.json",
         ])
         .unwrap();
-        assert_eq!(cli.storage.as_deref(), Some(std::path::Path::new("/shared/bifrost")));
+        assert_eq!(
+            cli.storage.as_deref(),
+            Some(std::path::Path::new("/shared/bifrost"))
+        );
         match cli.mode {
-            Mode::Server { command: Some(ServerCommand::Init { path, force }), .. } => {
-                assert_eq!(path.unwrap(), std::path::PathBuf::from("/etc/bifrost/settings.json"));
+            Mode::Server {
+                command: Some(ServerCommand::Init { path, force }),
+                ..
+            } => {
+                assert_eq!(
+                    path.unwrap(),
+                    std::path::PathBuf::from("/etc/bifrost/settings.json")
+                );
                 assert!(!force);
             }
             _ => panic!("expected ServerCommand::Init"),
@@ -861,11 +880,16 @@ mod tests {
         // 旧写法仍然有效（有 deprecation 提示）
         let cli = Cli::try_parse_from(["bifrost", "server", "--init"]).unwrap();
         match cli.mode {
-            Mode::Server { init, command: None, .. } => assert!(init),
+            Mode::Server {
+                init,
+                command: None,
+                ..
+            } => assert!(init),
             _ => panic!("expected legacy --init"),
         }
     }
 
+    #[test]
     fn test_cli_parse_submit_command_and_job_conflict() {
         let cli = Cli::try_parse_from([
             "bifrost",

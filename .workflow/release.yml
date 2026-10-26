@@ -1,0 +1,74 @@
+# Gitee Go 流水线：main 分支 → 质量门禁 → musl 静态包 → tag → Gitee Release
+#
+# 开启方式（一次性）：
+#   1. 仓库页 → 流水线（Gitee Go）→ 新建流水线 → 选择「导入 .workflow 配置」
+#   2. 流水线「参数设置」里新增加密变量 GITEE_TOKEN
+#      （Gitee → 设置 → 私人令牌，勾 projects 权限；只用来建 tag/Release/传附件）
+#   3. 删掉仓库里自动生成的那条「流水线-202610221113.yml」（1.69 + 部署到主机组，不是我们要的）
+#
+# 说明：
+#   - 本文件放在仓库里就等于"流水线即代码"：改构建逻辑改脚本，不点页面
+#   - rustVersion 用 1.69 是因为 Gitee 自带模板给的就是这个（保证该值在插件里可选）；
+#     真正的工具链版本由 scripts/ci/toolchain.sh 探测并升级到 >= 1.80
+#   - 不配 deploy@agent：发布目标是 Gitee Release，不是自有主机
+
+version: "1.0"
+name: bifrost-release
+displayName: 构建与发布（main → tag + Release）
+
+triggers:
+  push:
+    branches:
+      precise:
+        - main
+
+stages:
+  - name: gates
+    displayName: 质量门禁
+    strategy: fast          # 一个任务挂了就不进发布阶段
+    trigger: auto
+    steps:
+      - step: build@rust
+        name: gates
+        displayName: fmt / clippy / test
+        rustVersion: "1.69"
+        commands:
+          - bash scripts/ci/toolchain.sh
+          - cargo fmt --check
+          - cargo clippy --all-targets -- -D warnings
+          - cargo test --all
+        strategy:
+          retry: "0"
+          resource:
+            cpu: "4"
+            memory: "8"
+
+  - name: release
+    displayName: 打包与发布
+    strategy: naturally
+    trigger: auto
+    steps:
+      - step: build@rust
+        name: release
+        displayName: musl 静态包 + tag + Gitee Release
+        rustVersion: "1.69"
+        commands:
+          # 构建 musl 静态二进制 → 打出 client/server 通用安装包
+          # → API 建 tag（v<Cargo 版本>，已存在则 v<版本>-b<构建号>）
+          # → 建 Release 并上传 tar.gz + .sha256
+          - bash scripts/ci/toolchain.sh
+          - bash scripts/ci/release.sh
+        artifacts:
+          - name: DIST
+            path:
+              - ./dist
+            type: .tar.gz
+        strategy:
+          retry: "0"
+          resource:
+            cpu: "4"
+            memory: "8"
+
+notify: []
+strategy:
+  blocking: true

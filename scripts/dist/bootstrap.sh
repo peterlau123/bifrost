@@ -2,7 +2,7 @@
 # bootstrap.sh —— 从发布包/URL 安装 bifrost MCP（一句话版）
 #
 # 用法:
-#   ./bootstrap.sh --from /data/liuxin/dist/bifrost-mcp-0.1.0-x86_64-linux-musl.tar.gz \
+#   ./bootstrap.sh --from /data/liuxin/dist/bifrost-0.1.0-x86_64-linux-musl.tar.gz \
 #                  --storage /data/liuxin/bifrost
 #   ./bootstrap.sh --from https://gitee.com/<you>/bifrost/releases/download/v0.1.0/<pkg>.tar.gz \
 #                  --sha256 <hex> --storage /data/liuxin/bifrost
@@ -17,6 +17,7 @@ NAME="bifrost"
 SETTINGS=""
 NO_SKILL=0
 NO_HERMES=0
+ROLE=""
 EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -24,6 +25,7 @@ while [ $# -gt 0 ]; do
         --from)      SRC="$2"; shift 2 ;;
         --sha256)    SHA="$2"; shift 2 ;;
         --storage)   STORAGE="$2"; shift 2 ;;
+        --role)      ROLE="$2"; shift 2 ;;
         --name)      NAME="$2"; shift 2 ;;
         --settings)  SETTINGS="$2"; shift 2 ;;
         --no-skill)  NO_SKILL=1; shift ;;
@@ -76,6 +78,7 @@ fi
 ARGS=(--name "$NAME")
 [ -n "$SETTINGS" ] && ARGS+=(--settings "$SETTINGS")
 [ -n "$STORAGE" ] && ARGS+=(--storage "$STORAGE")
+[ -n "$ROLE" ] && ARGS+=(--role "$ROLE")
 [ "$NO_HERMES" = "1" ] && ARGS+=(--no-hermes)
 echo "→ 运行 $PKG/install.sh ${ARGS[*]}"
 bash "$PKG/install.sh" "${ARGS[@]}" "${EXTRA[@]}" || exit 1

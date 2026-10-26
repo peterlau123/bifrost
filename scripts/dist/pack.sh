@@ -1,44 +1,105 @@
 #!/bin/bash
-# 打可搬运的 bifrost MCP 便携包（静态 musl，免编译安装到其它机器）
+# pack.sh —— 打 Linux 安装包（client 与 server 同一个包，装的时候用 --role 选）
+#
+# 产物:
+#   <out>/bifrost-<version>-x86_64-linux-musl.tar.gz
+#   <out>/bifrost-<version>-x86_64-linux-musl.tar.gz.sha256
 #
 # 用法:
-#   scripts/dist/pack.sh                    # 输出到 ../dist/
-#   OUT=/data/liuxin/dist VERSION=0.1.1 scripts/dist/pack.sh
+#   scripts/dist/pack.sh                       # 编 musl 静态版 → 打包到 ../dist
+#   OUT=/tmp/rel VERSION=0.2.0 scripts/dist/pack.sh
+#   scripts/dist/pack.sh --binary target/x86_64-unknown-linux-musl/release/bifrost --skip-build
+#   scripts/dist/pack.sh --target x86_64-unknown-linux-gnu    # 没有 musl 工具链时的退路
 #
-# 产物: <OUT>/bifrost-mcp-<ver>-x86_64-linux-musl.tar.gz (+ .sha256)
+# 默认产物是静态 musl（ldd 显示 "statically linked"），目标机不需要 glibc/工具链。
 set -euo pipefail
 
-VERSION="${VERSION:-0.1.0}"
-ARCH="x86_64-linux-musl"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-OUT="${OUT:-$ROOT/../dist}"
+OUT="${OUT:-$ROOT/dist}"
+VERSION=""
+TARGET="x86_64-unknown-linux-musl"
+SKIP_BUILD=0
+BINARY=""
 
-export RUSTUP_HOME="${RUSTUP_HOME:-/opt/data/.rustup}"
-export CARGO_HOME="${CARGO_HOME:-/opt/data/.cargo}"
-export PATH="$CARGO_HOME/bin:$PATH"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version)    VERSION="$2"; shift 2 ;;
+        --out)        OUT="$2"; shift 2 ;;
+        --target)     TARGET="$2"; shift 2 ;;
+        --binary)     BINARY="$2"; SKIP_BUILD=1; shift 2 ;;
+        --skip-build) SKIP_BUILD=1; shift ;;
+        -h|--help)    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "未知参数: $1" >&2; exit 1 ;;
+    esac
+done
 
-echo "→ 构建 musl 静态二进制"
-cargo build --release --target "x86_64-unknown-linux-musl" --bin bifrost --manifest-path "$ROOT/Cargo.toml"
-BIN="$ROOT/target/x86_64-unknown-linux-musl/release/bifrost"
-[ -x "$BIN" ] || { echo "FAIL: 没找到构建产物 $BIN" >&2; exit 1; }
+# 版本以 Cargo.toml 为准（CI 的 tag 也从这里来），可用 --version 覆盖
+if [ -z "$VERSION" ]; then
+    VERSION="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT/Cargo.toml")"
+fi
+[ -n "$VERSION" ] || { echo "FAIL: 取不到版本号（Cargo.toml）" >&2; exit 1; }
 
-PKG="bifrost-mcp-$VERSION-$ARCH"
-STAGE="$(mktemp -d)/$PKG"
+# 构建环境：只有路径存在时才注入，避免覆盖 CI/宿主自己的工具链
+[ -d /opt/data/.rustup ] && export RUSTUP_HOME="${RUSTUP_HOME:-/opt/data/.rustup}"
+[ -d /opt/data/.cargo ]  && export CARGO_HOME="${CARGO_HOME:-/opt/data/.cargo}"
+case ":$PATH:" in *":${CARGO_HOME:-/nonexistent}/bin:"*) ;; *) [ -d "${CARGO_HOME:-}" ] && export PATH="$CARGO_HOME/bin:$PATH" ;; esac
+
+if [ "$SKIP_BUILD" = "0" ]; then
+    echo "→ 构建 $TARGET（$VERSION）"
+    if [ "$TARGET" = "x86_64-unknown-linux-musl" ]; then
+        rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1 || true
+    fi
+    BINARY="$(cd "$ROOT" && bash scripts/build/build.sh --target "$TARGET" 2>/dev/null | tail -1)"
+fi
+[ -n "$BINARY" ] && [ -x "$BINARY" ] || { echo "FAIL: 找不到可执行产物（$BINARY）" >&2; exit 1; }
+
+# 交付门槛：必须是静态链接（不是就看得到 glibc 依赖，换机器会踩 ABI）
+if command -v ldd >/dev/null; then
+    if ldd "$BINARY" 2>&1 | grep -q "statically linked"; then
+        LINK_KIND="static"
+    else
+        LINK_KIND="dynamic（$(ldd "$BINARY" 2>&1 | awk '/libc\.so/{print $1; exit}')）"
+        echo "! 警告: 产物不是静态链接 → $LINK_KIND，目标机 glibc 旧了会在长跑里偶发失败" >&2
+    fi
+else
+    LINK_KIND="unknown"
+fi
+
+PKG="bifrost-$VERSION-x86_64-linux-musl"
+[ "$TARGET" = "x86_64-unknown-linux-gnu" ] && PKG="bifrost-$VERSION-x86_64-linux-gnu"
+
+STAGE_ROOT="$(mktemp -d)"
+trap 'rm -rf "$STAGE_ROOT"' EXIT
+STAGE="$STAGE_ROOT/$PKG"
 mkdir -p "$STAGE"
-cp "$BIN" "$STAGE/bifrost"
+
+cp "$BINARY" "$STAGE/bifrost"
 cp "$HERE/install.sh" "$HERE/bootstrap.sh" "$HERE/README.md" "$HERE/settings.example.json" "$STAGE/"
-SKILL="$ROOT/skills/setup-bifrost/SKILL.md"
-[ -f "$SKILL" ] && cp "$SKILL" "$STAGE/SKILL.md"
+[ -f "$ROOT/skills/setup-bifrost/SKILL.md" ] && cp "$ROOT/skills/setup-bifrost/SKILL.md" "$STAGE/SKILL.md"
+[ -f "$ROOT/LICENSE" ] && cp "$ROOT/LICENSE" "$STAGE/"
 chmod 0755 "$STAGE/bifrost" "$STAGE/install.sh" "$STAGE/bootstrap.sh"
 
-mkdir -p "$OUT"
-tar czf "$OUT/$PKG.tar.gz" -C "$(dirname "$STAGE")" "$PKG"
-( cd "$OUT" && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
-rm -rf "$(dirname "$STAGE")"
+# 包内清单：出问题时能一眼看出这份包是哪个 commit、用什么工具链编的
+{
+    echo "package:  $PKG"
+    echo "version:  $VERSION"
+    echo "commit:   $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "branch:   $(cd "$ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    echo "target:   $TARGET"
+    echo "link:     $LINK_KIND"
+    echo "rustc:    $(rustc --version 2>/dev/null || echo unknown)"
+    echo "built_at: $(date -u +%FT%TZ)"
+    echo "binary_sha256: $(sha256sum "$BINARY" | cut -d' ' -f1)"
+} > "$STAGE/BUILD_INFO.txt"
 
-echo "✓ $OUT/$PKG.tar.gz  ($(du -h "$OUT/$PKG.tar.gz" | cut -f1))"
-echo "  sha256: $(cut -d' ' -f1 "$OUT/$PKG.tar.gz.sha256" | cut -c1-32)…"
+mkdir -p "$OUT"
+tar czf "$OUT/$PKG.tar.gz" -C "$STAGE_ROOT" "$PKG"
+( cd "$OUT" && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
+
+echo "✓ $OUT/$PKG.tar.gz  ($(du -h "$OUT/$PKG.tar.gz" | cut -f1), link=$LINK_KIND)"
+echo "  sha256: $(cut -d' ' -f1 "$OUT/$PKG.tar.gz.sha256")"
 echo
-echo "目标机安装:"
-echo "  tar xzf $PKG.tar.gz && cd $PKG && ./install.sh --storage <共享盘路径>"
+echo "目标机安装（二选一）:"
+echo "  client: tar xzf $PKG.tar.gz && cd $PKG && ./install.sh --role client --storage <共享盘>"
+echo "  server: tar xzf $PKG.tar.gz && cd $PKG && sudo ./install.sh --role server --storage <共享盘>"
