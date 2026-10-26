@@ -64,9 +64,9 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # ── 2. tag 冲突就让位给构建号，绝不覆盖已发布版本 ────────────────
-code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $TOKEN" \
-        "$API/repos/$REPO/releases/tags/$TAG" 2>/dev/null)"
-if [ "$code" = "200" ] && [ -z "$TAG_OVERRIDE" ]; then
+# 注意：Gitee 对不存在的 tag 返回 HTTP 200 + "null"，必须看 body
+body="$(curl -sS -H "Authorization: token $TOKEN" "$API/repos/$REPO/releases/tags/$TAG" 2>/dev/null)"
+if printf '%s' "$body" | tr -d ' \n' | grep -q '"id":[0-9]' && [ -z "$TAG_OVERRIDE" ]; then
     TAG="v$VERSION-b$BUILD_NUM"
     say "v$VERSION 已发布过，本次用 $TAG"
 fi

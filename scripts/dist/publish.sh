@@ -88,7 +88,9 @@ api() {   # $1=method $2=path  $3...=curl 参数
         -H "Authorization: token $TOKEN" -w $'\n%{http_code}' 2>/dev/null
 }
 
-json_id() { printf '%s' "$1" | tr ',' '\n' | grep -m1 '"id"' | grep -oE '[0-9]+'; }
+# Gitee 对不存在的 release 返回 HTTP 200 + body "null"，所以判定必须看 body，不能只看状态码
+json_id() { printf '%s' "$1" | tr -d ' \n' | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2; }
+has_json_id() { printf '%s' "$1" | tr -d ' \n' | grep -q '"id":[0-9]'; }
 
 # ── 1. tag ─────────────────────────────────────────────────────
 say "仓库: $REPO    tag: $TAG    ref: ${REF:0:12}"
@@ -110,9 +112,10 @@ if [ "$DRY" = "0" ]; then
     resp="$(api GET "/repos/$REPO/releases/tags/$TAG")"
     code="$(printf '%s' "$resp" | tail -1)"
     body="$(printf '%s' "$resp" | sed '$d')"
-    if [ "$code" = "200" ]; then
+    if [ "$code" = "200" ] && has_json_id "$body"; then
         REL_ID="$(json_id "$body")"
-        say "Release 已存在（id=$REL_ID），只补传附件"
+        say "Release 已存在（id=$REL_ID），只补传缺失附件"
+        EXISTING_ASSETS="$(printf '%s' "$body" | tr ',' '\n' | grep -o '"name": *"[^"]*"' | cut -d'"' -f4)"
     fi
 fi
 
@@ -140,6 +143,10 @@ for f in "${ASSETS[@]}"; do
     base="$(basename "$f")"
     if [ "$DRY" = "1" ]; then
         echo "DRY: POST $API/repos/$REPO/releases/$REL_ID/attach_files  file=@$f"
+        continue
+    fi
+    if [ -n "${EXISTING_ASSETS:-}" ] && printf '%s\n' "$EXISTING_ASSETS" | grep -qx "$base"; then
+        say "· 已存在，跳过 $base"
         continue
     fi
     resp="$(api POST "/repos/$REPO/releases/$REL_ID/attach_files" -F "file=@$f")"
