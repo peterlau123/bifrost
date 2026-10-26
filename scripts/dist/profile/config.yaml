@@ -1,0 +1,11 @@
+# bifrost MCP：命令用裸名，靠 PATH 解析 —— 这样 profile 在任意机器上都能用，
+# 不写死 /opt/data 之类的绝对路径。二进制由 setup-bifrost skill 装到 PATH。
+mcp_servers:
+  bifrost:
+    command: bifrost
+    args:
+      - mcp-serve
+    env:
+      BIFROST_CONFIG: ""        # 留空 = 用 $HOME/.bifrost/settings.json
+    connect_timeout: 30.0
+    enabled: true

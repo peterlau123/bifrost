@@ -1,0 +1,16 @@
+# Hermes profile distribution: bifrost MCP 常驻
+# 安装: hermes profile install git@gitee.com:<owner>/bifrost-agent.git
+name: bifrost-agent
+version: 0.1.0
+description: >-
+  Hermes profile with bifrost MCP pre-wired. Ships the static musl binary inside
+  the setup-bifrost skill; run that skill once per machine to put it on PATH.
+author: peterlau
+license: MIT
+
+# 只允许这些路径由发行版覆盖；用户数据（sessions/memories/.env）永不触碰
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - skills
+  - distribution.yaml
