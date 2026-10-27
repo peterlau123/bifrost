@@ -1,6 +1,6 @@
 # Bifrost MCP Server — 通用接入指南
 
-> Bifrost 内置 MCP (Model Context Protocol) server，通过 stdio 暴露 4 个工具。
+> Bifrost 内置 MCP (Model Context Protocol) server，通过 stdio 暴露 5 个工具。
 > **任何支持 MCP 协议的 Agent 均可接入**：Hermes、OpenCode、Claude Code、Cline、Cursor、Codex、通用 Coding Agent 等。
 
 ## 快速开始（3 步）
@@ -137,7 +137,7 @@ env:     BIFROST_CONFIG=/path/to/your/settings.json   (可选; 不设则读 ~/.b
 
 | 工具 | 说明 | 必调时机 |
 |------|------|---------|
-| `bifrost_health` | 检查离线 daemon 心跳 | **提交前必调**：`alive=false` 时提交会丢任务 |
+| `bifrost_health` | 检查离线 daemon 心跳 | 建议提交前检查：`alive=false` 时任务会排队，daemon 恢复后消费 |
 | `bifrost_submit` | 提交命令任务，返回 task_id | 参数: `command`(必填), `timeout`, `priority`, `working_dir` |
 | `bifrost_status` | 查询任务状态 | `task_id` 参数；轮询直到终态 |
 | `bifrost_result` | 拉取完整结果 | 终态后调用；含 stdout/stderr/exit_code/duration_ms |
@@ -154,8 +154,8 @@ env:     BIFROST_CONFIG=/path/to/your/settings.json   (可选; 不设则读 ~/.b
 
 ### 重要使用规则
 
-1. **复杂命令必须 `sh -c '...'` 包裹**：bifrost 防注入设计，命令不经 shell 解释。重定向 `>`、`&&`、`$VAR`、后台 `&` 都需要 `sh -c`。
-2. **提交前检查 health**：daemon 未就绪时提交的任务不会被消费（inotify 只监控新文件）。
+1. **默认 shell 可用**：`daemon.use_shell` 默认 `true`，命令经 `sh -c` 执行，重定向 `>`、`&&`、`$VAR`、后台 `&` 直接可用；参数需保持字面量时，把任务设为 `shell: false`。
+2. **提交前检查 health**：daemon 未就绪时任务会排队；daemon 启动时会做 catch-up 扫描，不会丢任务。
 3. **任务终态**：`Completed`（exit 0）/ `Failed`（非 0 退出）/ `Timeout`（超时）。超时后进程组会被完整清理。
 4. **并发**：daemon 按 `max_concurrent`（默认 10）并行执行，批量快速任务可直接连发。
 
@@ -184,8 +184,8 @@ python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
 |------|------|------|
 | 连接失败/Connection closed | shared_storage 路径无权限或不存在 | 检查 settings.json 的 shared_storage 是否可读写 |
 | `alive: false` | daemon 未启动或心跳过期 | 在 H20 启动 `bifrost server -c <cfg>`，等 2s 再查 |
-| 任务一直 Pending | daemon 未消费（inotify 不扫存量） | 提交前先 health 检查；确认 server 正在运行 |
-| submit 报错 | 命令格式错误 | 复杂命令用 `sh -c '...'` 包裹 |
+| 任务一直 Pending | daemon 未运行，或两端存储路径不一致 | 检查 health，确认 `shared_storage` 是同一物理目录，再看 `scan.json` |
+| submit 报错 | 命令格式/引号问题 | 默认 shell 可用；检查引号与路径 |
 | 两个 Agent 同时用 | 无冲突（只读/写 GPFS 文件） | 无需额外配置，天然支持多客户端 |
 
 ---
@@ -200,8 +200,8 @@ python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
 │        GPFS 共享存储 (shared_storage)    │
 │   commands/  results/  status/  logs/   │
 ├─────────────────────────────────────────┤
-│        bifrost daemon (H20, 离线)        │
-│   inotify 监控 → 并发执行 → 写回结果     │
+│        bifrost daemon（离线机器）        │
+│   inotify 监控 + 兜底扫描 → 并发执行 → 写回结果 │
 └─────────────────────────────────────────┘
 ```
 
