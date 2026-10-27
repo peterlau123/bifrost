@@ -360,7 +360,7 @@ Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes ta
 
 The MCP server is **stateless**: every tool call reads and writes shared storage directly. Multiple agents can connect simultaneously (one process instance per connection) without conflicts.
 
-> The full integration guide, including every agent's config sample, is in [MCP.md](MCP.md).
+> The full integration guide, including every agent's config sample, is in [docs/developer/MCP.md](docs/developer/MCP.md).
 
 ### Quick Start
 
@@ -469,8 +469,8 @@ diagrams, and internals.
 - [Adapter Guide](docs/adapter-guide.md) — custom task adapters
 - [Deployment Guide](docs/deployment.md) — production deployment, systemd, container-build → host-install flow
 - [Operations Practice](docs/ops-practice.md) — real-world operational notes
-- [MCP Integration Guide](MCP.md) — universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
-- [Test Report](test.md) — performance, timeout and job-workflow test reports
+- [MCP Integration Guide](docs/developer/MCP.md) — universal agent integration (OpenCode / Claude Code / Cline / Cursor / Hermes)
+- [Test Report](docs/test-report.md) — performance, timeout and job-workflow test reports
 
 ## Troubleshooting
 

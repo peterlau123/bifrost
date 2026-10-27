@@ -335,7 +335,7 @@ or project-level `.mcp.json`:
 
 ### Cline / Cursor / generic agents
 
-Use the same `mcpServers` JSON shape with `command` + `args` + `env`. See [MCP.md](../../MCP.md) for
+Use the same `mcpServers` JSON shape with `command` + `args` + `env`. See [MCP.md](MCP.md) for
 screenshot-level detail.
 
 ### MCP verification

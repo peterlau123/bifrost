@@ -322,7 +322,7 @@ claude mcp add bifrost --env BIFROST_CONFIG=/path/to/settings.json -- /path/to/b
 ### Cline / Cursor / 通用 Agent
 
 使用同样的 `mcpServers` JSON 结构，包含 `command` + `args` + `env`。详见
-[MCP.md](../../MCP.md)。
+[MCP.md](MCP.md)。
 
 ### MCP 验证
 

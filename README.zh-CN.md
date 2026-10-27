@@ -350,7 +350,7 @@ Agent——都可以直接连接并提交任务，无需自己写文件交换胶
 MCP Server 是**无状态**的：每次工具调用直接读写共享存储。多个 Agent 可以同时连接（每个连接
 一个进程实例）而互不冲突。
 
-> 完整集成指南与各 Agent 配置示例见 [MCP.md](MCP.md)。
+> 完整集成指南与各 Agent 配置示例见 [docs/developer/MCP.md](docs/developer/MCP.md)。
 
 ### 快速开始
 
@@ -456,8 +456,8 @@ CI 还会在每次推送时执行 `cargo fmt --check` 与 `cargo clippy --all-ta
 - [适配器指南](docs/adapter-guide.md) —— 自定义任务适配器
 - [部署指南](docs/deployment.zh-CN.md) —— 生产部署、systemd、容器构建 → 宿主安装
 - [运维实践](docs/ops-practice.md) —— 实际运维记录
-- [MCP 集成指南](MCP.md) —— 通用 Agent 接入
-- [测试报告](test.md) —— 性能、超时与 Job 工作流测试报告
+- [MCP 集成指南](docs/developer/MCP.md) —— 通用 Agent 接入
+- [测试报告](docs/test-report.md) —— 性能、超时与 Job 工作流测试报告
 
 ## 排障
 
