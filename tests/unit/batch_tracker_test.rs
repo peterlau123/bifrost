@@ -1,10 +1,10 @@
 // tests/unit/batch_tracker_test.rs
-use bifrost::core::batch_tracker::{BatchTracker, BatchProgress, BatchStatus};
+use bifrost::core::batch_tracker::{BatchProgress, BatchStatus, BatchTracker};
 use bifrost::core::models::TaskStatus;
-use tempfile::TempDir;
-use uuid::Uuid;
 use chrono::Utc;
 use std::path::PathBuf;
+use tempfile::TempDir;
+use uuid::Uuid;
 
 #[test]
 fn test_save_and_load_progress() {

@@ -1,10 +1,10 @@
 // Unit tests for file watcher
 
-use bifrost::daemon::watcher::{FileWatcher, AsyncFileWatcher};
-use tempfile::TempDir;
+use bifrost::daemon::watcher::{AsyncFileWatcher, FileWatcher};
 use std::fs;
 use std::io::Write;
 use std::time::Duration;
+use tempfile::TempDir;
 
 #[test]
 fn test_watcher_new_directory() {
@@ -19,8 +19,12 @@ fn test_watcher_new_directory() {
 #[test]
 fn test_watcher_nonexistent_directory() {
     let watcher = FileWatcher::new(std::path::PathBuf::from("/nonexistent/path"));
-    assert!(watcher.is_err());
-    assert!(watcher.unwrap_err().contains("Commands directory does not exist"));
+    // FileWatcher 没有实现 Debug，不能直接 unwrap_err()，改成模式匹配取错误消息
+    let err = match watcher {
+        Ok(_) => panic!("不存在的目录应该返回 Err"),
+        Err(e) => e,
+    };
+    assert!(err.contains("Commands directory does not exist"));
 }
 
 #[test]
@@ -34,7 +38,8 @@ fn test_watcher_detect_json_file() {
     // Create a JSON file
     let task_file = commands_dir.join("20260704_120000_12345.json");
     let mut file = fs::File::create(&task_file).unwrap();
-    file.write_all(br#"{"task_id": "12345", "command": "test"}"#).unwrap();
+    file.write_all(br#"{"task_id": "12345", "command": "test"}"#)
+        .unwrap();
     file.sync_all().unwrap();
 
     // Wait for event propagation

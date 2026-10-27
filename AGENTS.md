@@ -197,10 +197,18 @@ bifrost/
 ## 测试
 
 ```bash
-cargo test --all                    # 全部测试
+cargo test --all                    # 全部测试（218 个用例）
 cargo test --lib                    # 仅单元测试
 cargo test --test full_workflow_test # 集成测试
+cargo test --test coverage_boost_test # tests/unit 下的用例（需在 Cargo.toml 用 [[test]] 声明）
 ```
+
+> 注意：`tests/unit/*.rs`、`tests/integration/*.rs` 这些**子目录里的测试不会被 cargo 自动发现**，
+> 必须在 `Cargo.toml` 里逐个写 `[[test]] name/path`。历史上漏声明 → 77 个用例长期不编译也没人发现。
+> 加新测试文件时记得补声明，否则等于没写。
+
+CI（Gitee Go）三个阶段：`gates`（fmt/clippy/cargo test --all）→ `e2e`（`tests/e2e/run_all.py` 6 个场景）
+→ `dist`（main 出 `bifrost-latest` 快照包；`release/x.y.z` 出正式 Release）。详见 `docs/RELEASE.md`。
 
 ## 常见问题
 

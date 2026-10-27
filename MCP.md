@@ -141,6 +141,7 @@ env:     BIFROST_CONFIG=/path/to/your/settings.json   (可选; 不设则读 ~/.b
 | `bifrost_submit` | 提交命令任务，返回 task_id | 参数: `command`(必填), `timeout`, `priority`, `working_dir` |
 | `bifrost_status` | 查询任务状态 | `task_id` 参数；轮询直到终态 |
 | `bifrost_result` | 拉取完整结果 | 终态后调用；含 stdout/stderr/exit_code/duration_ms |
+| `bifrost_cancel` | 取消任务（运行中杀进程组，待执行直接作废） | 任务结束状态为 `Cancelled` |
 
 ### 标准调用序列
 

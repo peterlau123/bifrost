@@ -1,6 +1,6 @@
 // Tests for file communication protocol
-use bifrost::core::protocol::Protocol;
 use bifrost::core::models::{Task, TaskType};
+use bifrost::core::protocol::Protocol;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,10 +20,13 @@ fn test_submit_task() {
         priority: 0,
         timeout: 300,
         retry_count: 3,
+        shell: None,
         env_vars: HashMap::new(),
         working_dir: PathBuf::from("/tmp"),
         artifacts_expected: vec![],
         metadata: HashMap::new(),
+        batch_id: None,
+        task_name: None,
     };
 
     protocol.submit_task(&task).unwrap();
@@ -32,10 +35,12 @@ fn test_submit_task() {
     assert!(temp_dir.path().join("commands").exists());
 
     // Verify task file was created with correct naming format
+    // （atomic_write 会在同目录留 <task>.lock，统计时只数 .json）
     let commands_dir = temp_dir.path().join("commands");
     let task_files: Vec<_> = std::fs::read_dir(&commands_dir)
         .unwrap()
         .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
         .collect();
 
     assert_eq!(task_files.len(), 1);
@@ -58,10 +63,13 @@ fn test_read_task() {
         priority: 5,
         timeout: 60,
         retry_count: 1,
+        shell: None,
         env_vars: HashMap::new(),
         working_dir: PathBuf::from("/tmp"),
         artifacts_expected: vec![],
         metadata: HashMap::new(),
+        batch_id: None,
+        task_name: None,
     };
 
     // Submit task first
@@ -90,7 +98,7 @@ fn test_read_task_not_found() {
 #[test]
 fn test_protocol_creates_commands_dir() {
     let temp_dir = TempDir::new().unwrap();
-    let protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
+    let _protocol = Protocol::new(temp_dir.path().to_path_buf()).unwrap();
 
     // Protocol should create commands directory on initialization
     assert!(temp_dir.path().join("commands").exists());

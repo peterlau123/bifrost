@@ -3,8 +3,8 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Rust Edition](https://img.shields.io/badge/Rust-2021%20Edition-dea584.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
-![Tests](https://img.shields.io/badge/Tests-126%20passed-brightgreen.svg)
-![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
+![Tests](https://img.shields.io/badge/Tests-218%20passed-brightgreen.svg)
+![MCP](https://img.shields.io/badge/MCP-5%20tools-8A2BE2.svg)
 
 <p align="center">
   <img src="assets/bifrost-banner.svg" alt="Bifrost - the rainbow bridge connecting an online client and an offline daemon" width="720">
@@ -933,14 +933,19 @@ if !canonical.starts_with(&artifacts_dir) {
 ### Running Tests
 
 ```bash
-# All tests
+# All tests (218 cases: 130 lib + 10 bin + 77 integration + 1 doctest)
 cargo test --all
 
 # Unit tests only
 cargo test --lib
 
-# Integration tests
+# Integration tests — tests/unit 与 tests/integration 下的文件必须在 Cargo.toml 里用 [[test]] 声明，
+# cargo 不会自动递归子目录（漏声明 = 静默不编译）
 cargo test --test full_workflow_test
+cargo test --test coverage_boost_test
+
+# End-to-end (same suite the pipeline runs)
+cargo build --release && python3 tests/e2e/run_all.py ./target/release/bifrost
 
 # Coverage (requires tarpaulin)
 cargo tarpaulin --out Html

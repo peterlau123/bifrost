@@ -2,6 +2,7 @@
 
 use bifrost::core::models::{Task, TaskStatus, TaskType};
 use bifrost::daemon::executor::Executor;
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -87,7 +88,7 @@ fn test_execute_timeout() {
 }
 
 #[test]
-fn test_stdout_truncation() {
+fn test_stdout_not_truncated() {
     let rt = Runtime::new().unwrap();
     let temp_dir = TempDir::new().unwrap();
     let log_root = temp_dir.path().join("logs");
@@ -103,9 +104,10 @@ fn test_stdout_truncation() {
     let result = result.unwrap();
     assert_eq!(result.status, TaskStatus::Completed);
 
-    // Check truncation (max 1000 chars + "...")
-    assert!(result.output.stdout.len() <= 1003);
-    assert!(result.output.stdout.ends_with("..."));
+    // 现在 stdout 不再截断（见 src 内联 test_9mb_output_not_truncated），完整保留 2000 个 X
+    let stdout = &result.output.stdout;
+    assert_eq!(stdout.trim_end().len(), 2000, "stdout 应完整保留");
+    assert!(!stdout.ends_with("..."), "stdout 不应被截断加省略号");
 }
 
 #[test]

@@ -35,5 +35,51 @@ schemars = "1.2"
 name = "bifrost"
 path = "src/main.rs"
 
+# 集成测试：cargo 只会自动发现 tests/*.rs，不会递归 tests/unit、tests/integration，
+# 所以这里必须显式声明，否则这些文件永远不会被编译（历史坑：77 个用例静默失效过）
+[[test]]
+name = "batch_tracker_test"
+path = "tests/unit/batch_tracker_test.rs"
+
+[[test]]
+name = "core_models_test"
+path = "tests/unit/core_models_test.rs"
+
+[[test]]
+name = "coverage_boost_test"
+path = "tests/unit/coverage_boost_test.rs"
+
+[[test]]
+name = "executor_test"
+path = "tests/unit/executor_test.rs"
+
+[[test]]
+name = "gpu_scheduler_test"
+path = "tests/unit/gpu_scheduler_test.rs"
+
+[[test]]
+name = "gpu_task_processor_test"
+path = "tests/unit/gpu_task_processor_test.rs"
+
+[[test]]
+name = "protocol_test"
+path = "tests/unit/protocol_test.rs"
+
+[[test]]
+name = "task_manifest_test"
+path = "tests/unit/task_manifest_test.rs"
+
+[[test]]
+name = "watcher_test"
+path = "tests/unit/watcher_test.rs"
+
+[[test]]
+name = "batch_gpu_workflow_test"
+path = "tests/integration/batch_gpu_workflow_test.rs"
+
+[[test]]
+name = "full_workflow_test"
+path = "tests/integration/full_workflow_test.rs"
+
 [dev-dependencies]
 tempfile = "3.0"

@@ -10,10 +10,13 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum TaskType {
     /// Pytest test execution
+    #[serde(alias = "pytest")]
     Pytest,
     /// Shell command execution
+    #[serde(alias = "shell")]
     Shell,
     /// Custom command type
+    #[serde(alias = "custom")]
     Custom,
 }
 

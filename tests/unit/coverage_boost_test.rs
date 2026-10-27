@@ -84,6 +84,7 @@ fn test_task_status_serialization() {
             start_time: Utc::now(),
             end_time: Utc::now(),
             duration_ms: 0,
+            command: String::new(),
             retries_used: 0,
             artifacts: Vec::new(),
             error_message: None,
@@ -135,6 +136,7 @@ fn test_task_result_is_success() {
         start_time: Utc::now(),
         end_time: Utc::now(),
         duration_ms: 0,
+        command: String::new(),
         retries_used: 0,
         artifacts: Vec::new(),
         error_message: None,
@@ -162,6 +164,7 @@ fn test_task_result_is_success() {
             start_time: Utc::now(),
             end_time: Utc::now(),
             duration_ms: 0,
+            command: String::new(),
             retries_used: 0,
             artifacts: Vec::new(),
             error_message: None,
@@ -186,6 +189,7 @@ fn test_task_result_duration_calculation() {
         start_time: start,
         end_time: end,
         duration_ms: 0,
+        command: String::new(),
         retries_used: 0,
         artifacts: Vec::new(),
         error_message: None,
@@ -230,7 +234,7 @@ fn test_protocol_new_creates_directories() {
     let temp_dir = TempDir::new().unwrap();
     let storage = temp_dir.path().to_path_buf();
 
-    let protocol = Protocol::new(storage.clone()).unwrap();
+    let _protocol = Protocol::new(storage.clone()).unwrap();
 
     assert!(storage.join("commands").exists());
     assert!(storage.join("results").exists());
@@ -332,20 +336,19 @@ fn test_watcher_detect_new_file() {
 // ==================== Executor Edge Cases ====================
 
 #[test]
-fn test_executor_zero_timeout() {
+fn test_executor_zero_timeout_uses_daemon_default() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let temp_dir = TempDir::new().unwrap();
     let log_root = temp_dir.path().join("logs");
 
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
 
-    // Task with zero timeout should fail immediately
+    // 语义（见 Task.timeout 文档）：0 = 用 daemon 的 task_timeout，不是"立刻超时"
     let task = Task::new("echo test".to_string(), TaskType::Shell).with_timeout(0);
 
     let result = rt.block_on(executor.execute(&task)).unwrap();
 
-    // Zero timeout should trigger timeout error
-    assert_eq!(result.status, TaskStatus::Timeout);
+    assert_eq!(result.status, TaskStatus::Completed);
 }
 
 #[test]

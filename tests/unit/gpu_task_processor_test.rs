@@ -7,9 +7,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
-use bifrost::core::models::{Task, TaskType, TaskStatus};
+use bifrost::core::models::{Task, TaskStatus, TaskType};
 use bifrost::daemon::executor::Executor;
 use bifrost::daemon::gpu_task_processor::GpuTaskProcessor;
 
@@ -30,14 +29,20 @@ fn create_test_executor() -> Executor {
 fn test_gpu_task_processor_creation() {
     let executor = create_test_executor();
     let processor = GpuTaskProcessor::new(vec![0, 1], executor, true, None);
-    assert!(processor.is_ok(), "GpuTaskProcessor should be created successfully");
+    assert!(
+        processor.is_ok(),
+        "GpuTaskProcessor should be created successfully"
+    );
 }
 
 #[test]
 fn test_gpu_task_processor_empty_gpu_pool() {
     let executor = create_test_executor();
     let processor = GpuTaskProcessor::new(vec![], executor, true, None);
-    assert!(processor.is_ok(), "GpuTaskProcessor should handle empty GPU pool");
+    assert!(
+        processor.is_ok(),
+        "GpuTaskProcessor should handle empty GPU pool"
+    );
 }
 
 #[tokio::test]
@@ -50,8 +55,15 @@ async fn test_process_task_success() {
 
     assert!(result.is_ok(), "Task should process successfully");
     let result = result.unwrap();
-    assert_eq!(result.status, TaskStatus::Completed, "Task should complete successfully");
-    assert!(result.output.stdout.contains("hello_world"), "Output should contain task name");
+    assert_eq!(
+        result.status,
+        TaskStatus::Completed,
+        "Task should complete successfully"
+    );
+    assert!(
+        result.output.stdout.contains("hello_world"),
+        "Output should contain task name"
+    );
 }
 
 #[tokio::test]
@@ -61,7 +73,7 @@ async fn test_process_task_multiple_gpus() {
 
     // Process multiple tasks
     for i in 0..4 {
-        let task = create_test_task(format!("task_{}", i));
+        let task = create_test_task(&format!("task_{}", i));
         let result = processor.process_task(task).await;
         assert!(result.is_ok(), "Task {} should process successfully", i);
         let result = result.unwrap();
@@ -80,7 +92,10 @@ async fn test_process_task_no_gpu_available() {
 
     assert!(result.is_err(), "Should fail when no GPU is available");
     let error = result.unwrap_err();
-    assert!(error.contains("No available GPU"), "Error should indicate no GPU available");
+    assert!(
+        error.contains("No available GPU"),
+        "Error should indicate no GPU available"
+    );
 }
 
 #[tokio::test]
@@ -130,7 +145,7 @@ async fn test_run_with_channel_multiple_tasks() {
     let mut task_files = Vec::new();
     for i in 0..3 {
         let task_file = temp_dir.path().join(format!("task_{}.json", i));
-        let task = create_test_task(format!("multi_{}", i));
+        let task = create_test_task(&format!("multi_{}", i));
         let json = serde_json::to_string(&task).unwrap();
 
         let mut file = fs::File::create(&task_file).unwrap();
@@ -198,7 +213,7 @@ async fn test_run_with_channel_invalid_file() {
 
 #[tokio::test]
 async fn test_gpu_isolation_via_cuda_visible_devices() {
-    let temp_dir = TempDir::new().unwrap();
+    let _temp_dir = TempDir::new().unwrap();
     let executor = create_test_executor();
     let mut processor = GpuTaskProcessor::new(vec![2], executor, true, None).unwrap();
 
@@ -213,7 +228,10 @@ async fn test_gpu_isolation_via_cuda_visible_devices() {
     let result = result.unwrap();
     assert_eq!(result.status, TaskStatus::Completed);
     // Output should show GPU 2 was assigned
-    assert!(result.output.stdout.contains("2"), "CUDA_VISIBLE_DEVICES should contain GPU ID 2");
+    assert!(
+        result.output.stdout.contains("2"),
+        "CUDA_VISIBLE_DEVICES should contain GPU ID 2"
+    );
 }
 
 #[tokio::test]
@@ -228,10 +246,21 @@ async fn test_failed_task_handling() {
 
     let result = processor.process_task(task).await;
 
-    assert!(result.is_ok(), "Failed task should still return Ok with TaskResult");
+    assert!(
+        result.is_ok(),
+        "Failed task should still return Ok with TaskResult"
+    );
     let result = result.unwrap();
-    assert_eq!(result.status, TaskStatus::Failed, "Task should be marked as failed");
-    assert_eq!(result.output.exit_code, Some(42), "Exit code should be captured");
+    assert_eq!(
+        result.status,
+        TaskStatus::Failed,
+        "Task should be marked as failed"
+    );
+    assert_eq!(
+        result.output.exit_code,
+        Some(42),
+        "Exit code should be captured"
+    );
 }
 
 #[tokio::test]
@@ -246,9 +275,16 @@ async fn test_timeout_task_handling() {
 
     let result = processor.process_task(task).await;
 
-    assert!(result.is_ok(), "Timed out task should still return Ok with TaskResult");
+    assert!(
+        result.is_ok(),
+        "Timed out task should still return Ok with TaskResult"
+    );
     let result = result.unwrap();
-    assert_eq!(result.status, TaskStatus::Timeout, "Task should be marked as timeout");
+    assert_eq!(
+        result.status,
+        TaskStatus::Timeout,
+        "Task should be marked as timeout"
+    );
 }
 
 #[tokio::test]
@@ -279,7 +315,7 @@ async fn test_round_robin_gpu_assignment() {
 
     // Process tasks - should alternate between GPUs
     let mut results = Vec::new();
-    for i in 0..4 {
+    for _i in 0..4 {
         let task = Task::new("echo $CUDA_VISIBLE_DEVICES".to_string(), TaskType::Shell)
             .with_timeout(5)
             .with_working_dir(PathBuf::from("."));

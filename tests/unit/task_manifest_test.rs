@@ -1,8 +1,8 @@
 // Test for TaskManifest parsing and batch task models
-use bifrost::core::models::{TaskManifest, TaskItem, TaskType, BatchProgress, BatchStatus, TaskStatus};
+use bifrost::core::models::{BatchProgress, BatchStatus, TaskManifest, TaskStatus, TaskType};
+use chrono::Utc;
 use std::path::PathBuf;
 use uuid::Uuid;
-use chrono::Utc;
 
 #[test]
 fn test_parse_task_manifest() {
@@ -38,10 +38,21 @@ fn test_parse_task_manifest() {
     assert_eq!(manifest.tasks[0].command, "pytest tests/test_a.py");
     assert_eq!(manifest.tasks[0].timeout, 600);
     assert_eq!(manifest.tasks[0].priority, 10);
-    assert_eq!(manifest.tasks[0].working_dir, Some(PathBuf::from("/workspace")));
-    assert_eq!(manifest.tasks[0].env_vars.get("CUDA_DEVICE"), Some(&"0".to_string()));
-    assert!(manifest.tasks[0].artifacts_expected.contains(&"report.json".to_string()));
-    assert_eq!(manifest.tasks[0].metadata.get("category"), Some(&"performance".to_string()));
+    assert_eq!(
+        manifest.tasks[0].working_dir,
+        Some(PathBuf::from("/workspace"))
+    );
+    assert_eq!(
+        manifest.tasks[0].env_vars.get("CUDA_DEVICE"),
+        Some(&"0".to_string())
+    );
+    assert!(manifest.tasks[0]
+        .artifacts_expected
+        .contains(&"report.json".to_string()));
+    assert_eq!(
+        manifest.tasks[0].metadata.get("category"),
+        Some(&"performance".to_string())
+    );
 }
 
 #[test]
