@@ -92,8 +92,8 @@ bifrost server init --storage /mnt/gpfs/bifrost   # 生成 daemon 侧默认配�
 
 ### 时钟自检与兜底扫描
 
-部分虚拟化环境（在 H20 上观察到）会冻结 `CLOCK_MONOTONIC`：`sleep()` 永不返回、线程永久挂起，
-daemon 表现为“心跳正常但任务永不消费”。H200 等新机器大概率没有这个缺陷，因此**默认不让每台
+部分虚拟化环境（例如某些 VM/容器宿主）会冻结 `CLOCK_MONOTONIC`：`sleep()` 永不返回、线程永久
+挂起，daemon 表现为“心跳正常但任务永不消费”。大多数现代宿主没有这个缺陷，因此**默认不让每台
 机器承担这个成本**：
 
 | scan_mode | 行为 |

@@ -26,7 +26,7 @@ MCP server 配置解析顺序：**`BIFROST_CONFIG` 环境变量 > `-c` 参数 > 
 }
 ```
 
-> **shared_storage 必须与 H20 上 daemon 用同一个目录**，否则任务无法送达。
+> **shared_storage 必须与 daemon 机器使用同一个物理目录**，否则任务无法送达。
 
 ### 3. 在你使用的 Agent 中注册 MCP server
 
@@ -183,7 +183,7 @@ python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
 | 问题 | 原因 | 解决 |
 |------|------|------|
 | 连接失败/Connection closed | shared_storage 路径无权限或不存在 | 检查 settings.json 的 shared_storage 是否可读写 |
-| `alive: false` | daemon 未启动或心跳过期 | 在 H20 启动 `bifrost server -c <cfg>`，等 2s 再查 |
+| `alive: false` | daemon 未启动或心跳过期 | 在 daemon 机器启动 `bifrost server -c <cfg>`，等 2s 再查 |
 | 任务一直 Pending | daemon 未运行，或两端存储路径不一致 | 检查 health，确认 `shared_storage` 是同一物理目录，再看 `scan.json` |
 | submit 报错 | 命令格式/引号问题 | 默认 shell 可用；检查引号与路径 |
 | 两个 Agent 同时用 | 无冲突（只读/写 GPFS 文件） | 无需额外配置，天然支持多客户端 |
