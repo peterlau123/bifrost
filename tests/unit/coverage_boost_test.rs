@@ -381,7 +381,7 @@ fn test_executor_large_stderr() {
 
     // Generate large stderr using python (shell-words compatible)
     let task = Task::new(
-        "python -c \"import sys; [sys.stderr.write(f'Error line {i}\\n') for i in range(100)]\""
+        "i=0; while [ $i -lt 100 ]; do printf 'Error line %s\n' $i >&2; i=$((i+1)); done"
             .to_string(),
         TaskType::Shell,
     )

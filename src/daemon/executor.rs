@@ -1162,7 +1162,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -c \"print('A' * 2000)\"".to_string(),
+            "head -c 2000 /dev/zero | tr '\\000' A".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(10);
@@ -1177,7 +1177,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -c \"print('你好' * 500)\"".to_string(),
+            "i=0; while [ $i -lt 500 ]; do printf 你好; i=$((i+1)); done".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(10);
@@ -1217,7 +1217,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -u -c \"import sys; sys.stdout.write('B' * 9000000)\"".to_string(),
+            "head -c 9000000 /dev/zero | tr '\\000' B".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(120);
@@ -1237,7 +1237,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -u -c \"import sys; sys.stdout.write('B' * 9000000)\"".to_string(),
+            "head -c 9000000 /dev/zero | tr '\\000' B".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(120);
@@ -1252,7 +1252,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let executor = executor(&temp_dir);
         let task = Task::new(
-            "python3 -u -c \"import sys; sys.stderr.write('E' * 300000); print('ok')\"".to_string(),
+            "head -c 300000 /dev/zero | tr '\\000' E >&2; printf ok".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(30);
@@ -1280,7 +1280,7 @@ mod tests {
         )
         .unwrap();
         let task = Task::new(
-            "python3 -u -c \"import sys; sys.stdout.write('R' * 500000)\"".to_string(),
+            "head -c 500000 /dev/zero | tr '\\000' R".to_string(),
             crate::core::models::TaskType::Shell,
         )
         .with_timeout(60);

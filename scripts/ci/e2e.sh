@@ -21,6 +21,16 @@ fi
 
 PY="$(command -v python3 || command -v python || true)"
 if [ -z "$PY" ]; then
+    # Gitee Go 的 build@rust 镜像默认没有 python；容器里通常能 apt 装（root）
+    if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+        echo "[e2e] 镜像里没有 python3，尝试 apt-get 安装（best-effort）"
+        apt-get update -qq >/dev/null 2>&1 || true
+        apt-get install -y -qq python3 >/dev/null 2>&1 || true
+        PY="$(command -v python3 || true)"
+    fi
+fi
+
+if [ -z "$PY" ]; then
     echo "FAIL: 构建镜像里没有 python3/python —— e2e 跑不了。" >&2
     echo "      流水线需要在 build@rust 插件镜像里提供 python3（或换带 python3 的镜像）" >&2
     exit 1

@@ -96,7 +96,7 @@ fn test_stdout_not_truncated() {
     let executor = Executor::new(log_root, Duration::from_secs(30)).unwrap();
 
     // Python script to generate large output
-    let task = create_test_task("python -c \"print('X' * 2000)\"".to_string());
+    let task = create_test_task("head -c 2000 /dev/zero | tr '\\000' X".to_string());
 
     let result = rt.block_on(executor.execute(&task));
     assert!(result.is_ok());
@@ -153,6 +153,19 @@ fn test_execute_with_working_dir() {
 
 #[test]
 fn test_execute_python_command() {
+    // 这个用例真的在验证"执行 python 命令"，所以保留 python 依赖；
+    // 但 CI 镜像（Gitee Go 的 build@rust）不一定有 python，缺了就跳过而不是红
+    let has_python = std::process::Command::new("python")
+        .arg("-c")
+        .arg("pass")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_python {
+        eprintln!("skip test_execute_python_command: 环境里没有 python，跳过");
+        return;
+    }
+
     let rt = Runtime::new().unwrap();
     let temp_dir = TempDir::new().unwrap();
     let log_root = temp_dir.path().join("logs");

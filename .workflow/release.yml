@@ -44,6 +44,7 @@ stages:
         displayName: fmt / clippy / test
         rustVersion: "1.69"
         commands:
+          - bash scripts/ci/diagnose.sh
           - bash scripts/ci/toolchain.sh
           - cargo fmt --check
           - cargo clippy --all-targets -- -D warnings
