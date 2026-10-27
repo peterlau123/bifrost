@@ -117,7 +117,8 @@ https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<版本>
 
 快照同样带 `.deb`；版本号不变时文件名不变，每次构建覆盖更新（换版本号后旧文件会被清理）。
 
-`latest` 是滚动标签（不指向固定 commit），**真实身份看包内 `BUILD_INFO.txt`**：
+`latest` 每次构建都会移到当前 `main` 提交（所以 Release 页的 Source code 包也是最新的），
+**精确身份看包内 `BUILD_INFO.txt`**：
 
 ```
 package:  bifrost-latest-x86_64-linux-musl

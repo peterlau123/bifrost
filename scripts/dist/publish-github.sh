@@ -112,6 +112,15 @@ if [ "$LATEST" = "1" ]; then
             || fail "创建 latest Release 失败"
     fi
 
+    # 让 latest 标签跟随本次构建，GitHub 自动生成的 Source code 包才不会停在旧提交
+    if [ "$DRY" = "1" ]; then
+        echo "DRY: PATCH .../git/refs/tags/latest sha=$REF force=true"
+    else
+        gh api -X PATCH "repos/$REPO/git/refs/tags/latest" -f sha="$REF" -F force=true >/dev/null 2>&1 \
+            && say "· tag latest → ${REF:0:12}" \
+            || say "! 移动 tag latest 失败（Source code 包可能停留在旧提交）"
+    fi
+
     # 版本号变化后旧 deb/tar 会留在 latest 页面：只保留本次上传的附件
     if [ "$DRY" = "0" ]; then
         while IFS= read -r name; do

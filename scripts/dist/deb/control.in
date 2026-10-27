@@ -5,7 +5,7 @@ Maintainer: Peter Lau <liuxin_signal@163.com>
 Installed-Size: @SIZE@
 Section: utils
 Priority: optional
-Homepage: https://gitee.com/peterlau/bifrost
+Homepage: https://github.com/peterlau123/bifrost
 Description: offline machine command execution framework over shared storage
  Bifrost runs commands on machines that share a filesystem (GPFS/xfs/NFS) or
  over SSH, with a client/server split, GPU pinning per task, timeouts,

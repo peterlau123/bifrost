@@ -4,7 +4,7 @@
 # 用法:
 #   ./bootstrap.sh --from /data/liuxin/dist/bifrost-0.1.0-x86_64-linux-musl.tar.gz \
 #                  --storage /data/liuxin/bifrost
-#   ./bootstrap.sh --from https://gitee.com/<you>/bifrost/releases/download/v0.1.0/<pkg>.tar.gz \
+#   ./bootstrap.sh --from https://github.com/<you>/bifrost/releases/download/v0.1.0/<pkg>.tar.gz \
 #                  --sha256 <hex> --storage /data/liuxin/bifrost
 #
 # 它做四件事：取包 → 校验 → 调 install.sh → 装 skill

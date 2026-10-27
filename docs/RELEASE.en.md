@@ -103,7 +103,8 @@ https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<ver>-1_
 
 Snapshots include the `.deb` too; the filename stays stable until the version bumps (stale files are pruned on upload).
 
-`latest` is a rolling tag (it does not pin a commit). The real identity is inside `BUILD_INFO.txt`:
+`latest` is moved to the current `main` commit on every build (so the Release's Source code
+archives stay current). The exact identity is still recorded in `BUILD_INFO.txt`:
 `version`, `commit`, `branch`, `link`, `built_at`.
 
 ```bash
