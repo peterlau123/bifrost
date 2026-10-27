@@ -27,11 +27,9 @@ Bifrost is a Rust framework for executing commands on offline / air-gapped machi
   - [Daemon setup](#daemon-setup)
   - [End-to-end verification](#end-to-end-verification)
 - [Configuration](#configuration)
-- [Usage](#usage)
+- [Basic Usage](#basic-usage)
 - [Release and Update](#release-and-update)
 - [MCP Server (Agent Integration)](#mcp-server-agent-integration)
-- [Task Types](#task-types)
-- [Task Priority](#task-priority)
 - [Development](#development)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
@@ -57,7 +55,7 @@ Traditional remote execution tools — SSH, RPC, REST APIs — do not work on ai
 - **Unified settings** — `~/.bifrost/settings.json`, initialized from the CLI
 - **Air-gapped operation** — complete separation between client and server
 - **Security hardened** — command injection prevention, path traversal protection
-- **High performance** — inotify file watching plus a fallback scan (100ms), tokio async execution, end-to-end overhead ~4–6%
+- **High performance** — inotify file watching plus a 1s fallback scan, tokio async execution, end-to-end overhead ~4–6%
 - **Multiple task types** — shell commands, pytest runs, custom adapters
 - **Parallel jobs** — `--parallel` submits all tasks concurrently (bounded by the daemon's `max_concurrent`)
 - **Priority scheduling** — tasks are sorted by priority (0–255)
@@ -259,260 +257,69 @@ bifrost client status <TASK_ID>
 # Expected: Completed, output contains "bifrost deployment ok"
 ```
 
-Commands are executed without a shell by default; wrap `&&`, pipes and redirection in `sh -c`.
+Commands run through `sh -c` by default (`daemon.use_shell: true`); set `use_shell: false` or a
+task's `shell: false` when arguments must stay literal.
 
 ## Configuration
 
-### Settings File
-
-`~/.bifrost/settings.json`:
-
-```bash
-bifrost server init --storage /mnt/gpfs/bifrost  # generate daemon-side settings
-```
+Settings resolve in this order: **`BIFROST_CONFIG` env > `-c` flag > `~/.bifrost/settings.json` >
+defaults**.
 
 ```json
 {
-  "shared_storage": "/tmp/bifrost",
-  "client": {},
-  "daemon": {}
+  "shared_storage": "/mnt/gpfs/bifrost",
+  "client": { "poll_interval": "2s", "heartbeat_timeout": "180s" },
+  "daemon": { "max_concurrent": 10, "task_timeout": "300s" }
 }
 ```
 
-| Field | Client | Server | Description |
-|-------|--------|--------|-------------|
-| shared_storage | Yes | Yes | Root directory for commands/results/logs |
-| transport | Yes | -- | Bridge type: `"shared"` (default) or `"ssh"` |
-| ssh | Yes | -- | SSH bridge config (host/remote_dir/...) — required when transport=ssh |
-| client.* | Yes | -- | Poll interval, heartbeat timeout, wait timeout (12h cap) |
-| daemon.* | -- | Yes | Concurrency, timeout, retry, working dir |
+`--storage DIR` overrides `shared_storage` for any subcommand; `--gpus LIST` overrides
+`daemon.gpu_pool`.
 
-#### daemon.* in detail
+The full reference — every `daemon.*` field, timeout/retry semantics, GPU leasing, clock/scan modes,
+and the SSH transport — is in
+[docs/developer/advanced_usage.md](docs/developer/advanced_usage.md).
 
-```json
-{
-  "shared_storage": "/data/liuxin/bifrost",
-  "client": { "poll_interval": "5s" },
-  "daemon": {
-    "task_timeout": "1h30m",
-    "max_concurrent": 8,
-    "use_shell": true,
-    "scan_interval": "1s",
-    "stale_marker_timeout": "3h",
-    "max_retries": 3,
-    "gpu_pool": [0, 1, 2, 3, 4, 5, 6, 7],
-    "working_dir": "/workspace/work"
-  }
-}
-```
+## Basic Usage
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| task_timeout | 1h30m | Default timeout when a task does not specify one. **No longer a cap**: a task's own `timeout` wins |
-| max_concurrent | 10 | Number of tasks executed concurrently (1–100) |
-| use_shell | true | Commands run through `sh -c`, so pipes, redirection, `&&`, `$VAR`, `&` all work; set false to exec argv directly. A single task can override with `shell: false` (use it for tasks containing literal `$` / `*`) |
-| scan_interval | 1s | Fallback scan period in addition to inotify. An idle daemon no longer busy-polls and burns CPU; the scan thread writes `scan.json` (ticks/scanned_at) every second, so you can tell whether the fallback scan is still alive |
-| stale_marker_timeout | 2×task_timeout | A `.processing` claim marker older than this is reclaimed. Ownership is verified before reclaiming: the marker records host/pid/task, and tasks owned by a live local process or by this process are skipped. Keepalive uses `min(60s, value/3)` |
-| max_retries | unlimited | Upper bound on retries (unset = no bound). Retrying itself is opt-in per task: `client submit --retries 2` or YAML `retries: 2`; without it a task runs once. Only non-zero exits are retried — timeouts and cancellations are not. Each attempt is logged separately as `stdout.attemptN.log` |
-| gpu_pool | **auto** | **Unset = automatically use every GPU on the machine** (detected via `nvidia-smi`). Each task gets an exclusive card injected as `CUDA_VISIBLE_DEVICES` (if the task names one itself, that id is leased but the value is not overwritten); the concurrency cap becomes `min(max_concurrent, #GPUs)`. `[]` disables GPU assignment, `[0,1]` uses only those two |
-| cancel_poll | 1s | How often a running task checks for a cancel request. 1s balances cancellability against metadata overhead; 30s would mean a runaway benchmark keeps burning the GPU for half a minute before it dies |
-| log_backups | 1 | Number of rotated backups to keep (`.1`..`.N`, max 9). Each stream rotates at a fixed 64MB, so disk usage is bounded by `64MB × (log_backups+1)`; the newest content is always in `stdout.log` |
-| — | fixed | Result payload cap 64MB (16MB head context + 48MB tail summary) — benchmark summaries sit at the tail of the stream, so the tail is weighted more heavily; full logs live in `logs/<id>/` |
+### Shared storage and pre-flight check
 
-**Timeout semantics:** `client submit --timeout 0` (the default) means "use the daemon's `task_timeout`"; passing a concrete number makes the task's own value authoritative — the daemon no longer clamps it.
-
-**Client-side cap:** `client.wait_timeout` (default 12h) is the hard upper bound on how long the client waits for a single job, so a dead daemon cannot block the client forever.
-
-### Clock self-check and fallback scanning
-
-Some virtualised environments (observed on H20) freeze `CLOCK_MONOTONIC`: `sleep()` deadlines never arrive, threads hang forever, and the daemon looks like "heartbeat fine but tasks never consumed". Newer machines such as H200 almost certainly do not have this defect, so **the default does not make every machine pay for it**:
-
-| scan_mode | Behaviour |
-|---|---|
-| `auto` (default) | Spend ~200ms at startup comparing wall clock against the monotonic clock; switch to spin only when the two are confirmed to diverge |
-| `sleep` | Force timer-driven scanning (lowest CPU), for machines known to be healthy |
-| `spin` | Force busy-poll (~1 core), only for machines that really have a clock problem |
-
-The self-check result is printed in the startup log: `clock: ok (sleep-driven scan)` or `WARNING: ... busy-poll`. If you still suspect a stall at runtime, use the external watchdog `scripts/ops/watchdog.sh` (reads the age of `heartbeat.json` / `scan.json` and restarts past a threshold) — it runs from cron or a systemd timer, so it does not share a failure domain with the daemon.
-
-### SSH Bridge
-
-When the client and the target machine have **no shared filesystem** but are reachable over SSH, use SSH as the transport: the client reads and writes the target's `commands/ results/ status/ artifacts/` directories over ssh, and the daemon on the target keeps consuming tasks through the local Protocol — both sides keep identical directory semantics, so the daemon needs no changes.
-
-```json
-{
-  "shared_storage": "/tmp/bifrost",            // the daemon still uses this for its local paths
-  "transport": "ssh",
-  "ssh": {
-    "host": "target-machine.example.com",      // required
-    "user": "bifrost",                          // optional, defaults to the current user
-    "remote_dir": "/gpfs/bifrost",              // required: the directory acting as shared_storage on the target
-    "port": 22,                                 // optional, default 22
-    "connect_timeout": "10s"                    // optional, per-connection timeout (default 10s)
-  },
-  "client": {},
-  "daemon": {}
-}
-```
-
-Requirements: passwordless `ssh <host>` from the client (`BatchMode=yes`). File contents travel over ssh stdin (`cat >` plus an atomic `mv`), and paths are shell-escaped, so there is no injection risk.
-
-## Usage
-
-### Shared storage and the pre-flight check
-
-Bifrost only requires **a POSIX directory both sides can read and write**; it is not tied to GPFS, and
-the same directory may be a network mount on one machine and a local path on the other. A typical H200
-setup:
+Both machines must see the same POSIX directory. On the daemon machine, run the pre-flight check
+before the first start:
 
 ```bash
-# ---- on the H200 (server side) ----
-cd /data/liuxin/Ax/bifrost
-scripts/build/build.sh --static                # artifact: dist/bifrost-linux-x86_64 (musl)
-bifrost warmup  --storage /data/liuxin/bifrost # required: storage / clock / GPU self-check
-bifrost server  --storage /data/liuxin/bifrost      # GPU pool auto-detects every card on the machine
-# Limit the cards with --gpus 0,3,5; disable GPUs entirely with --gpus "" or "gpu_pool": []
-
-# ---- on the client side (any machine that can see the same directory) ----
-bifrost client submit --storage /data/liuxin/bifrost --command 'nvidia-smi -L'
+bifrost warmup --storage /data/liuxin/bifrost
 ```
 
-- `--storage` and `--gpus` are **global flags** that override `shared_storage` and `daemon.gpu_pool` respectively, and work with any subcommand
-- The GPU pool is auto-detected by default; `--gpus` is only for "limit the range" or "disable" (`--gpus ""`)
-- The repo ships two prebuilt binaries (`dist/`, git-ignored): `bifrost-linux-x86_64` is **musl static** and
-  runs on any x86_64 Linux; the `-glibc` variant requires glibc ≥ 2.39. Use the static one when you are unsure of the target OS
-- On first run `commands/ results/ status/ artifacts/ logs/ cancel/` are created automatically, along with `heartbeat.json` / `scan.json`
-- If the directory is a network filesystem shared by several machines, inotify may drop events — the fallback scan (1s by default) covers it, so GPFS is not required
+It verifies writability, clock behaviour, the existing heartbeat and GPU visibility; details in
+[advanced_usage.md](docs/developer/advanced_usage.md#pre-flight-check-bifrost-warmup).
 
-#### Pre-flight check: `bifrost warmup`
-
-**Step one of every deployment, whatever the filesystem is** — GPFS, NFS, Lustre or a plain local
-directory all go through it. Run it on the machine that will host the daemon, before the first start:
+### Submit, inspect, cancel
 
 ```bash
-bifrost warmup --storage /data/liuxin/bifrost   # or: bifrost --warmup
-```
-
-It checks shared-storage writability and filesystem type, performs the clock self-check (whether
-`sleep()` can hang), reads the existing daemon heartbeat and reports GPU visibility. It exits 1 on
-blocking findings, so it can gate a deploy script — which is exactly what
-`scripts/deploy/deploy-server.sh` does. The systemd unit also runs it on every start (`ExecStartPost`),
-but doing it once by hand catches a bad path or a frozen clock before anything is replaced.
-
-**Why it has to run on the server side:** every check is a property of the executing side — a frozen clock
-affects the daemon's fallback scan thread, the GPUs only exist on the target machine, and writability
-depends on the daemon user's permissions. Running it on the client only proves "the shared directory is
-writable from the client's point of view", which tells you nothing when the daemon fails to start
-(different user, different machine).
-
-### Submit Tasks
-
-```bash
-# Submit an arbitrary shell command (commands starting with pytest are treated as pytest tasks)
+# shell command (shell syntax works by default; daemon.use_shell=true)
 bifrost client submit --command "pytest tests/unit/ -v" --timeout 600
-bifrost client submit --command "..." --timeout 0        # 0 = use the daemon default
-bifrost client submit --command "..." --retries 2        # retry must be enabled explicitly (default 0)
-bifrost client submit --command "python script.py --input data.csv" --timeout 300 --priority 10
+bifrost client submit --command "python script.py --input data.csv" --priority 10
+bifrost client submit --command "..." --retries 2
 
-# With an explicit working directory
-bifrost client submit --command "make build" --working-dir /workspace/project --timeout 1200
-
-# Submit a YAML job (multi-step, sequential)
+# multi-step YAML job
 bifrost client submit --job examples/quick_start.yaml
-```
 
-### Stopping the service
-
-- `Ctrl+C` (SIGINT): graceful shutdown, **exits within 500ms**; a second `Ctrl+C` forces an immediate exit (exit 130)
-- `SIGTERM` (`systemctl stop` / `kill`): also a graceful shutdown
-- On exit it **SIGKILLs the process group of every running task**, so benchmarks cannot survive as orphans still holding the GPUs
-
-### Check Status
-
-```bash
-# Query a task's status (positional argument, no --task-id)
+# status / cancel
 bifrost client status <TASK_ID>
-
-# Output
-Task ID: abc123-def456
-Status: Completed
-Message: Task completed in 45s
-```
-
-### Cancel Task
-
-```bash
 bifrost client cancel <TASK_ID>
 ```
 
-How it works: the client writes `cancel/<task_id>.json` into shared storage; for a **running** task the daemon polls that file every 300ms and, on a hit, `SIGKILL`s the whole process group (including grandchildren under `sh -c`), leaving the result in state `Cancelled`. A **queued** task is marked `Cancelled` right after being claimed, before execution starts. The cancel file is cleaned up once the task finishes. The MCP equivalent is `bifrost_cancel`.
+Tasks whose arguments contain literal `$` or `*` can disable the shell per task (`shell: false`); see
+the advanced reference.
 
-### Clean Up Old Tasks
+### Stopping the daemon
 
-Long-running deployments accumulate files in `commands/ results/ status/ logs/ artifacts/`. `clean` removes all files of **finished tasks** (those with a result file) older than N days:
+- `Ctrl+C` / `SIGTERM`: graceful shutdown within 500ms; a second `Ctrl+C` exits immediately.
+- The daemon kills the process group of every running task, so no orphan keeps holding a GPU.
 
-```bash
-# Preview what would be removed (safe, no deletion)
-bifrost client clean --older-than 7 --dry-run
-
-# Actually remove finished tasks' files older than 7 days
-bifrost client clean --older-than 7
-
-# Target a specific storage directory
-bifrost client clean --storage /gpfs/gcsp/liuxin/bifrost_test --older-than 30
-```
-
-**Safety guarantees:**
-
-- Only tasks **with a result file** (terminal state) are touched — pending/running tasks are never candidates
-- `heartbeat.json` and `settings.json` are **never** removed
-- `--dry-run` previews before any deletion; `--older-than` defaults to 7 days
-
-**Example output:**
-
-```
-$ bifrost client clean --older-than 7 --dry-run
-  would remove aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa (5 files)
-  would remove bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb (2 files)
-[dry-run] 2 finished tasks, 7 files would be removed (older than 7 days)
-
-$ bifrost client clean --older-than 7
-Removed 7 files from 2 finished tasks (older than 7 days)
-```
-
-### Pytest in a Container
-
-To run pytest in a container on the offline machine:
-
-1. **Create a Docker adapter**:
-
-```yaml
-# /etc/bifrost/adapters/docker_pytest.yaml
-name: docker_pytest
-command_template: "docker run --rm -v {working_dir}:/app -w /app python:3.10-slim pytest {path} --json-report --json-report-file=report.json"
-timeout: 600
-artifacts:
-  - report.json
-```
-
-2. **Submit a task with the adapter**:
-
-```bash
-bifrost client submit \
-  --command "docker run --rm -v /workspace/myproject:/app -w /app python:3.10-slim pytest tests/unit/ --json-report --json-report-file=report.json" \
-  --working-dir /workspace/myproject \
-  --timeout 600
-```
-
-### Pytest Prerequisites
-
-Install on the offline machine (or inside the container):
-
-```bash
-pip install pytest pytest-json-report pytest-cov
-```
-
----
+Advanced operations — cleanup, task types and priority, retries, pytest containers, SSH transport —
+are documented in [docs/developer/advanced_usage.md](docs/developer/advanced_usage.md).
 
 ## Release and Update
 
@@ -551,19 +358,6 @@ Release checklist:
 
 Bifrost ships a **built-in MCP (Model Context Protocol) server** that exposes task submission as structured tools over stdio. **Any MCP-capable agent** — Hermes, OpenCode, Claude Code, Cline, Cursor, Codex, or any generic coding agent — can connect and submit tasks to the offline daemon without writing file-exchange glue code.
 
-```
-┌─────────────────────────────────────────┐
-│ Any MCP agent (Hermes/OpenCode/Claude…) │
-│   └─ stdio MCP ── bifrost mcp-serve    │  ← networked side (client machine)
-├─────────────────────────────────────────┤
-│        shared storage (shared_storage)   │
-│   commands/  results/  status/  logs/   │
-├─────────────────────────────────────────┤
-│        bifrost daemon (offline)          │
-│   inotify watch → concurrent exec → write back │
-└─────────────────────────────────────────┘
-```
-
 The MCP server is **stateless**: every tool call reads and writes shared storage directly. Multiple agents can connect simultaneously (one process instance per connection) without conflicts.
 
 > The full integration guide, including every agent's config sample, is in [MCP.md](MCP.md).
@@ -599,57 +393,18 @@ env:     BIFROST_CONFIG=/path/to/settings.json   (optional; falls back to ~/.bif
 
 Config resolution order: **`BIFROST_CONFIG` env > `-c` flag > `~/.bifrost/settings.json` > defaults**.
 
-### Agent Configurations
+### Agent registration
 
-**Hermes**
-
-```bash
-hermes mcp add bifrost --command /path/to/bifrost --args mcp-serve
-hermes mcp test bifrost
-```
-
-**OpenCode** — `opencode.json`:
-
-```json
-{
-  "mcp": {
-    "bifrost": {
-      "type": "stdio",
-      "command": "/path/to/bifrost",
-      "args": ["mcp-serve"],
-      "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
-    }
-  }
-}
-```
-
-**Claude Code**
-
-```bash
-claude mcp add bifrost --env BIFROST_CONFIG=/path/to/settings.json -- /path/to/bifrost mcp-serve
-```
-
-or project-level `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "bifrost": {
-      "command": "/path/to/bifrost",
-      "args": ["mcp-serve"],
-      "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
-    }
-  }
-}
-```
-
-**Cline / Cursor / generic coding agents** — the same `mcpServers` JSON shape with `command` + `args` + `env` (see [MCP.md](MCP.md) for screenshot-level detail).
+The universal config is `command: /path/to/bifrost`, `args: ["mcp-serve"]`, with an optional
+`BIFROST_CONFIG` environment variable. Per-agent samples (Hermes, OpenCode, Claude Code, Cline/Cursor)
+are in
+[docs/developer/advanced_usage.md](docs/developer/advanced_usage.md#mcp-agent-configurations).
 
 ### MCP Tools
 
 | Tool | Purpose | When to call |
 |------|---------|-------------|
-| `bifrost_health` | Check offline daemon heartbeat freshness | **Always before submit**: if `alive=false`, tasks would be written but never consumed (inotify only watches new files) |
+| `bifrost_health` | Check offline daemon heartbeat freshness | Recommended before submit: if `alive=false`, tasks stay queued until the daemon returns (the daemon performs a catch-up scan at startup) |
 | `bifrost_submit` | Submit a command task, returns `task_id` | Args: `command` (required), `timeout`, `priority`, `working_dir` |
 | `bifrost_status` | Query task status | Poll with `task_id` until terminal state |
 | `bifrost_result` | Fetch full result | After terminal state: stdout/stderr/exit_code/duration_ms |
@@ -658,60 +413,17 @@ or project-level `.mcp.json`:
 
 ```
 1. bifrost_health        → confirm alive=true (daemon online)
-2. bifrost_submit        → {"command": "sh -c 'echo hi'", "timeout": 60} → task_id
+2. bifrost_submit        → {"command": "echo hi", "timeout": 60} → task_id
 3. bifrost_status        → poll: Pending → Running → Completed/Failed/Timeout
 4. bifrost_result        → get stdout, exit code, duration
 ```
 
 **Important rules:**
 
-- Complex commands **must be wrapped in `sh -c '...'`** (injection-prevention design; `>`, `&&`, `$VAR`, `&` need a shell)
-- Check `bifrost_health` before submitting — a not-ready daemon silently drops tasks
+- Shell syntax works by default (`use_shell=true`); set `shell: false` for tasks whose arguments
+  contain literal `$` or `*`
+- Check `bifrost_health` before submitting — a not-ready daemon makes submits queue until it returns
 - The daemon executes concurrently up to `max_concurrent` (default 10); burst submits are fine
-
-### Verification
-
-```bash
-# Via Hermes
-hermes mcp test bifrost
-
-# Manual JSON-RPC handshake (any agent-agnostic check)
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"inspector","version":"1.0"}}}' \
-  | bifrost mcp-serve | head -3
-
-# Full E2E: health → submit → status → result
-python3 /gpfs/gcsp/liuxin/bifrost_test/test_mcp_e2e.py
-```
-
-### MCP Troubleshooting
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| Connection closed on add | shared_storage path not writable/missing | Fix `shared_storage` in settings.json |
-| `alive: false` | daemon not running or heartbeat stale | Start `bifrost server -c <cfg>` on the target machine, wait 2s |
-| Task stuck Pending | daemon not consuming (inotify skips existing files) | Check health before submit; ensure the server is up |
-| submit error | command format issue | Wrap complex commands in `sh -c '...'` |
-| Multi-agent usage | — (no conflict, file-based) | No extra config needed |
-
-## Task Types
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `shell` | Shell command execution | Build scripts, data processing |
-| `pytest` | Python test execution | Unit tests, integration tests |
-| `custom` | Adapter-based execution | Docker, specialised tools |
-
-## Task Priority
-
-Priority ranges from 0 to 255:
-
-| Range | Priority | Example |
-|-------|----------|---------|
-| 0-10 | High | Critical fixes, urgent tests |
-| 11-50 | Normal | Regular tests, builds |
-| 51-100 | Low | Background tasks, cleanup |
-| 101-255 | Lowest | Maintenance, logs |
-
 
 ## Development
 
@@ -753,6 +465,7 @@ diagrams, and internals.
 ## Documentation
 
 - [Architecture and Internals](docs/developer/architecture.md) — components, task lifecycle, shared-storage layout, security model, source tree
+- [Advanced Usage and Configuration](docs/developer/advanced_usage.md) — daemon tuning, GPU leasing, scan modes, SSH bridge, cleanup, pytest containers, MCP agent configs
 - [Adapter Guide](docs/adapter-guide.md) — custom task adapters
 - [Deployment Guide](docs/deployment.md) — production deployment, systemd, container-build → host-install flow
 - [Operations Practice](docs/ops-practice.md) — real-world operational notes
@@ -766,7 +479,8 @@ diagrams, and internals.
 1. Check shared storage path permissions
 2. Verify the notify library works: `strace -e inotify_wait bifrost server`
 3. Check that the `commands/` directory exists
-4. **The task was submitted before the daemon started** — inotify only watches files created *after* startup; stale tasks in `commands/` are silently ignored. Resubmit the task or restart the daemon.
+4. Confirm both machines resolve `shared_storage` to the **same physical directory** (a wrong mount looks like "tasks never arrive")
+5. Check `scan.json` freshness — the fallback scan writes it every second, and the daemon also performs a catch-up scan at startup
 
 ### Task Timeout
 
