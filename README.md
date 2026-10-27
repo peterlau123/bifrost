@@ -17,47 +17,21 @@ Bifrost is a Rust framework for executing commands on offline / air-gapped machi
 ## Table of Contents
 
 - [Overview](#overview)
-  - [Problem Solved](#problem-solved)
-  - [Key Features](#key-features)
-- [Architecture](#architecture)
-  - [Simplified (four components)](#simplified-four-components)
-  - [Detailed (with shared storage and internals)](#detailed-with-shared-storage-and-internals)
-- [Workflow](#workflow)
-- [Directory Structure](#directory-structure)
-- [Environment Requirements](#environment-requirements)
-  - [Client Machine (online)](#client-machine-online)
-  - [Daemon Machine (offline)](#daemon-machine-offline)
-  - [Container Execution (Optional)](#container-execution-optional)
+- [How It Works](#how-it-works)
+- [Requirements](#requirements)
 - [Installation](#installation)
-  - [Build](#build)
-  - [Deploy to the Client Machine (online)](#deploy-to-the-client-machine-online)
-  - [Deploy to the Daemon Machine (offline)](#deploy-to-the-daemon-machine-offline)
-  - [End-to-end Verification](#end-to-end-verification)
+  - [Debian / Ubuntu (.deb)](#debian--ubuntu-deb)
+  - [Portable tarball](#portable-tarball)
+  - [From source](#from-source)
+  - [Client setup](#client-setup)
+  - [Daemon setup](#daemon-setup)
+  - [End-to-end verification](#end-to-end-verification)
 - [Configuration](#configuration)
-  - [Settings File](#settings-file)
-  - [daemon.* in detail](#daemon-in-detail)
-  - [Clock self-check and fallback scanning](#clock-self-check-and-fallback-scanning)
-  - [SSH Bridge](#ssh-bridge)
 - [Usage](#usage)
-  - [Shared storage and the pre-flight check](#shared-storage-and-the-pre-flight-check)
-  - [Submit Tasks](#submit-tasks)
-  - [Stopping the service](#stopping-the-service)
-  - [Check Status](#check-status)
-  - [Cancel Task](#cancel-task)
-  - [Clean Up Old Tasks](#clean-up-old-tasks)
-  - [Pytest in a Container](#pytest-in-a-container)
-  - [Pytest Prerequisites](#pytest-prerequisites)
 - [Release and Update](#release-and-update)
 - [MCP Server (Agent Integration)](#mcp-server-agent-integration)
-  - [Quick Start](#quick-start)
-  - [Agent Configurations](#agent-configurations)
-  - [MCP Tools](#mcp-tools)
-  - [Standard Call Sequence](#standard-call-sequence)
-  - [Verification](#verification)
-  - [MCP Troubleshooting](#mcp-troubleshooting)
 - [Task Types](#task-types)
 - [Task Priority](#task-priority)
-- [Security Features](#security-features)
 - [Development](#development)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
@@ -93,219 +67,118 @@ Traditional remote execution tools — SSH, RPC, REST APIs — do not work on ai
 - **MCP Server** — built in, so any MCP-capable agent (Hermes / OpenCode / Claude) can drive it directly
 - **Health monitoring** — heartbeat-based server health checks
 
-## Architecture
+## How It Works
 
-### Simplified (four components)
+Bifrost exchanges JSON files through a POSIX directory that both machines can see:
 
-```mermaid
-flowchart LR
-    subgraph Agent["Agent (AI agent: Hermes/OpenCode/Claude…)"]
-        A1["Submit tasks over MCP<br/>read execution results"]
-    end
+1. The client writes a task to `commands/` (CLI, YAML job, or an MCP tool call).
+2. The daemon watches that directory (`inotify` plus a fallback scan), claims the task, and executes it asynchronously.
+3. The daemon writes `status/`, `logs/`, `artifacts/`, the final `results/` file, and a periodic `heartbeat.json`.
 
-    subgraph Client["Client (networked machine)"]
-        C1["bifrost CLI / MCP Server<br/>serialize tasks into shared storage<br/>read results back from shared storage"]
-    end
+`shared` storage is the default transport; `ssh` is available when there is no shared filesystem.
 
-    subgraph SS["Shared storage<br/>(GPFS file exchange)"]
-        S1["Task entities / results<br/>/ control commands"]
-    end
+See [docs/developer/architecture.md](docs/developer/architecture.md) for component diagrams, the full
+task lifecycle, the shared-storage layout, design decisions, and the security model.
 
-    subgraph Server["Server (offline executor)"]
-        R1["deserialize task entities<br/>execute commands<br/>write results back"]
-    end
+## Requirements
 
-    subgraph Supervisor["systemd"]
-        V1["supervise the server<br/>(restart on failure / stop)"]
-    end
+| Component | Requirement |
+|---|---|
+| **Platform** | Linux x86_64 — release binaries are statically linked musl |
+| **Shared storage** | A POSIX directory readable and writable from both machines (GPFS / NFS / Lustre / local) |
+| **Client** | The `bifrost` binary only — no Rust toolchain, no Python |
+| **Daemon** | The same binary; `systemd` is recommended for production |
+| **pytest tasks** | Python 3.10+, pytest 7.x and `pytest-json-report` on the daemon machine (optional) |
 
-    Agent -->|"submit / query over MCP"| Client
-    Client <-->|"read / write"| SS
-    SS <-->|"deserialize, execute, write back"| Server
-    Supervisor -->|"spawn / monitor / control"| Server
-```
-
-### Detailed (with shared storage and internals)
-
-```mermaid
-flowchart TB
-    subgraph Client["Client Machine (Online)"]
-        CLI["bifrost CLI<br/>(humans / scripts)"]
-        MCP["MCP Server<br/>(bifrost mcp-serve)<br/>agent integration: Hermes/OpenCode/...<br/>(reuses CLI logic internally)"]
-    end
-
-    subgraph Shared["Shared Storage<br/>(GPFS / NFS / Lustre ...)"]
-        CMD["commands/<br/>Task JSON files"]
-        RES["results/<br/>Result JSON files"]
-        STA["status/<br/>Progress updates"]
-        ART["artifacts/<br/>Execution outputs"]
-        HB["heartbeat.json<br/>(daemon heartbeat)"]
-    end
-
-    subgraph Daemon["Daemon Machine (Offline)"]
-        SUP["systemd<br/>(bifrost.service)<br/>Restart=on-failure"]
-        WT["File Watcher<br/>(inotify + 100ms fallback)"]
-        EX["Executor<br/>(tokio async)"]
-        LOG["Log Manager"]
-    end
-
-    CLI -->|"submit task"| CMD
-    MCP -->|"submit task"| CMD
-    CMD -->|"detect new file"| WT
-    WT -->|"execute"| EX
-    EX -->|"write logs"| LOG
-    EX -->|"write result"| RES
-    EX -->|"update progress"| STA
-    EX -->|"store artifacts"| ART
-    EX -->|"heartbeat"| HB
-    RES -->|"poll results"| CLI
-    RES -->|"poll results"| MCP
-    HB -->|"check health"| CLI
-    SUP -->|"spawn/monitor"| WT
-```
-
-## Workflow
-
-```mermaid
-sequenceDiagram
-    participant C as Client (Online)
-    participant M as MCP Server (Agent)
-    participant S as Shared Storage
-    participant V as systemd (Offline)
-    participant D as Daemon (Offline)
-
-    Note over C,M: Either/or: humans and scripts use the CLI,<br/>agents use MCP. The MCP server reuses the client's<br/>submit/query logic — they are not parallel roles.
-    C->>S: Write task to commands/{task_id}.json (CLI)
-    M->>S: Write task to commands/{task_id}.json (agent via MCP)
-    Note over D: Watcher detects it (inotify,<br/>100ms fallback scan as a safety net)
-    D->>S: Update status/{task_id}.json (progress)
-    D->>D: Execute command (timeout/retry)
-    D->>S: Write logs/{task_id}/stdout.log, stderr.log
-    D->>S: Write results/{task_id}_result.json
-    D->>S: Update heartbeat.json
-    Note over C: Poll the result file (0.2s interval,<br/>a stat call — no subprocess overhead on GPFS)
-    C->>S: Read results/{task_id}_result.json (CLI)
-    M->>S: Read results/{task_id}_result.json (agent via MCP)
-    Note over V: Restart=on-failure brings the daemon back
-```
-
-## Directory Structure
-
-```
-/shared/storage/
-├── commands/              # Client writes, daemon reads
-│   └── 20260704_103000_{uuid}.json
-├── results/               # Daemon writes, client reads
-│   └── {uuid}_result.json
-├── status/                # Daemon writes progress updates
-│   └── {uuid}.json
-├── artifacts/             # Execution artifacts
-│   └── {uuid}_report.json
-├── logs/                  # Detailed execution logs
-│   └── {uuid}/
-│       ├── stdout.log
-│       ├── stderr.log
-│       └── metadata.json
-├── heartbeat.json         # Daemon health status
-└── .processing/           # In-flight claim markers (stale ones are reclaimed)
-```
-
-## Environment Requirements
-
-### Client Machine (online)
-
-| Requirement | Version | Notes |
-|------|------|------|
-| **Rust** | 1.70+ | Build environment; only needed once |
-| **Shared storage** | - | GPFS / NFS / Lustre or any POSIX shared filesystem, the same one the daemon uses |
-
-### Daemon Machine (offline)
-
-| Requirement | Version | Notes |
-|------|------|------|
-| **bifrost binary** | - | Single binary, no runtime dependencies |
-| **systemd** | - | Optional, recommended for production |
-| **Shared storage** | - | Same shared directory as the client (GPFS / NFS / Lustre …) |
-| **Python** | 3.10+ | Optional, required for pytest tasks |
-| **pytest** | 7.x | Optional, required for pytest tasks |
-| **pytest-json-report** | - | Plugin for structured results |
-
-### Container Execution (Optional)
-
-Run pytest on the daemon machine inside a container:
-
-```yaml
-# adapters/docker_pytest.yaml
-name: docker_pytest
-description: Execute pytest in Docker container
-command_template: "docker run --rm -v {working_dir}:/work python:3.10 pytest /work/{path} --json-report"
-timeout: 600
-artifacts:
-  - report.json
-env_vars:
-  PYTEST_JSON_REPORT_FILE: "/work/report.json"
-```
+Building from source additionally requires Rust 1.87+.
 
 ## Installation
 
-Deployment is scripted — two commands, one per machine. The scripts live under
-`scripts/{build,deploy,validate,ops,examples}/`; the manual steps below are exactly what they do,
-so you only need them when you want to understand or deviate from the automation.
+Only **Linux x86_64** is supported. The
+[Releases page](https://github.com/peterlau123/bifrost/releases) offers three forms:
+
+| Form | Use it when | What you get |
+|---|---|---|
+| `.deb` | Debian / Ubuntu | `dpkg -i`, `bifrost-setup`, systemd unit |
+| `.tar.gz` | Any x86_64 Linux, no root, air-gapped | binary + `install.sh` (default prefix `/usr/local/bin`) |
+| Source code | You want to audit or build yourself | GitHub-generated tag snapshot; needs Rust 1.87+ |
+
+Every asset has a matching `.sha256`. `latest` is the rolling snapshot of `main`; `vX.Y.Z` tags are
+official releases. Download examples:
 
 ```bash
-# target machine (daemon side, root)
-sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
-
-# online machine (client side)
-scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
+BASE=https://github.com/peterlau123/bifrost/releases/download/latest
+curl -fLO $BASE/bifrost-latest-x86_64-linux-musl.tar.gz
+curl -fLO $BASE/bifrost-latest-x86_64-linux-musl.tar.gz.sha256
+curl -fLO $BASE/bifrost_<version>-1_amd64.deb
+curl -fLO $BASE/bifrost_<version>-1_amd64.deb.sha256
+sha256sum -c *.sha256
 ```
 
-### Build
-
-The one-step path is `scripts/build/build.sh` (add `--static` for the musl artifact that the daemon
-needs, `--dist` to drop a copy in `dist/`). The manual commands below are what it wraps.
-
-> The build output location can be changed by `CARGO_TARGET_DIR` or a `target-dir` setting.
-> Scripts must resolve the real path through `scripts/build/find-binary.sh [release|debug]` instead of
-> hardcoding `target/release/bifrost`: it asks cargo to report the artifact
-> (`--message-format=json`). `scripts/build/build.sh` and the deploy scripts already do this.
-
-Building requires Rust 1.70+. Without a Rust toolchain you can build on any machine that has one and ship the single binary (statically linked, no runtime dependencies).
+### Debian / Ubuntu (.deb)
 
 ```bash
-# Clone the repository
+sudo dpkg -i bifrost_<version>-1_amd64.deb
+bifrost --version
+
+# client role: no sudo needed
+bifrost-setup client --storage /data/liuxin/bifrost
+
+# daemon role: sudo is required (writes /etc and registers systemd)
+sudo bifrost-setup server --storage /data/liuxin/bifrost
+```
+
+The package installs `/usr/bin/bifrost`, `/usr/bin/bifrost-setup`, the systemd unit and
+`/etc/default/bifrost`. The service is **not enabled by default**; `bifrost-setup server` enables and
+starts it.
+
+### Portable tarball
+
+```bash
+tar xzf bifrost-latest-x86_64-linux-musl.tar.gz
+cd bifrost-latest-x86_64-linux-musl
+
+# client (default binary prefix: /usr/local/bin)
+./install.sh --role client --storage /data/liuxin/bifrost
+
+# no root: choose your own prefix
+PREFIX=$HOME/.local/bin ./install.sh --role client --storage /data/liuxin/bifrost
+
+# daemon (writes /etc + systemd, so sudo)
+sudo ./install.sh --role server --storage /data/liuxin/bifrost
+```
+
+Defaults and overrides:
+
+| Item | Default | Override |
+|---|---|---|
+| Binary | `/usr/local/bin/bifrost` | `--prefix DIR` or `PREFIX=DIR` |
+| Client config | `~/.bifrost/settings.json` | `--config FILE` |
+| Daemon config | `/etc/bifrost/settings.json` | `--config FILE` |
+| systemd unit | `/etc/systemd/system/bifrost.service` | `--unit-dir DIR` |
+
+Run `./install.sh --help` for all options (`--no-hermes`, `--no-service`, `--dry-run`, …).
+
+### From source
+
+```bash
 git clone https://github.com/peterlau123/bifrost.git
 cd bifrost
-
-# Build the release binary (~8MB single binary)
 cargo build --release
 
-# Verify the artifact
-ls -lh target/release/bifrost
+sudo install -m 0755 target/release/bifrost /usr/local/bin/bifrost
+
+# or build the static musl artifact used by releases:
+scripts/build/build.sh --static
 ```
 
-> **Cross-compilation:** if the target architecture differs (e.g. build on x86_64, deploy on aarch64):
-> `cargo build --release --target aarch64-unknown-linux-gnu`
+### Client setup
 
----
-
-### Deploy to the Client Machine (online)
-
-The client machine issues commands and queries results; it only needs the CLI binary and a settings file.
-
-Scripted: `scripts/deploy/deploy-client.sh --storage <shared-dir>` installs the binary, runs
-`bifrost client init` and reports whether the daemon is already alive
-(`--binary --config --prefix --skip-build --force` optional).
+`bifrost-setup client` (deb) or `install.sh --role client` (tarball) writes
+`~/.bifrost/settings.json`. Manual equivalent:
 
 ```bash
-# 1. Copy the binary
-sudo cp target/release/bifrost /usr/local/bin/
-
-# 2. Initialize the client-side settings (writes ~/.bifrost/settings.json)
 bifrost client init --storage /mnt/gpfs/bifrost
-
-# 3. Edit it and point shared_storage at the shared directory
-vim ~/.bifrost/settings.json
 ```
 
 ```json
@@ -318,56 +191,32 @@ vim ~/.bifrost/settings.json
 }
 ```
 
-**Verify the client:**
+Verify that the CLI works:
 
 ```bash
-# Show help
-bifrost client submit --help
-
-# Submit a trivial task to verify connectivity (the daemon must already be running)
 bifrost client submit --command "hostname" --timeout 30
-# Note the returned TASK_ID
 bifrost client status <TASK_ID>
 ```
 
----
+### Daemon setup
 
-### Deploy to the Daemon Machine (offline)
-
-The daemon machine is network-isolated: it receives commands and returns results through shared storage.
-
-Both machines mount the same shared directory (GPFS today; NFS, Lustre and other POSIX filesystems also work), so the compiled binary can be picked up directly on the daemon side.
-
-**Scripted (recommended):** `sudo scripts/deploy/deploy-server.sh --storage <shared-dir>` runs, in order:
-candidate-binary gates (static link → `--version` → `warmup`) → `bifrost server init` → install + restart
-(systemd, or `--no-systemd`) → wait for a fresh heartbeat → run one real task as a smoke test, rolling
-back on failure. Optional flags: `--binary --config --prefix --service-name --gpus --skip-build
---skip-warmup --skip-smoke --allow-dynamic --force --log`.
+`bifrost-setup server` or `install.sh --role server` writes `/etc/bifrost/settings.json` and the
+systemd unit. Manual equivalent:
 
 ```bash
-# ---- Client side: write the build into the shared directory ----
-cp target/release/bifrost /mnt/gpfs/bifrost/bin/
-
-# ---- Daemon side: install from shared storage ----
-# GPFS is mounted at /mnt/gpfs, so it can be read directly
-sudo cp /mnt/gpfs/bifrost/bin/bifrost /usr/local/bin/
-sudo chmod +x /usr/local/bin/bifrost
-
-# Initialize the daemon-side settings
-bifrost server init --storage /mnt/gpfs/bifrost
+sudo cp bifrost.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bifrost
+systemctl status bifrost
+journalctl -u bifrost -f
 ```
 
-#### Configure shared storage on the daemon
-
-```bash
-vim ~/.bifrost/settings.json
-```
+Daemon settings (`/etc/bifrost/settings.json` or `~/.bifrost/settings.json`):
 
 ```json
 {
   "shared_storage": "/mnt/gpfs/bifrost",
   "daemon": {
-    "poll_interval": "500ms",
     "task_timeout": "300s",
     "max_retries": 3,
     "heartbeat_interval": "60s",
@@ -377,71 +226,41 @@ vim ~/.bifrost/settings.json
 }
 ```
 
-> **Important:** `shared_storage` must resolve to the same physical directory on the client and on the daemon.
+> **Important:** `shared_storage` must resolve to the same physical directory on the client and on
+the daemon.
 
-#### Pre-flight self-check (every deployment, any filesystem)
-
-`bifrost warmup` is a required step before the daemon goes live — it does not matter whether the
-shared directory is GPFS, NFS, or a plain local path. It checks that the storage is writable, reports
-the filesystem type, probes the clock, reads the existing heartbeat and lists the visible GPUs; it
-exits 1 on blocking findings, so it can gate a deploy script.
+Run the pre-flight check on the daemon machine before starting it:
 
 ```bash
 bifrost warmup --storage /mnt/gpfs/bifrost
 ```
 
-#### Register the systemd service (recommended for production)
+For debugging, run the daemon in the foreground and stop it with `Ctrl+C`:
 
 ```bash
-# Install the unit file (bifrost.service ships in the project root)
-sudo cp bifrost.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable bifrost
-sudo systemctl start bifrost
-
-# Check status
-sudo systemctl status bifrost
-
-# Follow logs
-journalctl -u bifrost -f
-```
-
-> For a shared-storage layout (e.g. H200's `/data/...`) the bundled unit does not fit — use
-> `scripts/deploy/install-systemd.sh --storage <dir>` to render one for the actual layout, then
-> `scripts/deploy/deploy-h200.sh` to install and restart. See [docs/deployment.md](docs/deployment.md).
-
-#### Run the daemon manually (debugging)
-
-```bash
-# Foreground; stop with Ctrl+C
-bifrost server
-
-# With an explicit settings file
 bifrost server --config ~/.bifrost/settings.json
-
-# Verify the heartbeat file was created
-ls -la /mnt/gpfs/bifrost/heartbeat.json
 ```
 
----
+The scripted path (`scripts/deploy/deploy-server.sh` / `deploy-client.sh`) does
+install → restart → heartbeat → smoke test and rolls back on failure; see
+[docs/deployment.md](docs/deployment.md).
 
-### End-to-end Verification
+### End-to-end verification
 
 ```bash
-# Daemon side: confirm the daemon is up and the heartbeat is fresh
-ls -la /mnt/gpfs/bifrost/heartbeat.json           # should exist and be updated within 60s
-cat /mnt/gpfs/bifrost/heartbeat.json | head -5    # shows daemon state
+# daemon side: heartbeat exists and is fresh
+cat /mnt/gpfs/bifrost/heartbeat.json | head -5
 
-# Client side: end-to-end test
-# Note: commands are not interpreted by a shell (injection prevention), so && / | / > need sh -c
+# client side
 bifrost client submit \
   --command "sh -c 'echo \"bifrost deployment ok\"; nvidia-smi -L | head -3'" \
   --timeout 30
-
-# Query the result after 5-10 seconds
 bifrost client status <TASK_ID>
-# Expected: "Completed", with output containing "bifrost deployment ok"
+# Expected: Completed, output contains "bifrost deployment ok"
 ```
+
+Commands are executed without a shell by default; wrap `&&`, pipes and redirection in `sh -c`.
+
 ## Configuration
 
 ### Settings File
@@ -708,11 +527,15 @@ supervisor. Updating it is mostly about knowing which of them keeps running:
 | systemd unit | offline / GPU machine | No — `install-systemd.sh` renders it, and `deploy-server.sh` calls it |
 
 ```bash
-# build once (musl static is what the daemon needs)
-scripts/build/build.sh --static --dist
+# install the new release on the daemon
+sudo dpkg -i bifrost_<version>-1_amd64.deb
+sudo systemctl restart bifrost
 
-# roll it out on the daemon machine (install + restart + heartbeat + smoke, rollback on failure)
+# tarball / scripted path (install + restart + heartbeat + smoke, rollback on failure)
 sudo scripts/deploy/deploy-server.sh --storage /data/liuxin/bifrost
+
+# developers building from source
+scripts/build/build.sh --static --dist
 ```
 
 Release checklist:
@@ -747,11 +570,14 @@ The MCP server is **stateless**: every tool call reads and writes shared storage
 
 ### Quick Start
 
-**1. Build the binary** (on the online/client machine):
+**1. Install the binary** (on the online/client machine) — see [Installation](#installation).
+From a release:
 
 ```bash
-cargo build --release        # target/release/bifrost (3.0M)
+sudo dpkg -i bifrost_<version>-1_amd64.deb   # or unpack the tarball
 ```
+
+Building from source works too: `cargo build --release` → `target/release/bifrost`.
 
 **2. Prepare a settings file** — point `shared_storage` at the same exchange directory the offline daemon uses:
 
@@ -766,7 +592,7 @@ cargo build --release        # target/release/bifrost (3.0M)
 **3. Register it in your agent** — the universal config is:
 
 ```
-command: /path/to/target/release/bifrost
+command: /path/to/bifrost
 args:    ["mcp-serve"]
 env:     BIFROST_CONFIG=/path/to/settings.json   (optional; falls back to ~/.bifrost/settings.json)
 ```
@@ -778,7 +604,7 @@ Config resolution order: **`BIFROST_CONFIG` env > `-c` flag > `~/.bifrost/settin
 **Hermes**
 
 ```bash
-hermes mcp add bifrost --command /path/to/target/release/bifrost --args mcp-serve
+hermes mcp add bifrost --command /path/to/bifrost --args mcp-serve
 hermes mcp test bifrost
 ```
 
@@ -789,7 +615,7 @@ hermes mcp test bifrost
   "mcp": {
     "bifrost": {
       "type": "stdio",
-      "command": "/path/to/target/release/bifrost",
+      "command": "/path/to/bifrost",
       "args": ["mcp-serve"],
       "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
     }
@@ -800,7 +626,7 @@ hermes mcp test bifrost
 **Claude Code**
 
 ```bash
-claude mcp add bifrost --env BIFROST_CONFIG=/path/to/settings.json -- /path/to/target/release/bifrost mcp-serve
+claude mcp add bifrost --env BIFROST_CONFIG=/path/to/settings.json -- /path/to/bifrost mcp-serve
 ```
 
 or project-level `.mcp.json`:
@@ -809,7 +635,7 @@ or project-level `.mcp.json`:
 {
   "mcpServers": {
     "bifrost": {
-      "command": "/path/to/target/release/bifrost",
+      "command": "/path/to/bifrost",
       "args": ["mcp-serve"],
       "env": { "BIFROST_CONFIG": "/path/to/settings.json" }
     }
@@ -886,47 +712,6 @@ Priority ranges from 0 to 255:
 | 51-100 | Low | Background tasks, cleanup |
 | 101-255 | Lowest | Maintenance, logs |
 
-## Security Features
-
-### Command Injection Prevention
-
-Bifrost uses `shell-words::split()` to parse commands safely, avoiding shell interpolation:
-
-```rust
-// Safe: Direct process spawn without shell
-let args = shell_words::split(&command)?;
-Command::new(&args[0]).args(&args[1..]);
-```
-
-> **Practical caveat:** because commands are not interpreted by a shell, **shell syntax such as `&&`, `||`, pipes `|`, redirection `>` and globs `*` does not take effect** — the whole string becomes arguments to a single executable. When you need shell features, wrap the command explicitly in `sh -c`:
-
-```bash
-# ✅ Correct: explicitly invoke a shell for multiple commands/pipes/redirection
-bifrost client submit --command "sh -c 'cd /workspace && make build 2>&1 | tee build.log'"
-
-# ❌ Wrong: && and | are passed to echo verbatim and never executed
-bifrost client submit --command "echo hello && nvidia-smi -L | head -3"
-```
-
-### Task monitoring timing (inotify behaviour)
-
-The daemon watches `commands/` with `notify` (inotify), which **only reports files created after startup** — existing tasks are not scanned. Therefore:
-
-- **Correct order**: start the daemon first, then submit tasks
-- **Leftover tasks**: a task file already in `commands/` before the daemon starts is never consumed (and no error is raised); resubmit it or handle it after a daemon restart
-
-### Path Traversal Protection
-
-Artifact paths are validated with canonicalization:
-
-```rust
-// Validate: no /, \, .., or null bytes
-// Canonicalize: verify path is within artifacts directory
-let canonical = artifact_path.canonicalize()?;
-if !canonical.starts_with(&artifacts_dir) {
-    return Err("Path traversal detected");
-}
-```
 
 ## Development
 
@@ -962,41 +747,12 @@ python3 tests/e2e/run_all.py ./target/release/bifrost   # 6 suites, ~50s
 
 CI also enforces `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on every push.
 
-### Project Structure
-
-```
-bifrost/
-├── src/
-│   ├── core/           # Core models, protocol, and services
-│   │   ├── models.rs   # Task, TaskResult, TaskStatus
-│   │   ├── bridge.rs   # Bridge transport trait
-│   │   ├── protocol.rs # Shared-storage bridge impl
-│   │   ├── settings.rs # ~/.bifrost/settings.json
-│   │   ├── sdnotify.rs # systemd readiness notification
-│   │   ├── error.rs    # Error types
-│   │   ├── lock.rs     # File locking
-│   │   └── batch_tracker.rs
-│   ├── client/         # Client submission and query
-│   │   ├── submit.rs   # Task submission
-│   │   ├── status.rs   # Status query
-│   │   ├── results.rs  # Result retrieval
-│   │   └── launcher.rs # Job launcher
-│   ├── daemon/         # Daemon executor and watcher
-│   │   ├── watcher.rs  # File event monitoring
-│   │   ├── executor.rs # Command execution
-│   │   ├── heartbeat.rs# Health monitoring
-│   │   └── logger.rs   # Log management
-│   └── main.rs         # CLI entry point
-├── tests/
-│   ├── unit/           # Unit tests
-│   └── integration/    # Integration tests
-├── config/             # Default configurations
-├── scripts/            # Build / deploy / validation scripts
-└── docs/               # Documentation
-```
+See [docs/developer/architecture.md](docs/developer/architecture.md) for the source layout, component
+diagrams, and internals.
 
 ## Documentation
 
+- [Architecture and Internals](docs/developer/architecture.md) — components, task lifecycle, shared-storage layout, security model, source tree
 - [Adapter Guide](docs/adapter-guide.md) — custom task adapters
 - [Deployment Guide](docs/deployment.md) — production deployment, systemd, container-build → host-install flow
 - [Operations Practice](docs/ops-practice.md) — real-world operational notes
