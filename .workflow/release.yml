@@ -44,11 +44,9 @@ stages:
         displayName: fmt / clippy / test
         rustVersion: "1.69"
         commands:
-          - bash scripts/ci/diagnose.sh
-          - bash scripts/ci/toolchain.sh
-          - cargo fmt --check
-          - cargo clippy --all-targets -- -D warnings
-          - cargo test --all
+          # 全部逻辑在 gates.sh 里（同一个 shell）：env 诊断 → 工具链升级 → fmt → clippy → test
+          # 插件自带的 1.69 读不了 Cargo.lock v4，必须在该脚本内升级并硬校验
+          - bash scripts/ci/gates.sh
         strategy:
           retry: "0"
           resource:
@@ -66,12 +64,8 @@ stages:
         displayName: release 构建 + 6 个 e2e 场景
         rustVersion: "1.69"
         commands:
-          - bash scripts/ci/toolchain.sh
-          - cargo build --release
-          # timeout / job YAML / concurrent / 多卡 pytest 并发 / robustness / MCP stdio 全链路
-          # 全部是模拟场景，不需要真 GPU；失败脚本退出码非 0 → 阶段失败 → 不进发布
-          # e2e.sh 会先探测 python3 解释器，缺了直接报"镜像里没有 python3"，便于区分环境问题
-          - bash scripts/ci/e2e.sh ./target/release/bifrost
+          # 同一个 shell 里：工具链 → release 构建 → 6 个 e2e 场景（含 python 解释器自检）
+          - bash scripts/ci/e2e-stage.sh
         strategy:
           retry: "0"
           resource:
@@ -89,11 +83,10 @@ stages:
         displayName: 按分支通道打包（main=latest 快照 / release=正式 Release）
         rustVersion: "1.69"
         commands:
-          - bash scripts/ci/toolchain.sh
-          # 通道由 GITEE_BRANCH 判定：
-          #   main          → pack.sh --label latest --no-deb，不发版
+          # 同一个 shell 里：工具链（必须！插件自带 1.69 读不了 lock v4）→ release.sh
+          #   main          → pack.sh --label latest --no-deb，不发正式版本
           #   release/x.y.z → 校验版本一致 → tag v<版本> → Release
-          - bash scripts/ci/release.sh
+          - bash scripts/ci/dist-stage.sh
         artifacts:
           - name: DIST
             path:
