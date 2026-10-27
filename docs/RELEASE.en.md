@@ -1,4 +1,4 @@
-# Build & Release Pipeline (Gitee)
+# Build & Release Pipeline (GitHub Actions)
 
 **Two channels — the branch is the channel.**
 
@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `main` | gates → e2e → pack | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`; also rolls the `tag=latest` prerelease | ❌ no |
 | `release/x.y.z` | gates → e2e → version check → pack | `bifrost-<ver>-x86_64-linux-musl.tar.gz` + `.deb` + two `.sha256` | ✅ tag `v<x.y.z>` + Release |
-| anything else | pipeline doesn't trigger; `release.sh` refuses anyway | — | — |
+| anything else | `ci.yml` runs gates/e2e (`.github/workflows/ci.yml`); `release.yml` doesn't trigger | — | — |
 
 Merging into `main` only produces a *snapshot*. To ship a version, cut `release/x.y.z`.
 
@@ -16,36 +16,42 @@ Merging into `main` only produces a *snapshot*. To ship a version, cut `release/
 # 1. version lives in Cargo.toml only
 sed -i 's/^version = "0.1.0"/version = "0.2.0"/' Cargo.toml
 
-# 2. branch name must equal the version — the pipeline hard-checks it
-git checkout -b release/0.2.0
+# 2. branch name must equal the version — the script hard-checks it
+git switch -c release/0.2.0
 git commit -am "chore(release): v0.2.0"
 git push origin release/0.2.0
 ```
 
-## One-time setup (3 steps)
+Actions then runs gates → e2e → tag `v0.2.0` → Release with four assets.
 
-1. **Import the pipeline**: repo → Pipelines (Gitee Go) → New pipeline → "Import .workflow config" →
-   pick `release.yml`. Build logic then lives in that file plus `scripts/ci/*.sh`, not in the UI.
-2. **Add a token**: pipeline → Parameters → encrypted variable `GITEE_TOKEN`
-   (Gitee → Settings → [personal access token](https://gitee.com/profile/personal_access_tokens),
-   scope `projects`). It creates the tag, the release and uploads assets; without it the release
-   channel fails with an explicit message.
-3. **Delete the auto-generated pipeline**: `.workflow/流水线-202610221113.yml` came from a Gitee
-   template (Rust 1.69 + deploy to a host group) and conflicts with this flow.
+## One-time setup
+
+GitHub Actions needs neither an imported pipeline nor an extra token:
+
+- workflows live in `.github/workflows/` and take effect on push;
+- publishing uses the repository `GITHUB_TOKEN`; `release.yml` declares
+  `permissions: contents: write`;
+- if org/repo policy pins Actions to read-only, allow write access under
+  Settings → Actions → General.
 
 ## What runs
 
 ```
+ci.yml (PRs / feature pushes / reused by release.yml)
 ① gates    cargo fmt --check / cargo clippy -D warnings / cargo test --all
              └─ a failure stops everything downstream
 ② e2e      cargo build --release + tests/e2e/run_all.py
              6 scenarios: timeout / job YAML / concurrent / multi-GPU pytest /
                           robustness / MCP stdio round-trip (all simulated, no real GPU)
-③ dist     scripts/ci/release.sh (channel chosen by GITEE_BRANCH)
+release.yml (main / release/** push, or manual dispatch)
+③ dist     scripts/ci/release.sh (channel chosen by BIFROST_BRANCH)
              main          → pack.sh --label latest --no-deb → rolls the tag=latest prerelease
              release/x.y.z → assert Cargo.toml version == x.y.z → pack.sh (with .deb)
-                             → POST /tags (v<ver>) → POST /releases + attach_files
+                             → gh release create v<ver> + upload assets
 ```
+
+Build logic lives in `scripts/ci/*.sh` and `scripts/dist/*.sh`; the workflows only
+trigger and inject `BIFROST_PUBLISHER=github`, `BIFROST_BRANCH`, `BIFROST_REF`.
 
 ## Four hard rules (enforced in scripts, not by memory)
 
@@ -77,7 +83,7 @@ sudo bifrost-setup server --storage /data/liuxin/bifrost   # server (systemd)
 Every push to `main` rewrites the `tag=latest` prerelease, so there is one stable URL:
 
 ```bash
-https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
 ```
 
 `latest` is a rolling tag (it does not pin a commit). The real identity is inside `BUILD_INFO.txt`:
@@ -85,7 +91,7 @@ https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_6
 
 ```bash
 scripts/dist/bootstrap.sh \
-  --from https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz \
+  --from https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz \
   --storage /data/liuxin/bifrost
 ```
 
@@ -94,16 +100,35 @@ For an official version, replace `latest` with `v<x.y.z>` and use the versioned 
 ## Manual release (when CI is unavailable)
 
 ```bash
-export GITEE_TOKEN=<token>
+# GitHub (gh logged in, or GH_TOKEN)
+export BIFROST_PUBLISHER=github
+export BIFROST_BRANCH=main            # detached HEAD / manual runs need this
+export GITHUB_REPOSITORY=peterlau123/bifrost
 
 bash scripts/ci/release.sh --dry-run              # print the plan, touch nothing
-bash scripts/ci/release.sh --snapshot --no-publish   # latest package only (must be on main)
-bash scripts/ci/release.sh --release              # official release (must be on release/x.y.z)
-bash scripts/ci/release.sh --release --no-publish  # versioned package, no Release
+bash scripts/ci/release.sh --snapshot             # latest package + rolling release
+bash scripts/ci/release.sh --release --no-publish # versioned package, no Release
+BIFROST_BRANCH=release/0.2.0 bash scripts/ci/release.sh --release
 bash scripts/ci/release.sh --release --force-branch --tag v0.2.0   # emergency override
 ```
 
-Both `scripts/dist/publish.sh` and `publish-latest.sh` accept `--dry-run`.
+`scripts/dist/publish-github.sh` accepts `--dry-run`. For Gitee publishing, leave
+`BIFROST_PUBLISHER` unset (defaults to `gitee`) and set `GITEE_TOKEN`; that path uses
+`scripts/dist/publish.sh` / `publish-latest.sh`.
+
+## Verifying a run
+
+```bash
+gh run list --workflow release.yml
+gh release view latest
+gh release view v0.2.0
+```
+
+- success → pipeline worked
+- `main` built but no `latest` → check the `publish-github.sh` step in the Actions log
+  (snapshot publishing is best-effort and never fails `main`)
+- `FAIL: gh 未登录` / `Resource not accessible by integration` → check `permissions`
+  and the repo-level Actions write setting
 
 ## Troubleshooting
 
@@ -112,7 +137,7 @@ Both `scripts/dist/publish.sh` and `publish-latest.sh` accept `--dry-run`.
 | `当前分支 'xxx' 不允许发版` | channel rule: main → snapshot, release/x.y.z → official |
 | `分支与 Cargo.toml 版本不一致` | align `Cargo.toml` `version` with `release/x.y.z` |
 | `vX.Y.Z 已经发布过` | official versions are immutable: bump the version, cut a new branch |
-| `缺 GITEE_TOKEN` | missing encrypted variable, or the token lacks `projects` scope |
+| `Resource not accessible by integration` | repo policy overrides `permissions: contents: write` |
 | `musl 静态构建失败` | intentional hard fail (no silent glibc package); use `--allow-fallback` to override |
 | `latest` update failed | warned only, never fails `main` (snapshot publishing is best-effort) |
-| slow/interrupted downloads | add pipeline parameter `CARGO_REGISTRY_MIRROR=rsproxy` |
+| slow/interrupted downloads | set `CARGO_REGISTRY_MIRROR=rsproxy` as an env in the workflow |

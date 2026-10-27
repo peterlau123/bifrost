@@ -274,7 +274,7 @@ Building requires Rust 1.70+. Without a Rust toolchain you can build on any mach
 
 ```bash
 # Clone the repository
-git clone https://gitee.com/peterlau/bifrost.git
+git clone https://github.com/peterlau123/bifrost.git
 cd bifrost
 
 # Build the release binary (~8MB single binary)

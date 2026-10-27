@@ -272,7 +272,7 @@ scripts/deploy/deploy-client.sh --storage /data/liuxin/bifrost
 
 ```bash
 # 克隆仓库
-git clone https://gitee.com/peterlau/bifrost.git
+git clone https://github.com/peterlau123/bifrost.git
 cd bifrost
 
 # 编译 release 版本（约 8MB 单一二进制）

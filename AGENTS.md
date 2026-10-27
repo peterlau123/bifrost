@@ -207,8 +207,9 @@ cargo test --test coverage_boost_test # tests/unit 下的用例（需在 Cargo.t
 > 必须在 `Cargo.toml` 里逐个写 `[[test]] name/path`。历史上漏声明 → 77 个用例长期不编译也没人发现。
 > 加新测试文件时记得补声明，否则等于没写。
 
-CI（Gitee Go）三个阶段：`gates`（fmt/clippy/cargo test --all）→ `e2e`（`tests/e2e/run_all.py` 6 个场景）
-→ `dist`（main 出 `bifrost-latest` 快照包；`release/x.y.z` 出正式 Release）。详见 `docs/RELEASE.md`。
+CI（GitHub Actions）：`.github/workflows/ci.yml` 跑 `gates`（fmt/clippy/cargo test --all）→ `e2e`
+（`tests/e2e/run_all.py` 6 个场景）；`.github/workflows/release.yml` 在 main 推送时发 `bifrost-latest`
+快照、在 `release/x.y.z` 推送时发正式 Release（`gh release` + `scripts/ci/release.sh`）。详见 `docs/RELEASE.md`。
 
 ## 常见问题
 

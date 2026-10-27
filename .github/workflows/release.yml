@@ -1,0 +1,74 @@
+name: Release
+
+# 发布流水线：门禁/e2e → 按分支通道打包 → GitHub Release
+#
+# 通道规则（与 scripts/ci/release.sh 里的校验一致，分支即通道）：
+#   main           → 快照通道：bifrost-latest-x86_64-linux-musl.tar.gz（+ .sha256）
+#                    滚动更新 tag=latest 的 prerelease，不产正式版本
+#   release/x.y.z  → 正式通道：Cargo.toml 版本必须 == x.y.z → tag v<x.y.z> → Release
+#                    产物：tar.gz + .deb + 各自 .sha256；同版本不可覆盖
+#   其它分支        → 不触发
+#
+# 发正式版本：
+#   1. 改 Cargo.toml 的 version
+#   2. git switch -c release/<版本号> && git commit -am "chore(release): v<版本号>"
+#   3. git push origin release/<版本号>
+#
+# 说明：
+#   - 门禁与 e2e 复用 ci.yml（workflow_call），与 PR 上跑的是同一套脚本
+#   - 认证用仓库自带的 GITHUB_TOKEN，无需额外 secret；权限见 permissions.contents
+#   - 打包脚本仍是 scripts/dist/pack.sh（musl 静态优先），发布走 publish-github.sh
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: gates + e2e
+    uses: ./.github/workflows/ci.yml
+
+  dist:
+    name: dist (main=latest / release/x.y.z=正式版)
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist
+
+      - name: Package & publish (channel decided by branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BIFROST_PUBLISHER: github
+          BIFROST_BRANCH: ${{ github.ref_name }}
+          BIFROST_REF: ${{ github.sha }}
+        run: bash scripts/ci/dist-stage.sh
+
+      - name: Upload dist artifact (pipeline backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bifrost-dist
+          path: dist/
+          if-no-files-found: ignore
+          retention-days: 14
