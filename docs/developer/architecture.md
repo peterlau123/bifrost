@@ -133,36 +133,36 @@ sequenceDiagram
 
 ## Security model
 
-### Command parsing
+### Command execution
 
-Bifrost uses `shell-words::split()` to parse commands safely, avoiding shell interpolation:
+`daemon.use_shell` defaults to `true`: commands run as `sh -c "<command>"`, so pipes, redirects,
+`&&`, `$VAR` and background `&` work. This is a deliberate trust boundary — whoever can write to
+`commands/` can already run code, and the daemon does not try to sanitize shell syntax.
+
+With `use_shell: false` (daemon-wide) or `shell: false` (per task), the command is parsed with
+`shell-words::split()` and executed as argv, without shell interpolation:
 
 ```rust
-// Safe: direct process spawn without a shell
 let args = shell_words::split(&command)?;
 Command::new(&args[0]).args(&args[1..]);
 ```
 
-Because commands are not interpreted by a shell by default, **shell syntax such as `&&`, `||`,
-pipes `|`, redirection `>`, and globs `*` does not take effect** — the whole string becomes arguments
-to a single executable. Wrap complex commands explicitly:
+Use the argv mode for tasks whose arguments contain literal `$`, `*` or quotes:
 
 ```bash
-# ✅ Correct: explicitly invoke a shell for multiple commands/pipes/redirection
-bifrost client submit --command "sh -c 'cd /workspace && make build 2>&1 | tee build.log'"
-
-# ❌ Wrong: && and | are passed to echo verbatim and never executed
-bifrost client submit --command "echo hello && nvidia-smi -L | head -3"
+# shell off: the regex is passed through literally
+bifrost client submit --command "grep -n 'a.*b' file.txt"   # with shell: false in the task
 ```
 
-### Task monitoring timing (inotify behaviour)
+### Task monitoring timing
 
-The daemon watches `commands/` with `notify` (inotify), which **only reports files created after
-startup** — existing tasks are not scanned by the event watcher. Therefore:
+The daemon watches `commands/` with `notify` (inotify) as the fast path and runs a fallback scan
+(`daemon.scan_interval`, 1s by default) for events the filesystem dropped. It also performs an
+initial catch-up scan at startup, so tasks written while the daemon was down are not lost.
 
-- **Correct order**: start the daemon first, then submit tasks
-- **Leftover tasks**: a task file already in `commands/` before the daemon starts is not consumed by
-  the event watcher (and no error is raised); resubmit it or let the fallback scan pick it up
+- Starting the daemon first keeps latency predictable, but is not required
+- If tasks still look stuck, check that `shared_storage` resolves to the same physical directory on
+  both machines and that `scan.json` is fresh
 
 ### Path traversal protection
 
@@ -213,6 +213,7 @@ bifrost/
 ## Further reading
 
 - [README](../../README.md) — install, configure, and use Bifrost
+- [Advanced usage](advanced_usage.md) — full settings reference, SSH bridge, task scheduling, MCP agent configs
 - [Deployment guide](../deployment.md) — production deployment and systemd
 - [Adapter guide](../adapter-guide.md) — custom task adapters
 - [Operations practice](../ops-practice.md) — operational notes
