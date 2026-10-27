@@ -10,7 +10,7 @@
 #   OUT=/tmp/rel VERSION=0.2.0 scripts/dist/pack.sh
 #   scripts/dist/pack.sh --binary target/x86_64-unknown-linux-musl/release/bifrost --skip-build
 #   scripts/dist/pack.sh --target x86_64-unknown-linux-gnu    # 没有 musl 工具链时的退路
-#   scripts/dist/pack.sh --label latest --no-deb              # main 分支快照包（bifrost-latest-...）
+#   scripts/dist/pack.sh --label latest              # main 分支快照包（bifrost-latest-... tar.gz + .deb）
 #
 # 默认产物是静态 musl（ldd 显示 "statically linked"），目标机不需要 glibc/工具链。
 set -euo pipefail

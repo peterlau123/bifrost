@@ -4,11 +4,19 @@
 
 | 分支 | 推送后发生什么 | 产物 | 有没有正式版本 |
 |---|---|---|---|
-| `main` | gates → e2e → 打包 | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`，并滚动更新 `tag=latest` 的 Release（prerelease） | ❌ 不产正式版本 |
+| `main` | gates → e2e → 打包 | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`、`bifrost_<版本>-1_amd64.deb` + `.sha256`，并滚动更新 `tag=latest` 的 Release（prerelease） | ❌ 不产正式版本 |
 | `release/x.y.z` | gates → e2e → 校验版本 → 打包 | `bifrost-<版本>-x86_64-linux-musl.tar.gz` + `.deb` + 两个 `.sha256` | ✅ tag `v<x.y.z>` + Release |
 | 其它分支 | `ci.yml` 跑门禁与 e2e（`.github/workflows/ci.yml`），`release.yml` 不触发 | — | — |
 
 一句话：**代码合进 main 只是"最新快照"，要发正式版本就开 `release/x.y.z` 分支推上去。**
+
+每个 Release 页面提供三种交付形式（仅 Linux x86_64）：
+
+| 形式 | 适合 | 说明 |
+|---|---|---|
+| `tar.gz` | 任意 x86_64 Linux、无 root、气隙机器 | 解压后按包内 `README.md` 跑 `install.sh`；默认装到 `/usr/local/bin`，可用 `--prefix` 指定 |
+| `.deb` | Debian / Ubuntu | `sudo dpkg -i bifrost_<版本>-1_amd64.deb`，之后用 `bifrost-setup` 选角色 |
+| Source code | 需要审计或自行编译 | GitHub 自动生成 `Source code (zip)` / `Source code (tar.gz)`；需要 Rust 1.87+ |
 
 ## 发一个正式版本的完整动作
 
@@ -73,6 +81,8 @@ release.yml（main / release/** 推送，或手动 dispatch）
 | `bifrost-<版本>-x86_64-linux-musl.tar.gz` | 任意 x86_64 Linux 的便携包（含 install.sh） |
 | 两个 `.sha256` | 校验和 |
 
+另外 GitHub 会为每个 Release 自动附带 `Source code (zip)` / `Source code (tar.gz)`，源码编译安装用。
+
 `.deb` 里是 `/usr/bin/bifrost` + `/usr/bin/bifrost-setup` + systemd unit（默认不启用）+
 `/etc/default/bifrost`（conffile）。装完用 `bifrost-setup client|server --storage <DIR>` 定角色，
 因为 apt 安装无法带参数，而共享盘路径每台机器不同。
@@ -94,14 +104,18 @@ tar xzf bifrost-<版本>-x86_64-linux-musl.tar.gz && cd bifrost-<版本>-x86_64-
 sudo ./install.sh --role server --storage /data/liuxin/bifrost # 服务端（systemd）
 ```
 
-## 快照包（main 的 latest）
+## 快照（main 的 latest）
 
-`main` 每次推送都会把 `tag=latest` 的滚动 Release 覆盖更新，所以有一个稳定下载地址：
+`main` 每次推送都会把 `tag=latest` 的滚动 Release 覆盖更新，所以有稳定的下载地址：
 
 ```bash
 https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
 https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz.sha256
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<版本>-1_amd64.deb
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<版本>-1_amd64.deb.sha256
 ```
+
+快照同样带 `.deb`；版本号不变时文件名不变，每次构建覆盖更新（换版本号后旧文件会被清理）。
 
 `latest` 是滚动标签（不指向固定 commit），**真实身份看包内 `BUILD_INFO.txt`**：
 

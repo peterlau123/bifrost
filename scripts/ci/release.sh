@@ -2,7 +2,7 @@
 # release.sh —— 发布入口（GitHub Actions / Gitee Go / 本机共用）
 #
 # 两条通道（按分支自动判定，也可以用参数强制）:
-#   main            → 快照通道：只出 bifrost-latest-x86_64-linux-musl.tar.gz（+ .sha256）
+#   main            → 快照通道：bifrost-latest-x86_64-linux-musl.tar.gz + .deb（+ .sha256）
 #                     滚动更新 tag=latest 的 Release 附件（prerelease），不产正式版本
 #   release/x.y.z   → 正式通道：Cargo.toml 版本必须等于 x.y.z → 打 tag v<x.y.z> → 发 Release
 #   其它分支        → 直接拒绝（防止从 feature 分支误发版；确需发版加 --force-branch）
@@ -104,7 +104,7 @@ case "$CHANNEL" in
     snapshot)
         LABEL="latest"
         TAG=""
-        say "快照通道：出 bifrost-latest-* 包；有凭据时覆盖更新 tag=latest 的滚动 Release（不产正式版本）"
+        say "快照通道：出 bifrost-latest-* tar.gz 与 .deb；有凭据时覆盖更新 tag=latest 的滚动 Release（不产正式版本）"
         ;;
     release)
         # 分支名与 Cargo.toml 版本必须一致，防止 release/0.3.0 里打出 0.2.0 的包
@@ -124,13 +124,11 @@ say "版本: $VERSION   分支: $BRANCH   通道: $CHANNEL   构建号: $BUILD_N
 if [ "$DRY" = "1" ]; then
     dry_args="--version $VERSION --out $OUT"
     [ -n "$LABEL" ] && dry_args="$dry_args --label $LABEL"
-    [ "$CHANNEL" = "snapshot" ] && dry_args="$dry_args --no-deb"
     say "DRY: pack.sh $dry_args"
 else
     mkdir -p "$OUT"
     PACK_ARGS=(--version "$VERSION" --out "$OUT")
     [ -n "$LABEL" ] && PACK_ARGS+=(--label "$LABEL")
-    [ "$CHANNEL" = "snapshot" ] && PACK_ARGS+=(--no-deb)   # 快照包不带 .deb（apt 里版本号会打架）
 
     if ! bash scripts/dist/pack.sh "${PACK_ARGS[@]}"; then
         [ "$ALLOW_FALLBACK" = "1" ] || fail "musl 静态构建失败（要退回 gnu 包请加 --allow-fallback，允许目标机依赖 glibc）"
@@ -141,7 +139,7 @@ else
 fi
 
 if [ "$CHANNEL" = "snapshot" ]; then
-    say "快照包完成: $OUT/bifrost-latest-x86_64-linux-musl.tar.gz"
+    say "快照包完成: $OUT/bifrost-latest-x86_64-linux-musl.tar.gz（含 .deb）"
     [ -n "${GITEE_PARAMS:-}" ] && echo "SNAPSHOT_TAG=latest" >> "$GITEE_PARAMS"
     if [ "$PUBLISH" = "1" ] && [ "$DRY" = "0" ]; then
         if [ "$PUBLISHER" = "github" ]; then

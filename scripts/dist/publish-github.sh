@@ -69,7 +69,7 @@ REF="${REF:-${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo main)}}"
 if [ "$LATEST" = "1" ]; then
     [ -z "$TAG" ] || fail "--latest 与 --tag 只能二选一"
     TAG="latest"
-    mapfile -t ASSETS < <(ls -1 "$DIST"/bifrost-latest-* 2>/dev/null)
+    mapfile -t ASSETS < <(ls -1 "$DIST"/bifrost-latest-* "$DIST"/*.deb* 2>/dev/null)
     [ ${#ASSETS[@]} -gt 0 ] || fail "$DIST 里没有 bifrost-latest-* 快照包"
     REL_NAME="${REL_NAME:-latest snapshot}"
     PRERELEASE=1
@@ -111,6 +111,24 @@ if [ "$LATEST" = "1" ]; then
             --title "$REL_NAME" --notes "$NOTES_TEXT" --prerelease \
             || fail "创建 latest Release 失败"
     fi
+
+    # 版本号变化后旧 deb/tar 会留在 latest 页面：只保留本次上传的附件
+    if [ "$DRY" = "0" ]; then
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            keep=0
+            for f in "${ASSETS[@]}"; do
+                [ "$(basename "$f")" = "$name" ] && { keep=1; break; }
+            done
+            if [ "$keep" = "0" ]; then
+                case "$name" in
+                    bifrost*) gh release delete-asset "$TAG" "$name" --repo "$REPO" --yes >/dev/null 2>&1 \
+                                  && say "· 清理旧附件 $name" ;;
+                esac
+            fi
+        done < <(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' 2>/dev/null)
+    fi
+
     run gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}" \
         || fail "上传快照附件失败"
     say "完成: https://github.com/$REPO/releases/tag/$TAG"
