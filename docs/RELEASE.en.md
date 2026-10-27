@@ -4,11 +4,19 @@
 
 | Branch | What a push does | Artifacts | Official release? |
 |---|---|---|---|
-| `main` | gates → e2e → pack | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`; also rolls the `tag=latest` prerelease | ❌ no |
+| `main` | gates → e2e → pack | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`, `bifrost_<ver>-1_amd64.deb` + `.sha256`; also rolls the `tag=latest` prerelease | ❌ no |
 | `release/x.y.z` | gates → e2e → version check → pack | `bifrost-<ver>-x86_64-linux-musl.tar.gz` + `.deb` + two `.sha256` | ✅ tag `v<x.y.z>` + Release |
 | anything else | `ci.yml` runs gates/e2e (`.github/workflows/ci.yml`); `release.yml` doesn't trigger | — | — |
 
 Merging into `main` only produces a *snapshot*. To ship a version, cut `release/x.y.z`.
+
+Every Release page offers three forms (Linux x86_64 only):
+
+| Form | Best for | Notes |
+|---|---|---|
+| `tar.gz` | any x86_64 Linux, no root, air-gapped | extract and follow the bundled `README.md` / `install.sh`; default prefix `/usr/local/bin`, override with `--prefix` |
+| `.deb` | Debian / Ubuntu | `sudo dpkg -i bifrost_<ver>-1_amd64.deb`, then pick a role with `bifrost-setup` |
+| Source code | auditing or self-compiling | GitHub auto-generates `Source code (zip)` / `Source code (tar.gz)`; needs Rust 1.87+ |
 
 ## Shipping a version
 
@@ -64,11 +72,15 @@ trigger and inject `BIFROST_PUBLISHER=github`, `BIFROST_BRANCH`, `BIFROST_REF`.
 
 ## Assets
 
+Each official release uploads four files:
+
 | File | Use |
 |---|---|
 | `bifrost_<ver>-1_amd64.deb` | Debian/Ubuntu: `apt install ./xxx.deb` or `dpkg -i` |
 | `bifrost-<ver>-x86_64-linux-musl.tar.gz` | portable package for any x86_64 Linux (contains `install.sh`) |
 | two `.sha256` | checksums |
+
+GitHub also attaches `Source code (zip)` / `Source code (tar.gz)` to every Release for source builds.
 
 The target machine needs neither Rust nor a matching glibc:
 
@@ -80,11 +92,16 @@ sudo bifrost-setup server --storage /data/liuxin/bifrost   # server (systemd)
 
 ## Snapshot channel (`latest`)
 
-Every push to `main` rewrites the `tag=latest` prerelease, so there is one stable URL:
+Every push to `main` rewrites the `tag=latest` prerelease, so there are stable URLs:
 
 ```bash
 https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz.sha256
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<ver>-1_amd64.deb
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost_<ver>-1_amd64.deb.sha256
 ```
+
+Snapshots include the `.deb` too; the filename stays stable until the version bumps (stale files are pruned on upload).
 
 `latest` is a rolling tag (it does not pin a commit). The real identity is inside `BUILD_INFO.txt`:
 `version`, `commit`, `branch`, `link`, `built_at`.
