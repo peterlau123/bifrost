@@ -35,6 +35,10 @@
 `release/x.y.z` 正式版必须在分支上包含版本号变更（`Cargo.toml`），否则同样不会触发。
 需要强制发布时，在 Actions 里手动运行：`gh workflow run release.yml --ref <branch>`。
 
+如果源码有改动但这次不想打包，在推送的 commit message（PR 合并时是合并 / squash 提交的 message）
+里加上 `[skip release]`：gates/e2e 仍会运行，`dist` 打包与发布步骤会跳过。手动 dispatch 不受该
+标记影响，始终执行完整发布。
+
 ## 发一个正式版本的完整动作
 
 ```bash
