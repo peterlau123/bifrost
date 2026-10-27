@@ -22,7 +22,7 @@ Every Release page offers three forms (Linux x86_64 only):
 
 ```bash
 # 1. version lives in Cargo.toml only
-sed -i 's/^version = "0.1.0"/version = "0.2.0"/' Cargo.toml
+sed -i 's/^version = "0.1.1"/version = "0.2.0"/' Cargo.toml
 
 # 2. branch name must equal the version — the script hard-checks it
 git switch -c release/0.2.0

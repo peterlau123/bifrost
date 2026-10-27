@@ -4,6 +4,8 @@ Design-level material for Bifrost. The [README](../../README.md) is the user gui
 covers components, the task lifecycle, the shared-storage layout, security boundaries, and the
 source tree.
 
+> [简体中文](architecture.zh-CN.md) | English
+
 ## Components
 
 ### Simplified (four components)
