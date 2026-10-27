@@ -69,7 +69,8 @@ stages:
           - cargo build --release
           # timeout / job YAML / concurrent / 多卡 pytest 并发 / robustness / MCP stdio 全链路
           # 全部是模拟场景，不需要真 GPU；失败脚本退出码非 0 → 阶段失败 → 不进发布
-          - python3 tests/e2e/run_all.py ./target/release/bifrost
+          # e2e.sh 会先探测 python3 解释器，缺了直接报"镜像里没有 python3"，便于区分环境问题
+          - bash scripts/ci/e2e.sh ./target/release/bifrost
         strategy:
           retry: "0"
           resource:

@@ -145,6 +145,23 @@ bash scripts/ci/release.sh --release --force-branch --tag v0.2.0
 
 `scripts/dist/publish.sh` / `publish-latest.sh` 都支持 `--dry-run`，可以先看 API 调用再真跑。
 
+## 怎么确认流水线真的跑了
+
+推完 main / release 分支后，别只看提交有没有上去，要确认**发布物**：
+
+```bash
+bash scripts/ci/verify-release.sh          # 查 latest 快照
+bash scripts/ci/verify-release.sh v0.2.0   # 查某个正式 tag
+```
+
+- `✅ 该发布就是这个 HEAD 的产物` → 流水线跑通了
+- `❌ 没有 tag=latest 的 Release` → 两种可能：**流水线没激活**，或**没配 `GITEE_TOKEN`**
+  （按设计，快照发布失败只告警、不拖红 main，所以"构建成功但没有 latest"是正常现象）
+- `⚠️ 发布记录的是 xxx，本地 HEAD 是 yyy` → 发布落后（`latest` 是滚动标签，正文里的 commit
+  只在创建时写入，最终身份以包内 `BUILD_INFO.txt` 为准）
+
+彻底没反应时去 Gitee → 仓库 → 流水线，看有没有对应 commit 的运行记录；一条都没有就是没导入流水线。
+
 ## 排障
 
 | 症状 | 原因 / 处理 |
@@ -156,6 +173,8 @@ bash scripts/ci/release.sh --release --force-branch --tag v0.2.0
 | `musl 静态构建失败` | 默认失败是故意的（避免静默出 glibc 包）；确认要退回就加 `--allow-fallback` |
 | `rustc` 版本太旧 | `scripts/ci/toolchain.sh` 会探测并装 stable（Gitee 模板给的是 1.69） |
 | `latest` Release 更新失败 | 只告警不拖红 main（快照发布是 best-effort），制品仍在流水线 artifact 里 |
+| main 推了但没有 `latest` | 先跑 `bash scripts/ci/verify-release.sh`；再查流水线页面有没有该 commit 的运行记录 |
+| e2e 阶段报"镜像里没有 python3" | Gitee Go 的 `build@rust` 镜像缺 python 解释器，换镜像或在该阶段前装 python3 |
 | fmt/clippy 挂 | 本地先跑 `cargo fmt && cargo clippy --all-targets -- -D warnings` |
 | e2e 挂 | 本地 `cargo build --release && python3 tests/e2e/run_all.py`，失败项会打印场景名 |
 | 构建慢/卡在下载 | 流水线参数加 `CARGO_REGISTRY_MIRROR=rsproxy`（脚本会切 cargo 镜像） |
