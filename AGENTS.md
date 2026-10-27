@@ -208,8 +208,9 @@ cargo test --test coverage_boost_test # tests/unit 下的用例（需在 Cargo.t
 > 加新测试文件时记得补声明，否则等于没写。
 
 CI（GitHub Actions）：`.github/workflows/ci.yml` 跑 `gates`（fmt/clippy/cargo test --all）→ `e2e`
-（`tests/e2e/run_all.py` 6 个场景）；`.github/workflows/release.yml` 在 main 推送时发 `bifrost-latest`
-快照（tar.gz + deb + sha256）、在 `release/x.y.z` 推送时发正式 Release。详见 `docs/RELEASE.md`。
+（`tests/e2e/run_all.py` 6 个场景）；`.github/workflows/release.yml` 在 main 推送且**打包输入**变化时
+发 `bifrost-latest` 快照（tar.gz + deb + sha256）、在 `release/x.y.z` 推送时发正式 Release（需含版本号提交）。
+详见 `docs/RELEASE.md`。
 
 ## 常见问题
 

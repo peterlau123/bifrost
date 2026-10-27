@@ -18,6 +18,23 @@
 | `.deb` | Debian / Ubuntu | `sudo dpkg -i bifrost_<版本>-1_amd64.deb`，之后用 `bifrost-setup` 选角色 |
 | Source code | 需要审计或自行编译 | GitHub 自动生成 `Source code (zip)` / `Source code (tar.gz)`；需要 Rust 1.87+ |
 
+## 什么时候会触发打包
+
+`main` 分支只有**打包输入**发生变化时才发布 `latest` 快照：
+
+- `src/**`、`Cargo.toml` / `Cargo.lock`、`build.rs`、`rust-toolchain*`、`.cargo/**`
+- `scripts/**`（构建 / 打包 / 安装脚本）、`skills/**`（tar 包内的 `SKILL.md`）、`config/**`
+- `LICENSE`
+
+以下变更**不会**触发打包，只更新仓库：
+
+- `docs/**`（含架构与高级用法文档）、`examples/**`、`tests/**`
+- 根目录 `README.md` / `README.zh-CN.md`、`AGENTS.md`
+- `.github/**`（CI 配置本身）
+
+`release/x.y.z` 正式版必须在分支上包含版本号变更（`Cargo.toml`），否则同样不会触发。
+需要强制发布时，在 Actions 里手动运行：`gh workflow run release.yml --ref <branch>`。
+
 ## 发一个正式版本的完整动作
 
 ```bash

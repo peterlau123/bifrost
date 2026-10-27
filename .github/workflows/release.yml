@@ -24,6 +24,19 @@ on:
     branches:
       - main
       - 'release/**'
+    # 只有会影响二进制或安装包的路径才触发打包。
+    # docs/、examples/、tests/、根目录 README、CI 配置等变更不发布。
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'rust-toolchain*'
+      - '.cargo/**'
+      - 'scripts/**'
+      - 'skills/**'
+      - 'config/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
