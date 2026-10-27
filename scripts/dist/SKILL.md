@@ -48,13 +48,13 @@ ls -l ~/.bifrost/settings.json 2>/dev/null && cat ~/.bifrost/settings.json
 
 ```bash
 cd /tmp
-PKG=bifrost-0.1.0-x86_64-linux-musl.tar.gz
-BASE=https://gitee.com/peterlau/bifrost/releases/download/v0.1.0     # GitHub 不通时用 Gitee
+PKG=bifrost-<版本>-x86_64-linux-musl.tar.gz
+BASE=https://github.com/peterlau123/bifrost/releases/download/<tag>   # tag: latest 或 v<版本>
 curl -fsSLO "$BASE/$PKG" && curl -fsSLO "$BASE/$PKG.sha256"
 sha256sum -c "$PKG.sha256"
 
 tar xzf "$PKG"
-./bifrost-0.1.0-x86_64-linux-musl/install.sh --storage <共享盘路径>
+./bifrost-<版本>-x86_64-linux-musl/install.sh --storage <共享盘路径>
 ```
 
 机器上已有包（共享盘/离线介质）就直接用本地路径，省掉下载：

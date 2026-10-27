@@ -1,6 +1,6 @@
 [Unit]
 Description=Bifrost offline command execution daemon
-Documentation=https://gitee.com/peterlau/bifrost
+Documentation=https://github.com/peterlau123/bifrost
 After=network.target
 
 [Service]
