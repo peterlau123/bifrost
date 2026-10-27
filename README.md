@@ -330,8 +330,8 @@ supervisor. Updating it is mostly about knowing which of them keeps running:
 |---|---|---|
 | Client CLI | online machine | No — every invocation re-execs the binary |
 | MCP Server | online machine (agent side) | **Yes** — kill the old `mcp-serve` process; the agent will not do it for you (Hermes: `pkill -f "bifrost mcp-serve"`) |
-| Daemon Server | offline / GPU machine | **Yes** — `scripts/deploy/deploy-server.sh` does install → restart → verify in one shot |
-| systemd unit | offline / GPU machine | No — `install-systemd.sh` renders it, and `deploy-server.sh` calls it |
+| Daemon Server | offline / target machine | **Yes** — `scripts/deploy/deploy-server.sh` does install → restart → verify in one shot |
+| systemd unit | offline / target machine | No — `install-systemd.sh` renders it, and `deploy-server.sh` calls it |
 
 ```bash
 # install the new release on the daemon

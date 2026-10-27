@@ -95,10 +95,10 @@ stay literal (for example a regex containing `*` or a literal `$`), disable the 
 
 ### Clock self-check and fallback scanning
 
-Some virtualised environments (observed on H20) freeze `CLOCK_MONOTONIC`: `sleep()` deadlines never
-arrive, threads hang forever, and the daemon looks like "heartbeat fine but tasks never consumed".
-Newer machines such as H200 almost certainly do not have this defect, so **the default does not make
-every machine pay for it**:
+Some virtualised environments (for example certain VM/container hosts) freeze `CLOCK_MONOTONIC`:
+`sleep()` deadlines never arrive, threads hang forever, and the daemon looks like "heartbeat fine but
+tasks never consumed". Most modern hosts do not have this defect, so **the default does not make every
+machine pay for it**:
 
 | scan_mode | Behaviour |
 |---|---|

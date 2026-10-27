@@ -317,8 +317,8 @@ bifrost client cancel <TASK_ID>
 |---|---|---|
 | Client CLI | 联网机器 | 否——每次调用都会重新执行二进制 |
 | MCP Server | 联网机器（Agent 侧） | **是**——杀掉旧的 `mcp-serve` 进程；Agent 不会帮你杀（Hermes：`pkill -f "bifrost mcp-serve"`） |
-| Daemon Server | 离线 / GPU 机器 | **是**——`scripts/deploy/deploy-server.sh` 一次完成安装 → 重启 → 校验 |
-| systemd unit | 离线 / GPU 机器 | 否——`install-systemd.sh` 负责渲染，`deploy-server.sh` 会调用它 |
+| Daemon Server | 离线 / 目标机器 | **是**——`scripts/deploy/deploy-server.sh` 一次完成安装 → 重启 → 校验 |
+| systemd unit | 离线 / 目标机器 | 否——`install-systemd.sh` 负责渲染，`deploy-server.sh` 会调用它 |
 
 ```bash
 # 在 daemon 上安装新版本
