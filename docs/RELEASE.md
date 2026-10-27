@@ -22,7 +22,7 @@
 
 ```bash
 # 1. 版本号唯一来源：Cargo.toml 的 version，改成你要发的版本
-sed -i 's/^version = "0.1.0"/version = "0.2.0"/' Cargo.toml
+sed -i 's/^version = "0.1.1"/version = "0.2.0"/' Cargo.toml
 
 # 2. 开 release 分支（分支名必须和版本号一致，脚本会硬校验）
 git switch -c release/0.2.0

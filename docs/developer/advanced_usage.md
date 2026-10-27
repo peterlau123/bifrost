@@ -5,6 +5,8 @@ Reference material for tuning Bifrost and for less common workflows. Start with 
 the full settings surface, storage semantics, SSH transport, task scheduling, cleanup, pytest
 containers, and per-agent MCP registration.
 
+> [简体中文](advanced_usage.zh-CN.md) | English
+
 ## Configuration
 
 ### Settings file and precedence

@@ -506,7 +506,7 @@ MIT License — see the [LICENSE](LICENSE) file.
 
 ## Status
 
-Bifrost v0.1.0 is released. Core functionality is stable and tested. Planned enhancements:
+Bifrost v0.1.1 is released. Core functionality is stable and tested. Planned enhancements:
 
 - Web UI monitoring dashboard
 - Distributed execution (multiple daemons)
