@@ -18,6 +18,23 @@ Every Release page offers three forms (Linux x86_64 only):
 | `.deb` | Debian / Ubuntu | `sudo dpkg -i bifrost_<ver>-1_amd64.deb`, then pick a role with `bifrost-setup` |
 | Source code | auditing or self-compiling | GitHub auto-generates `Source code (zip)` / `Source code (tar.gz)`; needs Rust 1.87+ |
 
+## When a package is built
+
+A push to `main` publishes the `latest` snapshot only when a **package input** changes:
+
+- `src/**`, `Cargo.toml` / `Cargo.lock`, `build.rs`, `rust-toolchain*`, `.cargo/**`
+- `scripts/**` (build / pack / install scripts), `skills/**` (the `SKILL.md` bundled in the tarball), `config/**`
+- `LICENSE`
+
+These changes update the repository but do **not** trigger a package build:
+
+- `docs/**` (including architecture and advanced-usage docs), `examples/**`, `tests/**`
+- root `README.md` / `README.zh-CN.md`, `AGENTS.md`
+- `.github/**` (CI configuration itself)
+
+A `release/x.y.z` branch must contain the version bump in `Cargo.toml`; otherwise it is filtered out too.
+To force a build, run the workflow manually: `gh workflow run release.yml --ref <branch>`.
+
 ## Shipping a version
 
 ```bash
