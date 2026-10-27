@@ -1,12 +1,12 @@
-# 构建与发布流水线（Gitee）
+# 构建与发布流水线（GitHub Actions）
 
 **两条通道，分支即通道。**
 
 | 分支 | 推送后发生什么 | 产物 | 有没有正式版本 |
 |---|---|---|---|
-| `main` | 门禁 → e2e → 打包 | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`，并覆盖更新 `tag=latest` 的滚动 Release（prerelease） | ❌ 不产正式版本 |
-| `release/x.y.z` | 门禁 → e2e → 校验版本 → 打包 | `bifrost-<版本>-x86_64-linux-musl.tar.gz` + `.deb` + 两个 `.sha256` | ✅ tag `v<x.y.z>` + Release |
-| 其它分支 | 不触发流水线；`release.sh` 本身也会拒绝 | — | — |
+| `main` | gates → e2e → 打包 | `bifrost-latest-x86_64-linux-musl.tar.gz` + `.sha256`，并滚动更新 `tag=latest` 的 Release（prerelease） | ❌ 不产正式版本 |
+| `release/x.y.z` | gates → e2e → 校验版本 → 打包 | `bifrost-<版本>-x86_64-linux-musl.tar.gz` + `.deb` + 两个 `.sha256` | ✅ tag `v<x.y.z>` + Release |
+| 其它分支 | `ci.yml` 跑门禁与 e2e（`.github/workflows/ci.yml`），`release.yml` 不触发 | — | — |
 
 一句话：**代码合进 main 只是"最新快照"，要发正式版本就开 `release/x.y.z` 分支推上去。**
 
@@ -16,37 +16,41 @@
 # 1. 版本号唯一来源：Cargo.toml 的 version，改成你要发的版本
 sed -i 's/^version = "0.1.0"/version = "0.2.0"/' Cargo.toml
 
-# 2. 开 release 分支（分支名必须和版本号一致，流水线会硬校验）
-git checkout -b release/0.2.0
+# 2. 开 release 分支（分支名必须和版本号一致，脚本会硬校验）
+git switch -c release/0.2.0
 git commit -am "chore(release): v0.2.0"
 git push origin release/0.2.0
 ```
 
-推上去之后流水线自动跑：门禁 → e2e → 打 tag `v0.2.0` → 建 Release → 上传四个文件。
+推上去之后 Actions 自动跑：门禁 → e2e → 打 tag `v0.2.0` → 建 Release → 上传四个文件。
 
-## 一次性的三步开通
+## 一次性开通
 
-1. **导入流水线**：仓库页 → 流水线（Gitee Go）→ 新建流水线 → 选「导入 .workflow 配置」，
-   选 `release.yml`。之后构建逻辑全在这个文件 + `scripts/ci/*.sh` 里，不再点页面。
-2. **加令牌**：流水线 → 参数设置 → 新增加密变量 `GITEE_TOKEN`
-   （Gitee → 设置 → [私人令牌](https://gitee.com/profile/personal_access_tokens)，勾 `projects`）。
-   它用来建 tag、建 Release、传附件——不配就发布不了，正式通道会直接失败并提示这一条。
-3. **删掉自动生成的那条流水线**：`.workflow/流水线-202610221113.yml` 是 Gitee 用模板生成的
-   （Rust 1.69 + 部署到主机组），和本流程冲突，删掉避免两条流水线抢着跑。
+GitHub Actions 不需要导入流水线，也不需要额外令牌：
+
+- workflow 文件在 `.github/workflows/`，推上去即生效；
+- 发布用仓库自带的 `GITHUB_TOKEN`，`release.yml` 已声明 `permissions: contents: write`；
+- 如果仓库策略把 Actions 权限锁成只读，需要在 Settings → Actions → General 里允许
+  workflow 写入（或者改成 `Read and write permissions`）。
 
 ## 流水线做了什么
 
 ```
+ci.yml（PR / feature 分支推送 / release.yml 复用）
 ① gates    cargo fmt --check / cargo clippy -D warnings / cargo test --all
-             └─ 挂了就停，不进后面两阶段
+             └─ 挂了就停，不进 e2e
 ② e2e      cargo build --release + tests/e2e/run_all.py
              6 个场景：timeout / job YAML / concurrent / 多卡 pytest 并发 /
                        robustness / MCP stdio 全链路（全是模拟，不需要真 GPU）
-③ dist     scripts/ci/release.sh（按 GITEE_BRANCH 判定通道）
-             main          → pack.sh --label latest --no-deb → 更新 tag=latest 滚动 Release
+release.yml（main / release/** 推送，或手动 dispatch）
+③ dist     scripts/ci/release.sh（通道由 BIFROST_BRANCH 判定）
+             main          → pack.sh --label latest --no-deb → 滚动更新 tag=latest
              release/x.y.z → 校验 Cargo.toml 版本 == x.y.z → pack.sh（含 .deb）
-                             → POST /tags（tag=v<版本>）→ POST /releases + attach_files
+                             → gh release create v<版本> + 上传附件
 ```
+
+构建逻辑都在 `scripts/ci/*.sh` 与 `scripts/dist/*.sh` 里，workflow 只负责触发和注入环境变量
+（`BIFROST_PUBLISHER=github`、`BIFROST_BRANCH`、`BIFROST_REF`）。
 
 ## 四条硬规则（都在脚本里，不靠人记）
 
@@ -57,8 +61,7 @@ git push origin release/0.2.0
 | **同版本不可重发** | 已有该 tag 的 Release → 失败并提示升版本；**不再自动出 `-b<构建号>`** | 同上 |
 | **musl 静态构建失败即失败** | 不再静默退回 gnu；确需退回要显式 `--allow-fallback` | 同上 |
 
-> 以前的实现会在版本重复时自动发 `v0.1.0-b12`，导致 Release 页变成 nightly 流水，且 `-bN` 也没标 prerelease。
-> 现在正式版本的语义是干净的：一个 `vX.Y.Z` 只有一个 Release，覆盖是不可能的。
+> 正式版本的语义是干净的：一个 `vX.Y.Z` 只有一个 Release，覆盖是不可能的。
 
 ## 正式版本产物
 
@@ -96,8 +99,8 @@ sudo ./install.sh --role server --storage /data/liuxin/bifrost # 服务端（sys
 `main` 每次推送都会把 `tag=latest` 的滚动 Release 覆盖更新，所以有一个稳定下载地址：
 
 ```bash
-https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
-https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz.sha256
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz
+https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz.sha256
 ```
 
 `latest` 是滚动标签（不指向固定 commit），**真实身份看包内 `BUILD_INFO.txt`**：
@@ -116,7 +119,7 @@ built_at: 2026-10-27T...
 
 ```bash
 scripts/dist/bootstrap.sh \
-  --from https://gitee.com/peterlau/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz \
+  --from https://github.com/peterlau123/bifrost/releases/download/latest/bifrost-latest-x86_64-linux-musl.tar.gz \
   --storage /data/liuxin/bifrost
 ```
 
@@ -125,42 +128,46 @@ scripts/dist/bootstrap.sh \
 ## 本机手动发布（CI 不可用时）
 
 ```bash
-export GITEE_TOKEN=<令牌>
+# GitHub（gh 已登录，或用 GH_TOKEN）
+export BIFROST_PUBLISHER=github
+export BIFROST_BRANCH=main            # detached HEAD / 手动发版时显式指定
+export GITHUB_REPOSITORY=peterlau123/bifrost
 
 # 小演一遍：只看会做什么，不动远端
 bash scripts/ci/release.sh --dry-run
 
-# 出 latest 快照包（需在 main 上）
-bash scripts/ci/release.sh --snapshot --no-publish
-
-# 正式发版（需在 release/x.y.z 上，版本必须一致）
-bash scripts/ci/release.sh --release
+# 出 latest 快照包并发布
+bash scripts/ci/release.sh --snapshot
 
 # 只出正式包、不发 Release
-bash scripts/ci/release.sh --release --no-publish
+BIFROST_BRANCH=release/0.2.0 bash scripts/ci/release.sh --release --no-publish
+
+# 正式发版（需在 release/x.y.z 上，版本必须一致）
+BIFROST_BRANCH=release/0.2.0 bash scripts/ci/release.sh --release
 
 # 应急：版本号和分支对不上也要发（会跳过分支/版本校验，慎用）
 bash scripts/ci/release.sh --release --force-branch --tag v0.2.0
 ```
 
-`scripts/dist/publish.sh` / `publish-latest.sh` 都支持 `--dry-run`，可以先看 API 调用再真跑。
+`scripts/dist/publish-github.sh` 支持 `--dry-run`；需要 Gitee 发布时把
+`BIFROST_PUBLISHER` 留空（默认 `gitee`）并设置 `GITEE_TOKEN`，走
+`scripts/dist/publish.sh` / `publish-latest.sh`。
 
 ## 怎么确认流水线真的跑了
 
 推完 main / release 分支后，别只看提交有没有上去，要确认**发布物**：
 
 ```bash
-bash scripts/ci/verify-release.sh          # 查 latest 快照
-bash scripts/ci/verify-release.sh v0.2.0   # 查某个正式 tag
+gh run list --workflow release.yml          # 最近几次运行
+gh release view latest                      # 快照
+gh release view v0.2.0                      # 正式版本
 ```
 
-- `✅ 该发布就是这个 HEAD 的产物` → 流水线跑通了
-- `❌ 没有 tag=latest 的 Release` → 两种可能：**流水线没激活**，或**没配 `GITEE_TOKEN`**
-  （按设计，快照发布失败只告警、不拖红 main，所以"构建成功但没有 latest"是正常现象）
-- `⚠️ 发布记录的是 xxx，本地 HEAD 是 yyy` → 发布落后（`latest` 是滚动标签，正文里的 commit
-  只在创建时写入，最终身份以包内 `BUILD_INFO.txt` 为准）
-
-彻底没反应时去 Gitee → 仓库 → 流水线，看有没有对应 commit 的运行记录；一条都没有就是没导入流水线。
+- `✓` → 流水线跑通了
+- main 构建成功但没有 `latest` → 先看 Actions 日志里的 `publish-github.sh` 输出
+  （按设计，快照发布失败只告警、不拖红 main）
+- `FAIL: gh 未登录` / `Resource not accessible by integration` → `permissions` 或仓库
+  Actions 写权限没开
 
 ## 排障
 
@@ -169,12 +176,12 @@ bash scripts/ci/verify-release.sh v0.2.0   # 查某个正式 tag
 | `当前分支 'xxx' 不允许发版` | 通道规则：main 出快照、release/x.y.z 出正式版；别从 feature 分支发 |
 | `分支与 Cargo.toml 版本不一致` | 把 Cargo.toml 的 version 改成和 `release/x.y.z` 一致 |
 | `vX.Y.Z 已经发布过` | 正式版本不可覆盖：升 Cargo.toml 版本，开新 release 分支 |
-| `缺 GITEE_TOKEN` | 流水线参数里没加加密变量，或没勾 `projects` 权限 |
+| `Resource not accessible by integration` | `release.yml` 的 `permissions: contents: write` 被仓库策略覆盖 |
 | `musl 静态构建失败` | 默认失败是故意的（避免静默出 glibc 包）；确认要退回就加 `--allow-fallback` |
-| `rustc` 版本太旧 | `scripts/ci/toolchain.sh` 会探测并装 stable（Gitee 模板给的是 1.69） |
-| `latest` Release 更新失败 | 只告警不拖红 main（快照发布是 best-effort），制品仍在流水线 artifact 里 |
-| main 推了但没有 `latest` | 先跑 `bash scripts/ci/verify-release.sh`；再查流水线页面有没有该 commit 的运行记录 |
-| e2e 阶段报"镜像里没有 python3" | Gitee Go 的 `build@rust` 镜像缺 python 解释器，换镜像或在该阶段前装 python3 |
+| `rustc` 版本太旧 | `scripts/ci/toolchain.sh` 会探测并装 stable（本地旧工具链时） |
+| `latest` Release 更新失败 | 只告警不拖红 main（快照发布是 best-effort），制品仍在 Actions artifact 里 |
+| main 推了但没有 `latest` | 看 Actions 日志，再跑 `gh release view latest` |
+| e2e 报缺少 python3 | GitHub 的 `ubuntu-latest` 自带 python3；自建 runner 需自行安装 |
 | fmt/clippy 挂 | 本地先跑 `cargo fmt && cargo clippy --all-targets -- -D warnings` |
 | e2e 挂 | 本地 `cargo build --release && python3 tests/e2e/run_all.py`，失败项会打印场景名 |
-| 构建慢/卡在下载 | 流水线参数加 `CARGO_REGISTRY_MIRROR=rsproxy`（脚本会切 cargo 镜像） |
+| 构建慢/卡在下载 | 仓库 Actions secret 加 `CARGO_REGISTRY_MIRROR=rsproxy` 不会自动生效，需要在 workflow 里设同名 env |
