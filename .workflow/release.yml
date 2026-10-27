@@ -1,4 +1,10 @@
-# Gitee Go 流水线：main 分支 → 质量门禁 → musl 静态包 → tag → Gitee Release
+# Gitee Go 流水线：门禁（fmt/clippy/test）→ e2e → 按分支双通道打包发布
+#
+# 通道规则（分支即通道，脚本里还有二次校验）：
+#   main           → 快照通道：只出 bifrost-latest-x86_64-linux-musl.tar.gz + .sha256（流水线制品）
+#                    不打 tag、不发 Release
+#   release/x.y.z  → 正式通道：Cargo.toml 版本必须 == x.y.z → tag v<x.y.z> → Gitee Release（tar.gz + .deb + sha256）
+#   其它分支        → 不触发；脚本本身也会拒绝（防止本机误发版）
 #
 # 开启方式（一次性）：
 #   1. 仓库页 → 流水线（Gitee Go）→ 新建流水线 → 选择「导入 .workflow 配置」
@@ -11,21 +17,26 @@
 #   - rustVersion 用 1.69 是因为 Gitee 自带模板给的就是这个（保证该值在插件里可选）；
 #     真正的工具链版本由 scripts/ci/toolchain.sh 探测并升级到 >= 1.80
 #   - 不配 deploy@agent：发布目标是 Gitee Release，不是自有主机
+#   - 分支条件用的是 precise + prefix；若页面导入后 release/* 不触发，改成
+#     include: ['release/*'] 或直接在页面上用「手动触发」跑正式通道
 
 version: "1.0"
 name: bifrost-release
-displayName: 构建与发布（main → tag + Release）
+displayName: 门禁 / e2e / 快照与正式发布
 
 triggers:
   push:
     branches:
       precise:
         - main
+      prefix:
+        - release/
 
 stages:
+  # ── 1. 质量门禁：一个挂了就不往下走 ──────────────────────────
   - name: gates
     displayName: 质量门禁
-    strategy: fast          # 一个任务挂了就不进发布阶段
+    strategy: fast
     trigger: auto
     steps:
       - step: build@rust
@@ -43,6 +54,29 @@ stages:
             cpu: "4"
             memory: "8"
 
+  # ── 2. 端到端：真跑一遍 client→daemon→结果 的全链路 ──────────
+  - name: e2e
+    displayName: 端到端测试
+    strategy: naturally
+    trigger: auto
+    steps:
+      - step: build@rust
+        name: e2e
+        displayName: release 构建 + 6 个 e2e 场景
+        rustVersion: "1.69"
+        commands:
+          - bash scripts/ci/toolchain.sh
+          - cargo build --release
+          # timeout / job YAML / concurrent / 多卡 pytest 并发 / robustness / MCP stdio 全链路
+          # 全部是模拟场景，不需要真 GPU；失败脚本退出码非 0 → 阶段失败 → 不进发布
+          - python3 tests/e2e/run_all.py ./target/release/bifrost
+        strategy:
+          retry: "0"
+          resource:
+            cpu: "4"
+            memory: "8"
+
+  # ── 3. 打包与发布：main 出快照，release/x.y.z 出正式版 ────────
   - name: release
     displayName: 打包与发布
     strategy: naturally
@@ -50,13 +84,13 @@ stages:
     steps:
       - step: build@rust
         name: release
-        displayName: musl 静态包 + tag + Gitee Release
+        displayName: 按分支通道打包（main=latest 快照 / release=正式 Release）
         rustVersion: "1.69"
         commands:
-          # 构建 musl 静态二进制 → 打出 client/server 通用安装包
-          # → API 建 tag（v<Cargo 版本>，已存在则 v<版本>-b<构建号>）
-          # → 建 Release 并上传 tar.gz + .sha256
           - bash scripts/ci/toolchain.sh
+          # 通道由 GITEE_BRANCH 判定：
+          #   main          → pack.sh --label latest --no-deb，不发版
+          #   release/x.y.z → 校验版本一致 → tag v<版本> → Release
           - bash scripts/ci/release.sh
         artifacts:
           - name: DIST

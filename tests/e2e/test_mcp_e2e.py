@@ -95,7 +95,10 @@ try:
                       "params": {"name": "bifrost_status", "arguments": {"task_id": "bad-id"}}})
     print("7. 非法UUID:", "OK (结构化错误)" if "isError" in resp["result"] or resp["result"].get("isError") else resp)
 
-    ok = (tools == ["bifrost_health", "bifrost_result", "bifrost_status", "bifrost_submit"]
+    # 断言"必需的 4 个工具都在"，而不是"只有这 4 个"——服务端新增工具（如 bifrost_cancel）
+    # 不该让 e2e 变红，漏掉文档承诺的工具才该红
+    required_tools = {"bifrost_health", "bifrost_submit", "bifrost_status", "bifrost_result"}
+    ok = (required_tools.issubset(set(tools))
           and health and submit_out.get("status") == "Pending"
           and result.get("status") == "Completed" and "mcp-e2e-ok" in result.get("stdout", ""))
     print("\n========== MCP E2E: %s ==========" % ("✅ 全部通过" if ok else "❌ 有失败"))

@@ -1,5 +1,10 @@
 name: CI
 
+# ⚠️ 本文件只对 GitHub 镜像 (peterlau123/bifrost) 有效，而镜像自 2026-08-25 起未再同步
+#    （落后 Gitee main ~200 个提交），所以这份 workflow 目前是**不跑的**。
+#    CI 的权威在 Gitee Go：.workflow/release.yml（gates → e2e → dist 双通道）。
+#    保留此文件仅为将来恢复双向同步时使用；若确定不再镜像到 GitHub，可直接删除。
+
 on:
   push:
     branches: [main, master, test/deploy]

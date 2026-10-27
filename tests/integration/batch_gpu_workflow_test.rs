@@ -69,9 +69,16 @@ fn test_batch_manifest_submission() {
     let commands_dir = shared_storage.join("commands");
     assert!(commands_dir.exists(), "Commands directory should exist");
 
+    // atomic_write 会在同目录留下 <task>.lock（文件锁），所以只统计 .json 任务文件
     let command_files: Vec<_> = fs::read_dir(&commands_dir)
         .unwrap()
         .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|x| x.eq_ignore_ascii_case("json"))
+                .unwrap_or(false)
+        })
         .collect();
 
     assert_eq!(command_files.len(), 2, "Should have 2 task files submitted");
@@ -89,7 +96,7 @@ fn test_batch_manifest_submission() {
     // Verify each submitted task has batch_id set
     for (_, task_id, task_name) in &progress.submitted_tasks {
         let task = protocol
-            .read_task(&task_id)
+            .read_task(task_id)
             .expect("Failed to read submitted task");
 
         assert_eq!(task.batch_id, Some(batch_id));

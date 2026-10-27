@@ -3,15 +3,12 @@
 
 use bifrost::client::results;
 use bifrost::client::submit;
-use bifrost::core::models::{Task, TaskOutput, TaskResult, TaskStatus, TaskType};
+use bifrost::core::models::{TaskStatus, TaskType};
 use bifrost::core::protocol::Protocol;
 use bifrost::daemon::executor::Executor;
-use chrono::Utc;
-use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
-use uuid::Uuid;
 
 #[test]
 fn test_full_workflow_shell_command() {
@@ -31,6 +28,7 @@ fn test_full_workflow_shell_command() {
         0,
         10,
         None,
+        0, // retries（一次跑完，测试里不重试）
     )
     .expect("Failed to submit task");
 
@@ -103,6 +101,7 @@ def test_simple():
         5,
         60,
         Some(temp_dir.path().to_path_buf()),
+        0, // retries（一次跑完，测试里不重试）
     )
     .expect("Failed to submit pytest task");
 
@@ -150,6 +149,7 @@ fn test_workflow_with_timeout() {
         0,
         2, // 2 second timeout
         None,
+        0, // retries（一次跑完，测试里不重试）
     )
     .expect("Failed to submit task");
 
@@ -197,6 +197,7 @@ fn test_workflow_with_failure() {
         0,
         10,
         None,
+        0, // retries（一次跑完，测试里不重试）
     )
     .expect("Failed to submit task");
 
@@ -243,6 +244,7 @@ fn test_concurrent_task_submissions() {
             i,
             10,
             None,
+            0, // retries（一次跑完，测试里不重试）
         )
         .expect("Failed to submit task");
 
@@ -274,6 +276,7 @@ fn test_result_formatting() {
         0,
         10,
         None,
+        0, // retries（一次跑完，测试里不重试）
     )
     .expect("Failed to submit task");
 

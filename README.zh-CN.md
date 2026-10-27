@@ -3,8 +3,8 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Rust Edition](https://img.shields.io/badge/Rust-2021%20Edition-dea584.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
-![Tests](https://img.shields.io/badge/Tests-126%20passed-brightgreen.svg)
-![MCP](https://img.shields.io/badge/MCP-4%20tools-8A2BE2.svg)
+![Tests](https://img.shields.io/badge/Tests-218%20passed-brightgreen.svg)
+![MCP](https://img.shields.io/badge/MCP-5%20tools-8A2BE2.svg)
 
 <p align="center">
   <img src="assets/bifrost-banner.svg" alt="Bifrost —— 连接联网 client 与离线 daemon 的彩虹桥" width="720">
@@ -923,14 +923,19 @@ if !canonical.starts_with(&artifacts_dir) {
 ### 跑测试
 
 ```bash
-# 全部测试
+# 全部测试（218 个：130 lib + 10 bin + 77 集成 + 1 doctest）
 cargo test --all
 
 # 只跑单元测试
 cargo test --lib
 
-# 集成测试
+# 集成测试（tests/unit、tests/integration 下的文件必须在 Cargo.toml 里用 [[test]] 声明，
+# cargo 不会自动递归子目录——漏声明就等于静默不编译）
 cargo test --test full_workflow_test
+cargo test --test coverage_boost_test
+
+# 端到端（和流水线里跑的是同一套）
+cargo build --release && python3 tests/e2e/run_all.py ./target/release/bifrost
 
 # 覆盖率（需要 tarpaulin）
 cargo tarpaulin --out Html

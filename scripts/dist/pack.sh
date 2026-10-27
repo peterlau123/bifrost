@@ -10,6 +10,7 @@
 #   OUT=/tmp/rel VERSION=0.2.0 scripts/dist/pack.sh
 #   scripts/dist/pack.sh --binary target/x86_64-unknown-linux-musl/release/bifrost --skip-build
 #   scripts/dist/pack.sh --target x86_64-unknown-linux-gnu    # 没有 musl 工具链时的退路
+#   scripts/dist/pack.sh --label latest --no-deb              # main 分支快照包（bifrost-latest-...）
 #
 # 默认产物是静态 musl（ldd 显示 "statically linked"），目标机不需要 glibc/工具链。
 set -euo pipefail
@@ -22,6 +23,7 @@ TARGET="x86_64-unknown-linux-musl"
 SKIP_BUILD=0
 BINARY=""
 WITH_DEB=1
+LABEL=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,7 +33,8 @@ while [ $# -gt 0 ]; do
         --binary)     BINARY="$2"; SKIP_BUILD=1; shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
         --no-deb)     WITH_DEB=0; shift ;;
-        -h|--help)    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --label)      LABEL="$2"; shift 2 ;;
+        -h|--help)    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
@@ -68,8 +71,8 @@ else
     LINK_KIND="unknown"
 fi
 
-PKG="bifrost-$VERSION-x86_64-linux-musl"
-[ "$TARGET" = "x86_64-unknown-linux-gnu" ] && PKG="bifrost-$VERSION-x86_64-linux-gnu"
+PKG="bifrost-${LABEL:-$VERSION}-x86_64-linux-musl"
+[ "$TARGET" = "x86_64-unknown-linux-gnu" ] && PKG="bifrost-${LABEL:-$VERSION}-x86_64-linux-gnu"
 
 STAGE_ROOT="$(mktemp -d)"
 trap 'rm -rf "$STAGE_ROOT"' EXIT
@@ -86,6 +89,7 @@ chmod 0755 "$STAGE/bifrost" "$STAGE/install.sh" "$STAGE/bootstrap.sh"
 {
     echo "package:  $PKG"
     echo "version:  $VERSION"
+    echo "label:    ${LABEL:-（无，正式版本）}"
     echo "commit:   $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "branch:   $(cd "$ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
     echo "target:   $TARGET"

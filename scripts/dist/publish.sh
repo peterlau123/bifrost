@@ -55,7 +55,8 @@ if [ -z "$REPO" ]; then
 fi
 if [ -z "$REPO" ]; then
     url="$(git remote get-url origin 2>/dev/null || echo)"
-    REPO="$(printf '%s' "$url" | sed -E 's#.*[:/]([^/]+/[^/]+?)(\.git)?$#\1#')"
+    # 先剥掉结尾的 .git / 斜杠，再取 owner/repo（旧写法会把 .git 留在仓库名里 → API 404）
+    REPO="$(printf '%s' "$url" | sed -E 's#(\.git)?/?$##' | sed -E 's#.*[:/]([^/]+/[^/]+)$#\1#')"
 fi
 case "$REPO" in
     */*) ;;
