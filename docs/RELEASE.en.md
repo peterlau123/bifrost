@@ -35,6 +35,10 @@ These changes update the repository but do **not** trigger a package build:
 A `release/x.y.z` branch must contain the version bump in `Cargo.toml`; otherwise it is filtered out too.
 To force a build, run the workflow manually: `gh workflow run release.yml --ref <branch>`.
 
+To skip packaging for a source change, put `[skip release]` in the pushed commit message (for a PR,
+use the merge/squash commit message): gates/e2e still run, while the `dist` job is skipped. Manual
+dispatch ignores the marker and always builds.
+
 ## Shipping a version
 
 ```bash

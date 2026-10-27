@@ -54,6 +54,9 @@ jobs:
   dist:
     name: dist (main=latest / release/x.y.z=正式版)
     needs: ci
+    # 手动 dispatch 总是打包；普通 push 可用 commit message 里的 [skip release] 跳过打包，
+    # 但仍会先跑 gates/e2e（ci job）。
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message || '', '[skip release]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
