@@ -48,13 +48,13 @@ ls -l ~/.bifrost/settings.json 2>/dev/null && cat ~/.bifrost/settings.json
 
 ```bash
 cd /tmp
-PKG=bifrost-0.1.0-x86_64-linux-musl.tar.gz
-BASE=https://gitee.com/peterlau/bifrost/releases/download/v0.1.0     # GitHub 不通时用 Gitee
+PKG=bifrost-<版本>-x86_64-linux-musl.tar.gz
+BASE=https://github.com/peterlau123/bifrost/releases/download/<tag>   # tag: latest 或 v<版本>
 curl -fsSLO "$BASE/$PKG" && curl -fsSLO "$BASE/$PKG.sha256"
 sha256sum -c "$PKG.sha256"
 
 tar xzf "$PKG"
-./bifrost-0.1.0-x86_64-linux-musl/install.sh --storage <共享盘路径>
+./bifrost-<版本>-x86_64-linux-musl/install.sh --storage <共享盘路径>
 ```
 
 机器上已有包（共享盘/离线介质）就直接用本地路径，省掉下载：
@@ -116,5 +116,5 @@ bifrost client submit --storage <storage> --command 'nvidia-smi -L' --timeout 60
 
 - **不要在目标机 `cargo build`** —— 发行包就是为免编译准备的；除非用户明确要求改代码并验证
 - **不要覆盖已有的 `settings.json`** —— 里面可能是另一套集群的路径；用 `--force` 前先备份
-- **不要把 GitHub 当唯一源** —— 这台容器的 github.com 直连不通，用 Gitee 或共享盘
+- **不要把 GitHub 当唯一源** —— 内网/气隙环境用共享盘或离线介质；Gitee 镜像可作备选
 - **不要动 `/etc/bifrost/settings.json`**（daemon 侧配置），那是 server 的，与 MCP 客户端无关
