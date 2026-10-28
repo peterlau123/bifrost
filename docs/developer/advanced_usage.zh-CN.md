@@ -98,7 +98,7 @@ bifrost server init --storage /mnt/gpfs/bifrost   # 生成 daemon 侧默认配�
 
 | scan_mode | 行为 |
 |---|---|
-| `auto`（默认） | 启动时花约 200ms 比较墙钟与单调钟；确认两者漂移后才切到 spin |
+| `auto`（默认） | 启动时花约 100ms 比较墙钟与单调钟；确认两者漂移后才切到 spin |
 | `sleep` | 强制定时器驱动扫描（CPU 最低），用于确认健康的机器 |
 | `spin` | 强制忙轮询（约 1 核），只用于确实有时钟问题的机器 |
 

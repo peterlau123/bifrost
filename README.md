@@ -55,7 +55,7 @@ Traditional remote execution tools — SSH, RPC, REST APIs — do not work on ai
 - **Unified settings** — `~/.bifrost/settings.json`, initialized from the CLI
 - **Air-gapped operation** — complete separation between client and server
 - **Security hardened** — command injection prevention, path traversal protection
-- **High performance** — inotify file watching plus a 1s fallback scan, tokio async execution, end-to-end overhead ~4–6%
+- **High performance** — event-driven inotify plus a 1s fallback scan, tokio async execution, end-to-end overhead ~4–6%
 - **Multiple task types** — shell commands, pytest runs, custom adapters
 - **Parallel jobs** — `--parallel` submits all tasks concurrently (bounded by the daemon's `max_concurrent`)
 - **Priority scheduling** — tasks are sorted by priority (0–255)
@@ -70,10 +70,16 @@ Traditional remote execution tools — SSH, RPC, REST APIs — do not work on ai
 Bifrost exchanges JSON files through a POSIX directory that both machines can see:
 
 1. The client writes a task to `commands/` (CLI, YAML job, or an MCP tool call).
-2. The daemon watches that directory (`inotify` plus a fallback scan), claims the task, and executes it asynchronously.
+2. The daemon is notified by inotify events when a task file appears, and also runs a 1s fallback scan (it does not busy-poll).
 3. The daemon writes `status/`, `logs/`, `artifacts/`, the final `results/` file, and a periodic `heartbeat.json`.
 
 `shared` storage is the default transport; `ssh` is available when there is no shared filesystem.
+
+Normal operation is **event-driven**: the kernel notifies the daemon when a new task file appears,
+and the 1s scan is only a safety net (plus one catch-up scan at startup). Only `scan_mode=spin`,
+used when a broken monotonic clock makes `sleep()` unusable, busy-polls. See the
+[architecture doc](docs/developer/architecture.md#task-monitoring-event-driven-with-a-fallback-scan)
+for the exact timers.
 
 See [docs/developer/architecture.md](docs/developer/architecture.md) for component diagrams, the full
 task lifecycle, the shared-storage layout, design decisions, and the security model.
