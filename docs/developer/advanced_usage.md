@@ -102,7 +102,7 @@ machine pay for it**:
 
 | scan_mode | Behaviour |
 |---|---|
-| `auto` (default) | Spend ~200ms at startup comparing wall clock against the monotonic clock; switch to spin only when the two are confirmed to diverge |
+| `auto` (default) | Spend ~100ms at startup comparing wall clock against the monotonic clock; switch to spin only when the two are confirmed to diverge |
 | `sleep` | Force timer-driven scanning (lowest CPU), for machines known to be healthy |
 | `spin` | Force busy-poll (~1 core), only for machines that really have a clock problem |
 

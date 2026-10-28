@@ -51,7 +51,7 @@ Bifrost 是一个 Rust 框架：通过共享存储，在离线 / 气隙机器上
 - **统一配置** —— `~/.bifrost/settings.json`，由 CLI 初始化
 - **气隙运行** —— 客户端与服务端完全隔离
 - **安全加固** —— 防路径穿越，shell 模式可控
-- **高性能** —— inotify 文件监控 + 1s 兜底扫描，tokio 异步执行，端到端开销约 4–6%
+- **高性能** —— 事件驱动 inotify + 1s 兜底扫描，tokio 异步执行，端到端开销约 4–6%
 - **多种任务类型** —— shell 命令、pytest、自定义适配器
 - **并行任务** —— `--parallel` 并发提交，受 daemon 的 `max_concurrent` 限制
 - **优先级调度** —— 任务按优先级（0–255）排序
@@ -66,10 +66,14 @@ Bifrost 是一个 Rust 框架：通过共享存储，在离线 / 气隙机器上
 Bifrost 通过两端都能看到的 POSIX 目录交换 JSON 文件：
 
 1. 客户端把任务写入 `commands/`（CLI、YAML Job 或 MCP 工具调用）。
-2. daemon 监控该目录（`inotify` + 兜底扫描），认领任务并异步执行。
+2. daemon 通过 inotify 事件感知新任务，并每秒做一次兜底扫描（忙轮询不是默认行为）。
 3. daemon 写入 `status/`、`logs/`、`artifacts/`、最终 `results/` 文件，并周期性更新 `heartbeat.json`。
 
 默认传输是 `shared`（共享存储）；没有共享文件系统时可以使用 `ssh`。
+
+正常模式是**事件驱动**：内核在有新任务文件时通知 daemon；1s 扫描只是安全网（启动时还会做一次
+catch-up 扫描）。只有 `scan_mode=spin`（单调时钟冻结、`sleep()` 不可用时）才会忙轮询。具体的
+定时器与延迟见[架构文档](docs/developer/architecture.zh-CN.md)。
 
 组件图、完整任务生命周期、共享存储布局、设计取舍与安全模型见
 [docs/developer/architecture.zh-CN.md](docs/developer/architecture.zh-CN.md)。

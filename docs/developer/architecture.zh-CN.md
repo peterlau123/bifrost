@@ -127,7 +127,7 @@ sequenceDiagram
 | 决策 | 原因 |
 |---|---|
 | **用共享存储而不是数据库队列** | 两侧没有网络，POSIX 目录是双方都能用的唯一通道。文件易检查，损坏只影响单个任务。 |
-| **文件事件 + 兜底扫描** | inotify 提供亚秒级延迟和空闲零 CPU；网络文件系统可能丢事件，因此加周期性扫描。`scan_mode=auto` 只在时钟确实异常时才切到忙轮询。 |
+| **事件驱动 inotify + 兜底扫描** | inotify 提供毫秒级延迟；空闲成本只是一次/秒的兜底 `read_dir`，不是高频轮询。网络文件系统可能丢事件，因此加周期性扫描。`scan_mode=auto` 只在时钟确实异常时才切到忙轮询。 |
 | **Rust 单二进制** | 目标机不需要运行时和依赖，延迟可预测（无 GC 停顿），静态 musl 构建可在任意 x86_64 Linux 运行。 |
 | **Bridge trait** | `shared` 与 `ssh` 暴露相同的目录语义，客户端改用 SSH 时 daemon 无需修改。 |
 | **重试按任务显式开启** | 默认只跑一次；只有非零退出才重试，超时和取消不重试。 |
@@ -155,14 +155,40 @@ Command::new(&args[0]).args(&args[1..]);
 bifrost client submit --command "grep -n 'a.*b' file.txt"   # 任务里带 shell: false
 ```
 
-### 任务监听时机
+### 任务监听：事件驱动 + 兜底扫描
 
-daemon 以 `notify`（inotify）作为快路径，并运行兜底扫描（`daemon.scan_interval`，默认 1s）覆盖
-文件系统丢失的事件。启动时还会做一次 catch-up 扫描，因此 daemon 停机期间写入的任务不会丢失。
+daemon **不会**持续轮询 `commands/`，而是三层机制组合：
 
-- 先启动 daemon 可以让延迟更可预测，但不是必须
-- 如果任务仍像卡住，检查两端 `shared_storage` 是否指向**同一个物理目录**，以及 `scan.json`
-  是否在更新
+| 机制 | 行为 |
+|---|---|
+| **事件驱动快路径** | `notify` 在 `commands/` 上注册 inotify 监听。客户端创建/重命名 `.json` 任务文件时，内核推送事件，watcher 立即把路径交给 runner。这条路径**不做目录遍历**；同一文件 500ms 内的重复事件会被去重。 |
+| **兜底扫描（默认 1s）** | 独立线程每隔 `daemon.scan_interval` 醒来一次，执行一次 `read_dir`。用于覆盖会丢 inotify 事件的文件系统（GPFS/NFS）、watcher 重启以及快路径漏掉的事件。所有执行槽都忙时跳过扫描。 |
+| **启动 catch-up** | 进入主循环前先扫一遍 `commands/`，daemon 停机期间提交的任务不会丢。 |
+
+事件路径和兜底扫描最终都走同一个 `spawn_task`；原子 `.processing` 标记（`create_new`）保证
+同一任务被两条路径同时看到时也只执行一次。另有独立线程每 10s stat 一次过期标记并回收。
+
+**哪些是定时唤醒，哪些是轮询？**
+
+- runner 在 watcher channel 上带 500ms 超时等待，只是为了能及时检查 shutdown；有事件会立即返回。
+- watcher 线程对 inotify 事件通道使用 100ms `recv_timeout`——这是带超时的阻塞等待，不是目录扫描。
+- 正常模式下唯一的周期性目录操作是 1s 一次的兜底 `read_dir`；扫描线程在两次 tick 之间 sleep。
+  因此空闲成本是：1s 扫描 + 10s 标记检查 + 定时唤醒，而不是高频轮询。
+
+**延迟：** 事件路径为毫秒级；事件丢失时的最坏情况是一个兜底周期（默认 1s）。
+
+**`scan_mode` 与唯一的忙轮询场景：**
+
+| scan_mode | 行为 |
+|---|---|
+| `auto`（默认） | 启动时约 100ms 时钟探测；只要单调时钟正常就保持 sleep 驱动 |
+| `sleep` | 始终定时器驱动（CPU 最低） |
+| `spin` | 忙轮询（约 1 核），只用于 `CLOCK_MONOTONIC` 冻结的宿主 |
+
+`spin` 存在的原因是那些宿主上 `sleep()` deadline 永远不会到达；它不是默认值。
+
+如果任务仍像卡住，检查两端 `shared_storage` 是否指向**同一个物理目录**，以及 `scan.json`
+是否在更新。
 
 ### 防路径穿越
 
