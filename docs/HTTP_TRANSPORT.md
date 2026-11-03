@@ -94,25 +94,46 @@ bifrost server --storage /data/liuxin/bifrost
 
 ## 4. 限制与注意
 
-- **单 client 假设**：见 §2。两条独立的 client 同时 `submit` 会把
-  `commands_manifest.txt` 写飞，需要后面加 per-client manifest。
+- **单 client 假设（宽松）**：`push_subdir` 先重读远端 manifest 再 merge 写回，
+  避免覆盖对面在本轮 push 期间刚加的条目。但同一小窗口内两个 client 同时提交
+  仍可能竞争 manifest。生产上按"同一时刻一个 client"用即可，多 client 并发需
+  要 per-client manifest（`manifest-<client_id>.txt`）— 未实现。
 - **临时性**：tmp-raw 是 SRE 明确的"随用随删"通道，对象随时可能被外部清掉。
   bifrost 已经按"404 = 任务不在远端 = 已被清理"处理，但**不要把 Nexus 当作
-  任务归档**；结果只在那保留到 client 下一次 sync 拉走。
-- **没有 cancel relay**：V1 不支持 `bifrost client cancel` 跨 HTTP transport —
-  cancel 文件还是写在 `cancel/` 子目录下，但 fetcher V1 只拉 `commands/`。
-  需要的话把 `commands_manifest.txt` 复制一份改成 `cancel_manifest.txt` 就行，
-  架构相同。
+  任务归档**；结果只在那保留到 client 下一次 fetch 拉走。
+- **cancel relay**：✅ V1 已支持。`bifrost client cancel` 写本地 `cancel/`，
+  sync 推到远端；daemon 侧 sync 拉到本地 `cancel/`，daemon 轮询消费。
 - **不要在 settings.json 写密码**：如果非写不可，至少 `chmod 600` 并且**别
-  提交进 git**。推荐是唯一方式：env 变量。
-- **本仓库的 GitHub Actions 用 ubuntu-latest** 自带 curl，无需额外装；
+  提交进 git**。推荐唯一方式：env 变量（`BIFROST_HTTP_USER` / `BIFROST_HTTP_PASSWORD`）。
+- **单文件大小**：D1 = 单次 PUT 默认。担心大结果文件截断就设置
+  `http.atomic_upload = true`（先 PUT `<name>.tmp` 再 PUT 正式名，事后删 .tmp）。
+- **本仓库的 GitHub Actions** 用 ubuntu-latest 自带 curl，无需额外装；
   离线环境 (`mx001`/`mx002`/海光机) 装 `curl` 即可，无其它依赖。
 
-## 5. 验证过的场景
+## 5. 测试覆盖
 
-- `cargo build` / `cargo test`：**221 tests passed**（feat/cloud-storage@later）
+`src/core/http_sync.rs` 自包含 13 个测试，分两层：
+
+**纯函数**（不发 HTTP）：
+- `test_remote_url_with_and_without_subdir` — URL 拼接
+- `test_from_settings_env_overrides` — settings 解析
+- `test_atomic_upload_defaults_false` — D1 硬编码
+- `test_manifest_name` / `test_read_write_manifest_roundtrip` / `test_read_manifest_missing_file_is_empty` — manifest 读写
+- `test_list_local_files_filters_sidecars` — 过滤 .tmp/.lock/.processing/.partial
+
+**Mock HTTP server**（std TcpListener，零外部依赖）：
+- `test_upload_against_mock` — PUT 正确路径与 body
+- `test_download_404_returns_false` — 404 不报错不残留
+- `test_delete_remote_404_is_idempotent_ok` — DELETE 幂等
+- `test_fetch_subdir_happy_path` — 完整 fetch 状态机（拉 manifest → 拉文件 → DELETE → 重读 manifest → 回写）
+- `test_push_subdir_adds_to_manifest_and_skips_existing` — 增量 push + 已在远端跳过 + 上传后删本地
+- `test_push_commands_preserves_local_file` — **关键不变量**：commands 上传后保留本地（daemon inbox）
+
+## 6. 验证过的场景
+
+- `cargo build` / `cargo test`：**231 tests passed**（含 13 个 http_sync 单测，其中 3 个走真实 HTTP 自环）
 - `./bifrost --help` / `./bifrost sync --help` 正常打印
-- 无 `[http]` 段时 `bifrost sync --once` 报 `error: settings has no [http] section`
-- 假 base_url 时 curl 错误被正确捕获并 Eprintln，进程不 crash
+- 无 `[http]` 段时 `bifrost sync --once` 报 `error: settings has no [http] section` 退出码 1
+- mock HTTP server 验证 fetch/push 完整请求序列与本地状态机
 
 后续：在 mx001 上，与 Flexible-Agent 海光机做一次端到端 PING。

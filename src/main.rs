@@ -307,8 +307,7 @@ fn load_settings_with_overrides(
 /// Loop cadence from `http.poll_interval` (default 5s). `--once` runs a single
 /// iteration and exits, useful for cron / smoke tests / CI.
 fn handle_fetcher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
-    use bifrost::core::http_sync::Fetcher;
-    use bifrost::core::http_sync::HttpSync;
+    use bifrost::core::http_sync::{HttpSync, Syncer};
 
     let settings = load_settings_with_overrides(config, storage);
     let http_cfg = match &settings.http {
@@ -326,21 +325,22 @@ fn handle_fetcher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>)
             std::process::exit(1);
         }
     };
-    let fetcher = Fetcher::new(sync);
+    let syncer = Syncer::new(sync);
     let poll = http_cfg
         .poll_interval
         .unwrap_or(std::time::Duration::from_secs(5));
 
     loop {
-        match fetcher.sync_once() {
-            Ok(stats) => {
-                if stats.fetched > 0 {
-                    println!("[fetcher] pulled {} command/cancel file(s)", stats.fetched);
-                }
+        // fetcher：拉所有 4 个子目录（commands + cancel 给 daemon，results/status 给 client）
+        let mut total = 0usize;
+        for subdir in ["commands", "results", "status", "cancel"] {
+            match syncer.fetch_subdir(subdir) {
+                Ok(n) => total += n,
+                Err(e) => eprintln!("[fetcher] {}: {}", subdir, e),
             }
-            Err(e) => {
-                eprintln!("[fetcher] sync error: {}", e);
-            }
+        }
+        if total > 0 {
+            println!("[fetcher] pulled {} file(s)", total);
         }
         if once {
             return;
@@ -355,7 +355,7 @@ fn handle_fetcher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>)
 /// both ends run the same command, see the same Nexus raw repository, and
 /// never have to think about which side does which direction.
 fn handle_sync(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
-    use bifrost::core::http_sync::{Fetcher, HttpSync, Pusher};
+    use bifrost::core::http_sync::{HttpSync, Syncer};
 
     let settings = load_settings_with_overrides(config, storage);
     let http_cfg = match &settings.http {
@@ -373,35 +373,21 @@ fn handle_sync(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
             std::process::exit(1);
         }
     };
-    let fetcher = Fetcher::new(sync.clone());
-    let pusher = Pusher::new(sync);
+    let syncer = Syncer::new(sync);
     let poll = http_cfg
         .poll_interval
         .unwrap_or(std::time::Duration::from_secs(5));
 
     loop {
-        // Order matters for perceived latency:
-        //   1. fetch: pull remote commands to local (so daemon can start; client can see fresh results)
-        //   2. push:  send our local outbound files (so the OTHER side's fetcher sees them next tick)
-        let (f_stats, f_err) = match fetcher.sync_once() {
-            Ok(s) => (s, None),
-            Err(e) => (Default::default(), Some(e)),
-        };
-        let (p_stats, p_err) = match pusher.sync_once() {
-            Ok(s) => (s, None),
-            Err(e) => (Default::default(), Some(e)),
-        };
-        if f_stats.fetched > 0 || p_stats.pushed > 0 {
-            println!(
-                "[sync] fetched={} pushed={}",
-                f_stats.fetched, p_stats.pushed
-            );
-        }
-        if let Some(e) = f_err {
-            eprintln!("[sync] fetch error: {}", e);
-        }
-        if let Some(e) = p_err {
-            eprintln!("[sync] push error: {}", e);
+        match syncer.sync_once() {
+            Ok(stats) => {
+                if stats.fetched > 0 || stats.pushed > 0 {
+                    println!("[sync] fetched={} pushed={}", stats.fetched, stats.pushed);
+                }
+            }
+            Err(e) => {
+                eprintln!("[sync] error: {}", e);
+            }
         }
         if once {
             return;
@@ -416,8 +402,7 @@ fn handle_sync(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
 /// After each successful upload, the local file is removed (Nexus raw is the
 /// source of truth for the client-side fetcher that runs on the client end).
 fn handle_pusher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
-    use bifrost::core::http_sync::HttpSync;
-    use bifrost::core::http_sync::Pusher;
+    use bifrost::core::http_sync::{HttpSync, Syncer};
 
     let settings = load_settings_with_overrides(config, storage);
     let http_cfg = match &settings.http {
@@ -435,21 +420,27 @@ fn handle_pusher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) 
             std::process::exit(1);
         }
     };
-    let pusher = Pusher::new(sync);
+    let syncer = Syncer::new(sync);
     let poll = http_cfg
         .poll_interval
         .unwrap_or(std::time::Duration::from_secs(5));
 
     loop {
-        match pusher.sync_once() {
-            Ok(stats) => {
-                if stats.pushed > 0 {
-                    println!("[pusher] pushed {} result/status file(s)", stats.pushed);
-                }
+        // pusher：把本地 4 个子目录都推到远端。commands 上传后保留本地
+        // （daemon inbox），其它目录上传后删本地（Nexus 是真源）。
+        let mut total = 0usize;
+        match syncer.push_subdir("commands", false) {
+            Ok(n) => total += n,
+            Err(e) => eprintln!("[pusher] commands: {}", e),
+        }
+        for subdir in ["results", "status", "cancel"] {
+            match syncer.push_subdir(subdir, true) {
+                Ok(n) => total += n,
+                Err(e) => eprintln!("[pusher] {}: {}", subdir, e),
             }
-            Err(e) => {
-                eprintln!("[pusher] sync error: {}", e);
-            }
+        }
+        if total > 0 {
+            println!("[pusher] pushed {} file(s)", total);
         }
         if once {
             return;
