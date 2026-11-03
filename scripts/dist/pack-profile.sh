@@ -1,5 +1,5 @@
 #!/bin/bash
-# pack-profile.sh —— 组装一个「可发布到 Gitee 的 Hermes profile distribution」
+# pack-profile.sh —— 组装一份 Hermes profile distribution（可 push 到任意 git 仓库）
 #
 # 产物是一个目录（不是 tar）：
 #   dist/profile-bifrost-agent/
@@ -9,8 +9,8 @@
 #     skills/setup-bifrost/SKILL.md
 #     skills/setup-bifrost/scripts/bifrost     ← 二进制藏在 skill 里随包走
 #
-# 把它 push 到 Gitee 仓库根目录后，目标机一条命令：
-#   hermes profile install git@gitee.com:<you>/<repo>.git
+# 把它 push 到任意 git 仓库后，目标机一条命令：
+#   hermes profile install <git-url>
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -47,9 +47,9 @@ EOF
 
 echo "✓ $OUT"
 echo
-echo "发布到 Gitee（新建空仓库后）:"
+echo "发布（新建空 git 仓库后，URL 按网络选 github / 内网）："
 echo "  cd $OUT && git init && git add -A && git commit -m 'bifrost-agent v0.1.0'"
-echo "  git remote add origin git@gitee.com:<you>/bifrost-agent.git && git push -u origin main"
+echo "  git remote add origin <git-url> && git push -u origin main"
 echo
 echo "目标机安装:"
-echo "  hermes profile install git@gitee.com:<you>/bifrost-agent.git"
+echo "  hermes profile install <git-url>"

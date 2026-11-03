@@ -1,7 +1,7 @@
 #!/bin/bash
 # publish-github.sh —— 把安装包发到 GitHub Releases（gh CLI，幂等）
 #
-# 两条通道（与 Gitee 侧 publish.sh / publish-latest.sh 的语义一致）：
+# 两条通道：
 #   --latest       滚动快照：tag `latest` 的 Release（prerelease），每次覆盖附件
 #   --tag vX.Y.Z   正式版本：Release 已存在则直接失败（正式版本不可覆盖）
 #

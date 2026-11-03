@@ -80,7 +80,7 @@ release.yml (main / release/** push, or manual dispatch)
 ```
 
 Build logic lives in `scripts/ci/*.sh` and `scripts/dist/*.sh`; the workflows only
-trigger and inject `BIFROST_PUBLISHER=github`, `BIFROST_BRANCH`, `BIFROST_REF`.
+trigger and inject `BIFROST_BRANCH`, `BIFROST_REF`.
 
 ## Four hard rules (enforced in scripts, not by memory)
 
@@ -140,7 +140,6 @@ For an official version, replace `latest` with `v<x.y.z>` and use the versioned 
 
 ```bash
 # GitHub (gh logged in, or GH_TOKEN)
-export BIFROST_PUBLISHER=github
 export BIFROST_BRANCH=main            # detached HEAD / manual runs need this
 export GITHUB_REPOSITORY=peterlau123/bifrost
 
@@ -151,9 +150,7 @@ BIFROST_BRANCH=release/0.2.0 bash scripts/ci/release.sh --release
 bash scripts/ci/release.sh --release --force-branch --tag v0.2.0   # emergency override
 ```
 
-`scripts/dist/publish-github.sh` accepts `--dry-run`. For Gitee publishing, leave
-`BIFROST_PUBLISHER` unset (defaults to `gitee`) and set `GITEE_TOKEN`; that path uses
-`scripts/dist/publish.sh` / `publish-latest.sh`.
+`scripts/dist/publish-github.sh` accepts `--dry-run`; it is the only publisher.
 
 ## Verifying a run
 

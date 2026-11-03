@@ -79,7 +79,7 @@ release.yml（main / release/** 推送，或手动 dispatch）
 ```
 
 构建逻辑都在 `scripts/ci/*.sh` 与 `scripts/dist/*.sh` 里，workflow 只负责触发和注入环境变量
-（`BIFROST_PUBLISHER=github`、`BIFROST_BRANCH`、`BIFROST_REF`）。
+（`BIFROST_BRANCH`、`BIFROST_REF`）。
 
 ## 四条硬规则（都在脚本里，不靠人记）
 
@@ -165,7 +165,6 @@ scripts/dist/bootstrap.sh \
 
 ```bash
 # GitHub（gh 已登录，或用 GH_TOKEN）
-export BIFROST_PUBLISHER=github
 export BIFROST_BRANCH=main            # detached HEAD / 手动发版时显式指定
 export GITHUB_REPOSITORY=peterlau123/bifrost
 
@@ -185,9 +184,7 @@ BIFROST_BRANCH=release/0.2.0 bash scripts/ci/release.sh --release
 bash scripts/ci/release.sh --release --force-branch --tag v0.2.0
 ```
 
-`scripts/dist/publish-github.sh` 支持 `--dry-run`；需要 Gitee 发布时把
-`BIFROST_PUBLISHER` 留空（默认 `gitee`）并设置 `GITEE_TOKEN`，走
-`scripts/dist/publish.sh` / `publish-latest.sh`。
+`scripts/dist/publish-github.sh` 是唯一发布实现，支持 `--dry-run` 小演。
 
 ## 怎么确认流水线真的跑了
 

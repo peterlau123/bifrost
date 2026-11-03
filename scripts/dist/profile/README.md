@@ -5,7 +5,8 @@
 ## 安装
 
 ```bash
-hermes profile install git@gitee.com:<owner>/bifrost-agent.git
+hermes profile install git@github.com:<owner>/bifrost-agent.git
+# 或在内网：hermes profile install <内网 git url>
 hermes profile use bifrost-agent          # 或 hermes -p bifrost-agent chat
 ```
 

@@ -1,5 +1,5 @@
 # Hermes profile distribution: bifrost MCP 常驻
-# 安装: hermes profile install git@gitee.com:<owner>/bifrost-agent.git
+# 安装: hermes profile install git@github.com:<owner>/bifrost-agent.git（或内网 git url）
 name: bifrost-agent
 version: 0.1.0
 description: >-

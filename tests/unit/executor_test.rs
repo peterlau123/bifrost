@@ -154,7 +154,7 @@ fn test_execute_with_working_dir() {
 #[test]
 fn test_execute_python_command() {
     // 这个用例真的在验证"执行 python 命令"，所以保留 python 依赖；
-    // 但 CI 镜像（Gitee Go 的 build@rust）不一定有 python，缺了就跳过而不是红
+    // 但 CI 镜像不一定自带 python，缺了就跳过而不是红
     let has_python = std::process::Command::new("python")
         .arg("-c")
         .arg("pass")
