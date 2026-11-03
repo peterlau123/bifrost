@@ -62,6 +62,43 @@ enum Mode {
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
+
+    /// HTTP fetcher - pull remote commands/cancel from Nexus raw into local shared_storage
+    /// (used on daemon side when transport=http; daemon itself watches local dirs)
+    Fetcher {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Run once and exit (default: loop forever with poll_interval)
+        #[arg(long)]
+        once: bool,
+    },
+
+    /// HTTP pusher - push local results/status from shared_storage up to Nexus raw
+    /// (used on daemon side when transport=http, paired with fetcher)
+    Pusher {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Run once and exit (default: loop forever with poll_interval)
+        #[arg(long)]
+        once: bool,
+    },
+
+    /// Bidirectional HTTP sync - one-shot or daemonized fetch+push in lockstep.
+    /// Recommended for both client and daemon sides when transport=http:
+    /// spawns fetcher+pusher internally with the same shared_storage.
+    Sync {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Run once and exit (default: loop forever with poll_interval)
+        #[arg(long)]
+        once: bool,
+    },
 }
 
 /// Server-side subcommands
@@ -230,6 +267,194 @@ fn main() {
             std::process::exit(bifrost::core::warmup::run(&settings));
         }
         Mode::McpServe { config } => handle_mcp_serve(config, storage, gpus),
+        Mode::Fetcher { config, once } => handle_fetcher(config, once, storage),
+        Mode::Pusher { config, once } => handle_pusher(config, once, storage),
+        Mode::Sync { config, once } => handle_sync(config, once, storage),
+    }
+}
+
+/// Shared loader: BIFROST_CONFIG env > -c flag > ~/.bifrost/settings.json > defaults.
+/// Applies --storage override.
+fn load_settings_with_overrides(
+    config: Option<PathBuf>,
+    storage: Option<PathBuf>,
+) -> bifrost::core::settings::BifrostSettings {
+    use bifrost::core::settings;
+    let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
+    let mut s = if let Some(p) = config {
+        match std::fs::read_to_string(&p) {
+            Ok(c) => serde_json::from_str(&c).unwrap_or_else(|e| {
+                eprintln!("Bad config {}: {}; using defaults", p.display(), e);
+                settings::BifrostSettings::defaults()
+            }),
+            Err(e) => {
+                eprintln!("Cannot read {}: {}; using defaults", p.display(), e);
+                settings::BifrostSettings::defaults()
+            }
+        }
+    } else {
+        settings::load()
+    };
+    if let Some(dir) = storage {
+        s.shared_storage = dir;
+    }
+    s
+}
+
+/// Handle `bifrost fetcher`: pull remote commands/cancel → local shared_storage,
+/// so the local daemon (Protocol+inotify) can consume them as usual.
+///
+/// Loop cadence from `http.poll_interval` (default 5s). `--once` runs a single
+/// iteration and exits, useful for cron / smoke tests / CI.
+fn handle_fetcher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
+    use bifrost::core::http_sync::Fetcher;
+    use bifrost::core::http_sync::HttpSync;
+
+    let settings = load_settings_with_overrides(config, storage);
+    let http_cfg = match &settings.http {
+        Some(h) => h.clone(),
+        None => {
+            eprintln!("error: settings has no [http] section (transport=http required)");
+            std::process::exit(1);
+        }
+    };
+    let local_root = settings.shared_storage.clone();
+    let sync = match HttpSync::from_settings(&http_cfg, local_root) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: build http sync: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let fetcher = Fetcher::new(sync);
+    let poll = http_cfg
+        .poll_interval
+        .unwrap_or(std::time::Duration::from_secs(5));
+
+    loop {
+        match fetcher.sync_once() {
+            Ok(stats) => {
+                if stats.fetched > 0 {
+                    println!("[fetcher] pulled {} command/cancel file(s)", stats.fetched);
+                }
+            }
+            Err(e) => {
+                eprintln!("[fetcher] sync error: {}", e);
+            }
+        }
+        if once {
+            return;
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Handle `bifrost sync`: bidirectional sync (fetch commands/cancel from
+/// remote + push results/status to remote) in one loop. This is the
+/// recommended mode for both client and daemon sides when transport=http:
+/// both ends run the same command, see the same Nexus raw repository, and
+/// never have to think about which side does which direction.
+fn handle_sync(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
+    use bifrost::core::http_sync::{Fetcher, HttpSync, Pusher};
+
+    let settings = load_settings_with_overrides(config, storage);
+    let http_cfg = match &settings.http {
+        Some(h) => h.clone(),
+        None => {
+            eprintln!("error: settings has no [http] section (transport=http required)");
+            std::process::exit(1);
+        }
+    };
+    let local_root = settings.shared_storage.clone();
+    let sync = match HttpSync::from_settings(&http_cfg, local_root) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: build http sync: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let fetcher = Fetcher::new(sync.clone());
+    let pusher = Pusher::new(sync);
+    let poll = http_cfg
+        .poll_interval
+        .unwrap_or(std::time::Duration::from_secs(5));
+
+    loop {
+        // Order matters for perceived latency:
+        //   1. fetch: pull remote commands to local (so daemon can start; client can see fresh results)
+        //   2. push:  send our local outbound files (so the OTHER side's fetcher sees them next tick)
+        let (f_stats, f_err) = match fetcher.sync_once() {
+            Ok(s) => (s, None),
+            Err(e) => (Default::default(), Some(e)),
+        };
+        let (p_stats, p_err) = match pusher.sync_once() {
+            Ok(s) => (s, None),
+            Err(e) => (Default::default(), Some(e)),
+        };
+        if f_stats.fetched > 0 || p_stats.pushed > 0 {
+            println!(
+                "[sync] fetched={} pushed={}",
+                f_stats.fetched, p_stats.pushed
+            );
+        }
+        if let Some(e) = f_err {
+            eprintln!("[sync] fetch error: {}", e);
+        }
+        if let Some(e) = p_err {
+            eprintln!("[sync] push error: {}", e);
+        }
+        if once {
+            return;
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Handle `bifrost pusher`: push local results/status → remote Nexus raw,
+/// so the client (which may be off-GPFS) can fetch them.
+///
+/// After each successful upload, the local file is removed (Nexus raw is the
+/// source of truth for the client-side fetcher that runs on the client end).
+fn handle_pusher(config: Option<PathBuf>, once: bool, storage: Option<PathBuf>) {
+    use bifrost::core::http_sync::HttpSync;
+    use bifrost::core::http_sync::Pusher;
+
+    let settings = load_settings_with_overrides(config, storage);
+    let http_cfg = match &settings.http {
+        Some(h) => h.clone(),
+        None => {
+            eprintln!("error: settings has no [http] section (transport=http required)");
+            std::process::exit(1);
+        }
+    };
+    let local_root = settings.shared_storage.clone();
+    let sync = match HttpSync::from_settings(&http_cfg, local_root) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: build http sync: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let pusher = Pusher::new(sync);
+    let poll = http_cfg
+        .poll_interval
+        .unwrap_or(std::time::Duration::from_secs(5));
+
+    loop {
+        match pusher.sync_once() {
+            Ok(stats) => {
+                if stats.pushed > 0 {
+                    println!("[pusher] pushed {} result/status file(s)", stats.pushed);
+                }
+            }
+            Err(e) => {
+                eprintln!("[pusher] sync error: {}", e);
+            }
+        }
+        if once {
+            return;
+        }
+        std::thread::sleep(poll);
     }
 }
 

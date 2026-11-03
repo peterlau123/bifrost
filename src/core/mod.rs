@@ -2,6 +2,7 @@
 pub mod batch_tracker;
 pub mod bridge;
 pub mod error;
+pub mod http_sync;
 pub mod job;
 pub mod lock;
 pub mod models;

@@ -44,6 +44,9 @@ pub struct BifrostSettings {
     /// SSH transport config (required when transport == "ssh").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshSection>,
+    /// HTTP transport config (required when transport == "http").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpSection>,
     #[serde(default)]
     pub client: ClientSection,
     #[serde(default)]
@@ -59,11 +62,16 @@ pub enum Transport {
     Shared,
     /// SSH bridge: client reaches the target machine's dirs over SSH.
     Ssh,
+    /// HTTP bridge: client/daemon sync via an HTTP file server (e.g. Nexus raw).
+    Http,
 }
 
 impl Transport {
     pub fn is_ssh(&self) -> bool {
         matches!(self, Transport::Ssh)
+    }
+    pub fn is_http(&self) -> bool {
+        matches!(self, Transport::Http)
     }
 }
 
@@ -91,6 +99,45 @@ pub struct SshSection {
         skip_serializing_if = "Option::is_none"
     )]
     pub connect_timeout: Option<Duration>,
+}
+
+/// HTTP bridge configuration (used when `transport == "http"`).
+/// 对应 Nexus raw hosted 仓库：PUT 上传 / GET 下载 / DELETE 清理。
+/// 对象路径规则：{base_url}/{prefix}/{commands|results|status|cancel}/<filename>
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct HttpSection {
+    /// Nexus raw 仓库根 URL，例如
+    /// `https://nexus.zs.shaipower.online/repository/tmp-raw/uploads/bifrost`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// HTTP basic auth 用户名（默认走 BIFROST_HTTP_USER 环境变量）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// HTTP basic auth 密码（默认走 BIFROST_HTTP_PASSWORD 环境变量；
+    /// 严禁把真实密码写进 settings.json，这里只是占位/文档）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// daemon 侧轮询间隔（对象存储没有 inotify，只能 poll）
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub poll_interval: Option<Duration>,
+    /// 单次 HTTP 请求超时（默认 30s）
+    #[serde(
+        default,
+        deserialize_with = "deser_duration",
+        serialize_with = "ser_duration",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub request_timeout: Option<Duration>,
+    /// 上传原子性开关：true = 先 PUT .tmp 再 PUT 正式名（两段式，Nexus raw 上
+    /// 并非真正 rename，只是两个 key；默认 false，因为 status/results JSON 很小，
+    /// 单次 PUT 已足够原子 —— D1 决策）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atomic_upload: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -222,6 +269,7 @@ impl BifrostSettings {
             shared_storage: dirs().join("data"),
             transport: Transport::Shared,
             ssh: None,
+            http: None,
             client: ClientSection::default(),
             daemon: DaemonSection::default(),
         }
@@ -271,6 +319,18 @@ impl BifrostSettings {
                 return Err(SettingsError::Duration {
                     value: "ssh".into(),
                     reason: "ssh config requires 'host' and 'remote_dir'".into(),
+                });
+            }
+        }
+        if self.transport.is_http() {
+            let http = self.http.as_ref().ok_or_else(|| SettingsError::Duration {
+                value: "http".into(),
+                reason: "transport=http requires an 'http' config section".into(),
+            })?;
+            if http.base_url.is_none() {
+                return Err(SettingsError::Duration {
+                    value: "http".into(),
+                    reason: "http config requires 'base_url'".into(),
                 });
             }
         }
