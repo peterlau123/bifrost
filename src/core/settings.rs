@@ -154,6 +154,12 @@ pub struct HttpSection {
     /// it means "new namespace". Validated as non-empty by `validate()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+    /// Search query (`q`) for Nexus REST search (D8). `q` is a tokenized OR
+    /// match, so feeding the full path pulls in unrelated objects; feed only
+    /// the most distinctive token. Default: last segment of `prefix` (e.g.
+    /// `bifrost-http-bridge` from `team-lx/bifrost-http-bridge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing_query: Option<String>,
     /// TCP/TLS connect timeout (seconds).
     #[serde(default = "default_10secs")]
     pub connect_timeout_secs: u64,
@@ -185,6 +191,7 @@ impl Default for HttpSection {
             repository: None,
             auth: None,
             prefix: None,
+            listing_query: None,
             connect_timeout_secs: default_10secs(),
             read_timeout_secs: default_30secs(),
             poll_interval_secs: default_10secs(),
@@ -447,6 +454,22 @@ impl BifrostSettings {
                              is on /service/rest/v1 and cannot be derived from base_url)"
                             .into(),
                     });
+                }
+                // D13: base_url 必须与 repository 名字一致——否则 search 查 A 库,
+                // PUT 进 B 库, 任务永远拉不到, 症状跟「fetcher 没起」一模一样.
+                // 校验仅作为配置期快速失败; loopback 测试 base_url 例外.
+                if is_https {
+                    let expect_marker = format!("/repository/{}/", repo);
+                    if !base_url.contains(&expect_marker) {
+                        return Err(SettingsError::Duration {
+                            value: "http.base_url".into(),
+                            reason: format!(
+                                "http.base_url must contain '{}' to match http.repository \
+                                 (otherwise search hits one repo, PUT lands in another)",
+                                expect_marker.trim_end_matches('/')
+                            ),
+                        });
+                    }
                 }
             }
             // basic 必须连 user+password 一起给.
@@ -941,5 +964,49 @@ mod tests {
         let mut h = http_section_valid();
         h.auth = None;
         assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_base_url_must_match_repository_when_rest_search() {
+        // D13: base_url 不含 /repository/<repository>/ -> 配置期拒绝
+        let mut h = http_section_valid();
+        h.repository = Some("wrong-repo".into());
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(
+            err.contains("/repository/wrong-repo"),
+            "D13 校验: base_url 必须含 repository 路径段: {}",
+            err
+        );
+
+        // OK 情况: base_url 匹配
+        let mut h = http_section_valid();
+        h.repository = Some("tmp-raw".into()); // base_url 里就是 /repository/tmp-raw/
+        assert!(http_settings(h).validate().is_ok());
+
+        // loopback http 豁免 (单测场景没有真 repo 路径)
+        let mut h = http_section_valid();
+        h.base_url = Some("http://127.0.0.1:8081".into());
+        h.repository = Some("whatever".into());
+        assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_listing_query_defaults_to_prefix_last_segment() {
+        // D8 二轮: listing_query 默认 = prefix 最后一段
+        let h = http_section_valid();
+        let q = h
+            .listing_query
+            .as_deref()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                h.prefix
+                    .as_deref()
+                    .unwrap_or("")
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            });
+        assert_eq!(q, "bifrost-http-bridge");
     }
 }
