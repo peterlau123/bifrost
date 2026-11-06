@@ -359,6 +359,7 @@ bifrost pusher &     # 把本地 results/、status/ 推到 Nexus
     "repository": "tmp-raw",
     "auth": { "kind": "basic", "user": "tmp-raw", "password": "<REAL_PASSWORD>" },
     "prefix": "team-lx/bifrost-http-bridge",
+    "listing_query": "bifrost-http-bridge",
     "connect_timeout_secs": 10,
     "read_timeout_secs": 30,
     "poll_interval_secs": 10,
