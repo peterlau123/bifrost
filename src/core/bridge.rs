@@ -37,6 +37,11 @@ pub fn create_bridge(settings: &BifrostSettings) -> Result<Box<dyn Bridge>> {
             BifrostError::ConfigInvalid("transport=ssh but no ssh section".into())
         })?;
         Ok(Box::new(crate::core::ssh_bridge::SshBridge::new(ssh)?))
+    } else if settings.transport.is_http() {
+        let http = settings.http.as_ref().ok_or_else(|| {
+            BifrostError::ConfigInvalid("transport=http but no http section".into())
+        })?;
+        Ok(Box::new(crate::core::http_bridge::HttpBridge::new(http)?))
     } else {
         Ok(Box::new(crate::core::protocol::Protocol::new(
             settings.shared_storage.clone(),

@@ -73,6 +73,18 @@ pub enum BifrostError {
     /// Invalid task status transition
     #[error("Invalid status transition from {from} to {to}")]
     InvalidStatusTransition { from: String, to: String },
+
+    /// HTTP auth failure (401/403). Raised immediately without retry — the
+    /// settings are wrong and waiting won't fix it. (HTTP bridge, D 决策)
+    #[error("HTTP auth failed: {0}")]
+    AuthError(String),
+
+    /// `wait_timeout` reached and the task is nowhere to be found on the
+    /// relay (results/ + status/ + commands/ all miss). Distinct from
+    /// TaskNotFound: not "wrong id" but "the task evaporated", usually
+    /// because the temp store was cleaned by ops (G5). (HTTP bridge, D10)
+    #[error("Task lost: {0}")]
+    TaskLost(Uuid),
 }
 
 /// Result type alias for Bifrost operations

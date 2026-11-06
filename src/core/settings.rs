@@ -38,12 +38,15 @@ fn ser_duration<S: serde::Serializer>(v: &Option<Duration>, s: S) -> Result<S::O
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BifrostSettings {
     pub shared_storage: PathBuf,
-    /// Transport type: "shared" (default) or "ssh".
+    /// Transport type: "shared" (default), "ssh", or "http".
     #[serde(default)]
     pub transport: Transport,
     /// SSH transport config (required when transport == "ssh").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshSection>,
+    /// HTTP transport config (required when transport == "http"; D12 prefix 必填契约).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpSection>,
     #[serde(default)]
     pub client: ClientSection,
     #[serde(default)]
@@ -59,11 +62,135 @@ pub enum Transport {
     Shared,
     /// SSH bridge: client reaches the target machine's dirs over SSH.
     Ssh,
+    /// HTTP bridge: client PUT/GET against a dumb HTTP relay (e.g. Nexus Raw),
+    /// target-side fetcher pulls tasks into local commands/ (daemon unchanged).
+    Http,
 }
 
 impl Transport {
     pub fn is_ssh(&self) -> bool {
         matches!(self, Transport::Ssh)
+    }
+    pub fn is_http(&self) -> bool {
+        matches!(self, Transport::Http)
+    }
+}
+
+fn default_10secs() -> u64 {
+    10
+}
+fn default_30secs() -> u64 {
+    30
+}
+fn default_false() -> bool {
+    false
+}
+fn default_listing_style() -> ListingStyle {
+    ListingStyle::RestSearch
+}
+
+/// HTTP auth kind for the relay (D5 预留 "none" 给内网匿名 GET 场景).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthKind {
+    /// HTTP Basic auth (username + password). Only meaningful over https.
+    #[default]
+    Basic,
+    /// No auth header at all (anonymous read-only intranets).
+    None,
+}
+
+/// HTTP auth credentials block (D6: 明文 + 文件 600 权限, 不进 ENV).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct HttpAuthSection {
+    #[serde(default)]
+    pub kind: AuthKind,
+    /// Required when kind == "basic".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Required when kind == "basic".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// How the fetcher lists "what tasks exist on the relay" (§4.4).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListingStyle {
+    /// Nexus REST search API (`/service/rest/v1/search/assets`) + local prefix
+    /// filter. Default for Nexus Raw; verifies against /service/rest/v1.
+    #[serde(rename = "rest-search")]
+    #[default]
+    RestSearch,
+    /// GET the directory and parse HTML `<a href>` links. Only works on
+    /// autoindex-style backends (nginx). **Unsupported on Nexus Raw** (404).
+    #[serde(rename = "html")]
+    Html,
+    /// No listing support: fetcher cannot operate; client-only setups only.
+    #[serde(rename = "none")]
+    None,
+}
+
+/// HTTP bridge configuration (used when `transport == "http"`).
+/// See `docs/design/http-bridge.md` §3 / §4.6 for the bilateral contract (D12).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HttpSection {
+    /// Base URL of the HTTP relay's upload area. **Must be `https://`**
+    /// (Basic auth would otherwise go over the wire in cleartext; rejected
+    /// at `validate()` time). All resource paths resolve to
+    /// `<base_url>/<prefix>/<subdir>/<filename>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Repository name (e.g. `tmp-raw`). Required when
+    /// `listing_style == "rest-search"` because the search API lives outside
+    /// `/repository/<repo>/` and cannot be derived from `base_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// Auth credentials block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HttpAuthSection>,
+    /// Bilateral contract root (D12). Client and daemon must agree on the
+    /// exact value. Recommended form `<owner>/<project>` (e.g.
+    /// `team-lx/bifrost-http-bridge`). MUST NOT carry a timestamp — changing
+    /// it means "new namespace". Validated as non-empty by `validate()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// TCP/TLS connect timeout (seconds).
+    #[serde(default = "default_10secs")]
+    pub connect_timeout_secs: u64,
+    /// Inactivity read timeout (seconds). NOT a total request deadline —
+    /// large blobs need long overall transfers (26 MiB/s single-stream on
+    /// the Nexus probe).
+    #[serde(default = "default_30secs")]
+    pub read_timeout_secs: u64,
+    /// Fetcher and client-side poll cadence (seconds). Default raised to 10s
+    /// per D11 (sequential mode): 5s polling has zero gain when only one
+    /// task is in flight at a time.
+    #[serde(default = "default_10secs")]
+    pub poll_interval_secs: u64,
+    /// Optional two-step upload ("file.tmp then file") for future backends
+    /// that don't have Nexus Raw's per-PUT atomicity. Default false (D1).
+    #[serde(default = "default_false")]
+    pub atomic_upload: bool,
+    /// How the fetcher enumerates task objects on the relay.
+    #[serde(default = "default_listing_style")]
+    pub listing_style: ListingStyle,
+}
+
+// 手工 Default: 保证 Rust 代码里 HttpSection::default() 与 JSON 缺省值保持一致,
+// 不会出现「序列化 round-trip 后 u64 字段变 0」的隐性漂移.
+impl Default for HttpSection {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            repository: None,
+            auth: None,
+            prefix: None,
+            connect_timeout_secs: default_10secs(),
+            read_timeout_secs: default_30secs(),
+            poll_interval_secs: default_10secs(),
+            atomic_upload: default_false(),
+            listing_style: default_listing_style(),
+        }
     }
 }
 
@@ -222,6 +349,7 @@ impl BifrostSettings {
             shared_storage: dirs().join("data"),
             transport: Transport::Shared,
             ssh: None,
+            http: None,
             client: ClientSection::default(),
             daemon: DaemonSection::default(),
         }
@@ -272,6 +400,69 @@ impl BifrostSettings {
                     value: "ssh".into(),
                     reason: "ssh config requires 'host' and 'remote_dir'".into(),
                 });
+            }
+        }
+        if self.transport.is_http() {
+            let http = self.http.as_ref().ok_or_else(|| SettingsError::Duration {
+                value: "http".into(),
+                reason: "transport=http requires an 'http' config section".into(),
+            })?;
+            // D12 契约: prefix 必填, 非空字符串. 双方 (client + daemon) 必须
+            // 抄同一份 [http] 段配置, prefix 是 discovery / upload / result 的根.
+            let prefix = http.prefix.as_deref().unwrap_or("").trim();
+            if prefix.is_empty() {
+                return Err(SettingsError::Duration {
+                    value: "http.prefix".into(),
+                    reason: "transport=http requires 'http.prefix' (non-empty; \
+                             bilateral contract root, D12)"
+                        .into(),
+                });
+            }
+            let base_url = http.base_url.as_deref().unwrap_or("").trim();
+            if base_url.is_empty() {
+                return Err(SettingsError::Duration {
+                    value: "http.base_url".into(),
+                    reason: "transport=http requires 'http.base_url'".into(),
+                });
+            }
+            // Basic auth 明文 + https 强制 (loopback 单测例外).
+            let is_https = base_url.starts_with("https://");
+            let is_loopback_http = base_url.starts_with("http://127.0.0.1")
+                || base_url.starts_with("http://localhost");
+            if !is_https && !is_loopback_http {
+                return Err(SettingsError::Duration {
+                    value: "http.base_url".into(),
+                    reason: "http.base_url must be https:// (Basic auth cleartext); \
+                             loopback http://127.0.0.1 allowed only in tests"
+                        .into(),
+                });
+            }
+            // rest-search 必须能推出 repo 名.
+            if http.listing_style == ListingStyle::RestSearch {
+                let repo = http.repository.as_deref().unwrap_or("").trim();
+                if repo.is_empty() {
+                    return Err(SettingsError::Duration {
+                        value: "http.repository".into(),
+                        reason: "listing_style=rest-search requires 'http.repository' (search API \
+                             is on /service/rest/v1 and cannot be derived from base_url)"
+                            .into(),
+                    });
+                }
+            }
+            // basic 必须连 user+password 一起给.
+            if let Some(auth) = &http.auth {
+                if auth.kind == AuthKind::Basic {
+                    let u = auth.user.as_deref().unwrap_or("").trim();
+                    let p = auth.password.as_deref().unwrap_or("").trim();
+                    if u.is_empty() || p.is_empty() {
+                        return Err(SettingsError::Duration {
+                            value: "http.auth".into(),
+                            reason: "auth.kind=basic requires both 'http.auth.user' and \
+                                 'http.auth.password'"
+                                .into(),
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -588,5 +779,167 @@ mod tests {
             ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
         };
         assert!(ok.validate().is_ok());
+    }
+
+    // ── HTTP bridge settings validation (Day 1; D12 prefix 必填, D6 basic auth) ──
+
+    fn http_section_valid() -> HttpSection {
+        HttpSection {
+            base_url: Some("https://nexus.example.com/repository/tmp-raw/uploads".into()),
+            repository: Some("tmp-raw".into()),
+            auth: Some(HttpAuthSection {
+                kind: AuthKind::Basic,
+                user: Some("u".into()),
+                password: Some("p".into()),
+            }),
+            prefix: Some("team-lx/bifrost-http-bridge".into()),
+            ..HttpSection::default()
+        }
+    }
+
+    fn http_settings(http: HttpSection) -> BifrostSettings {
+        BifrostSettings {
+            transport: Transport::Http,
+            http: Some(http),
+            ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
+        }
+    }
+
+    #[test]
+    fn http_valid_settings_passes() {
+        assert!(http_settings(http_section_valid()).validate().is_ok());
+    }
+
+    #[test]
+    fn http_settings_round_trip_json() {
+        let s = http_settings(http_section_valid());
+        let json = serde_json::to_string(&s).unwrap();
+        let back: BifrostSettings = serde_json::from_str(&json).unwrap();
+        let http = back.http.as_ref().expect("http section present");
+        assert_eq!(http.prefix.as_deref(), Some("team-lx/bifrost-http-bridge"));
+        assert_eq!(http.repository.as_deref(), Some("tmp-raw"));
+        assert_eq!(http.poll_interval_secs, 10, "D11 顺序模式默认 10s");
+        assert_eq!(http.connect_timeout_secs, 10);
+        assert_eq!(http.read_timeout_secs, 30);
+        assert!(!http.atomic_upload, "D1 默认单次 PUT");
+        assert_eq!(
+            http.listing_style,
+            ListingStyle::RestSearch,
+            "D8 默认 rest-search"
+        );
+    }
+
+    #[test]
+    fn http_requires_section_when_transport_http() {
+        let s = BifrostSettings {
+            transport: Transport::Http,
+            http: None,
+            ..serde_json::from_str(r#"{"shared_storage":"/t"}"#).unwrap()
+        };
+        let err = s.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("http"),
+            "error mentions missing http section: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn http_prefix_required_for_d12_contract() {
+        let mut h = http_section_valid();
+        h.prefix = None;
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(err.contains("http.prefix"), "prefix 必填: {}", err);
+
+        let mut h = http_section_valid();
+        h.prefix = Some("   ".into()); // whitespace-only is also empty
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(err.contains("http.prefix"), "prefix 不可为纯空白: {}", err);
+    }
+
+    #[test]
+    fn http_base_url_must_be_https_unless_loopback() {
+        // 非 https + 非 loopback -> 拒绝
+        let mut h = http_section_valid();
+        h.base_url = Some("http://nexus.example.com/repository/tmp-raw/uploads".into());
+        assert!(http_settings(h).validate().is_err());
+
+        // loopback http -> 通过 (单测场景 §8)
+        let mut h = http_section_valid();
+        h.base_url = Some("http://127.0.0.1:8081".into());
+        assert!(http_settings(h).validate().is_ok());
+
+        let mut h = http_section_valid();
+        h.base_url = Some("http://localhost:8081".into());
+        assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_base_url_missing_rejected() {
+        let mut h = http_section_valid();
+        h.base_url = None;
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(err.contains("http.base_url"), "base_url 必填: {}", err);
+    }
+
+    #[test]
+    fn http_rest_search_requires_repository() {
+        let mut h = http_section_valid();
+        h.repository = None;
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(
+            err.contains("http.repository"),
+            "rest-search 必须给 repo: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn http_html_listing_does_not_need_repository() {
+        // 后端选 html 时, repository 字段不再强制 (非 Nexus)
+        let mut h = http_section_valid();
+        h.repository = None;
+        h.listing_style = ListingStyle::Html;
+        assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_basic_auth_requires_user_and_password() {
+        let mut h = http_section_valid();
+        if let Some(a) = h.auth.as_mut() {
+            a.password = None;
+        }
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(
+            err.contains("http.auth"),
+            "basic auth 需要 user+password: {}",
+            err
+        );
+
+        let mut h = http_section_valid();
+        if let Some(a) = h.auth.as_mut() {
+            a.user = None;
+        }
+        assert!(http_settings(h).validate().is_err());
+    }
+
+    #[test]
+    fn http_auth_kind_none_does_not_need_credentials() {
+        // D5: kind=none 时不要求 user/password
+        let mut h = http_section_valid();
+        h.auth = Some(HttpAuthSection {
+            kind: AuthKind::None,
+            user: None,
+            password: None,
+        });
+        assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_no_auth_section_ok() {
+        // auth 段整体省略 (匿名 GET 内网) -> ok
+        let mut h = http_section_valid();
+        h.auth = None;
+        assert!(http_settings(h).validate().is_ok());
     }
 }
