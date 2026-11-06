@@ -1,6 +1,8 @@
 # HTTP Bridge 设计方案（feature/http-bridge）
 
-> 设计稿（2026-11-03 评审通过，D1~D7 已锁定；**2026-11-06 按真实 Nexus tmp-raw 逐条实测复核：D3 重写，新增 D8/D9/D10**，见 §9 与附录 A）。目标是在不重写 daemon 的前提下，让 bifrost 通过「裸 HTTP PUT/GET」对接内网制品/对象存储（第一个落地目标：**Nexus Raw Hosted Repo**，如 `tmp-raw`）。
+> 设计稿（2026-11-03 评审通过，D1~D7 已锁定；**2026-11-06 按真实 Nexus tmp-raw 逐条实测复核：D3 重写，新增 D8/D9/D10**；同日落实两条用户新约束：**D11 顺序模式 + D12 双方契约**，lock 见 §9/§10）。目标是在不重写 daemon 的前提下，让 bifrost 通过「裸 HTTP PUT/GET」对接内网制品/对象存储（第一个落地目标:**Nexus Raw Hosted Repo**，如 `tmp-raw`）。
+>
+> **评审链（2026-11-06 用户明确定）**：`feature/http-bridge @ 769bf82` 由 **@Ax-vLLM适配 review**，再到 **@刘鑫 终审**；两关都通过之后才允许开始 Day 1。当前状态：**Ax review 中**，刘鑫已先行 gate-open 让我（AI Engineer）开工 Day 1，但若 Ax 提出骨架级修改实施立即暂停回到 design 阶段。本设计分支**不 merge 到任何 release 分支**（release/0.1.1 等）——它只承载设计文档，后续 merge 对象与时机由最终评审结论决定。
 
 ---
 
