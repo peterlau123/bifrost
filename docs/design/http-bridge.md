@@ -30,6 +30,7 @@ Bifrost 已有 2 种 transport：
 | G3 | **不锁死后端** | settings schema 现在只描述「裸 PUT/GET」；未来的 S3 签名/MultiUpload 通过 `[http]` 加可选字段扩展，不需要新 transport |
 | G4 | **能对接 Nexus tmp-raw** | URL 模板、Basic Auth、单次 PUT 上传三件套够通（两步 `.tmp` 法留 opt-in） |
 | G5 | **服务目录 = 临时存储** | 服务器不保证稳定（文档原话「随时可能被删」），方案需容忍 **文件遗失**——结果丢失只影响 UI，不能让任务永远 Pending |
+| G6 | **V1 顺序模式**（2026-11-06 新增，D11 决策） | client 一次只提交一个任务、阻塞等待该任务完成；fetcher 每轮最多拉 **1 个** task 落本地。不做并发提交/批量拉取。这样能省掉 manifest 合并与多 client 竞争协调，复杂度砍到最低 |
 
 ---
 
@@ -71,18 +72,20 @@ Bifrost 已有 2 种 transport：
     "auth": {
       "kind": "basic",
       "user": "tmp-raw",
-      "password": "<REDACTED>"
+      "password": "***"
     },
-    "prefix": "team-lx/session-20261103",
+    "prefix": "team-lx/bifrost-http-bridge",
     "connect_timeout_secs": 10,
     "read_timeout_secs": 30,
-    "poll_interval_secs": 5,
+    "poll_interval_secs": 10,
     "listing_style": "rest-search"
   },
   "client": { ... },
   "daemon": { ... }
 }
 ```
+
+> **`prefix` 是双方契约的根**：client 侧 daemon 侧必须使用**同一份 `~/.bifrost/settings.json`**（至少 `[http]` 段一致）。写成 `<owner>/<project>` 形式（例 `team-lx/bifrost-http-bridge`），稳定、不随时间戳变化。详见 §4.6 双方契约。
 
 ### 字段说明
 
@@ -92,10 +95,10 @@ Bifrost 已有 2 种 transport：
 | `http.base_url` | `String` | ✅ | HTTP 存储的根，所有资源路径都是 `<base_url>/<prefix>/<subdir>/<filename>`。**必须 `https://`**——Basic Auth 明文，`http://` 在配置解析期直接报错 |
 | `http.auth.kind` | `"basic"` / `"none"` | ✅ | 现在只支持 basic；不填=匿名（如内网开放 GET） |
 | `http.auth.user`/`password` | `String` | kind=basic 必填 | Basic Auth 凭证 |
-| `http.prefix` | `String` | ❌ | URL 中的隔离前缀（多用户/多任务共存于一个 repo 时用） |
+| `http.prefix` | `String` | **✅ 必填**（2026-11-06 改为必填，见 D12） | URL 中的隔离前缀，也是双方契约的根；推荐 `<owner>/<project>` 形式（例 `team-lx/bifrost-http-bridge`），稳定、与时间戳无关。client 与 daemon 的 `[http]` 段必须**完全一致**，否则 fetcher 拉不到任务、pusher 推错位置、client 拉不到结果 |
 | `http.connect_timeout_secs` | `u64` | ❌ 默认 10 | TCP/TLS 建连超时 |
 | `http.read_timeout_secs` | `u64` | ❌ 默认 30 | **inactivity** 读超时（相邻两次收到数据的最大间隔），**不是整个请求的总超时** |
-| `http.poll_interval_secs` | `u64` | ❌ 默认 5 | fetcher 轮询间隔；client 查 status/result 的最小间隔 |
+| `http.poll_interval_secs` | `u64` | ❌ 默认 **10**（2026-11-06 从 5s 提高，见 D11） | fetcher 轮询间隔；client 查 status/result 的最小间隔。顺序模式下 5s 轮询无收益（同时只有 1 个任务在发生），10s 既省 Nexus 调用，又让对人延迟可感知 |
 | `http.atomic_upload` | `bool` | ❌ 默认 false | 默认单次 PUT 已足够（Nexus Raw 每个 PUT 落一个独立 blob，写完才可见，文件级原子性天然有）。开 true 则先 PUT `<file>.tmp` 再 PUT `<file>` 两步法，**裸 HTTP 没有 rename**，这种「原子」也只是约定，留给真正需要的后端 opt-in |
 | `http.repository` | `String` | listing_style=`rest-search` 必填 | Nexus 仓库名（如 `tmp-raw`）。search API 在 `/service/rest/v1/` 下，**从 `base_url` 推不出 repo 名**，必须单独给 |
 | `http.listing_style` | `"rest-search"` / `"html"` / `"none"` | ❌ 默认 `"rest-search"` | fetcher 怎么列目录：`rest-search` = Nexus REST search（实测可用）；`html` = GET 目录解析 `<a href>`（**Nexus raw 实测 404，只留给 nginx autoindex 类后端**）；未来 S3 兼容再加 `"s3"` / `"json"` |
@@ -184,6 +187,40 @@ HTTP Bridge 与 SSH Bridge **完全对称**——都是「client 端在远端目
 | 405 (Method Not Allowed) | 只在 DELETE 上有意义：后端真不支持删除 → 记 warning，幂等靠 ledger（D3/D9）。**不是「静默当成功」** |
 | `TaskLost` | `wait_timeout` 到期、且 search 在 `results/status/commands` 三处都查不到 → 抛 `TaskLost`（新增变体，D10），别继续报 Pending |
 
+### 4.6 双方契约（2026-11-06 新增，D12）
+
+部署 HTTP Bridge 时，**client 侧和 daemon 侧必须使用同一份 `[http]` 段配置**——这是双方唯一的契约。四件事必须同时成立：
+
+| # | 双方都要知道 | 约定 |
+|---|---|---|
+| 1 | **client 往哪里 PUT 任务** | `<base_url>/<prefix>/commands/<ts>_<task_id>.json`（每次新增，不覆盖） |
+| 2 | **client 从哪里拉结果 / 状态** | `<base_url>/<prefix>/results/<task_id>_result.json` 与 `<base_url>/<prefix>/status/<task_id>.json` |
+| 3 | **fetcher 怎么发现任务** | REST search 在 `<prefix>/commands/` 下查，本地 `path.starts_with(prefix)` 二次过滤（D8），拉到后写 `<shared_storage>/commands/` 同时 DELETE 远端 |
+| 4 | **pusher 把结果推到哪里** | `<base_url>/<prefix>/results/` + `<base_url>/<prefix>/status/`（PUT 成功后删除本地文件） |
+
+`cancel/<task_id>.json` 与上述对称：client PUT 到 `<base_url>/<prefix>/cancel/`，fetcher 拉到本地 `<shared_storage>/cancel/` 后 DELETE 远端。
+
+**双方共享的 settings 模板**（README「HTTP Bridge」章节照抄这份并填上真实密码）：
+
+```json
+{
+  "transport": "http",
+  "shared_storage": "/var/bifrost/local",
+  "http": {
+    "base_url": "https://nexus.zs.shaipower.online/repository/tmp-raw/uploads",
+    "repository": "tmp-raw",
+    "auth": { "kind": "basic", "user": "tmp-raw", "password": "<REAL_PASSWORD>" },
+    "prefix": "<owner>/<project>",
+    "connect_timeout_secs": 10,
+    "read_timeout_secs": 30,
+    "poll_interval_secs": 10,
+    "listing_style": "rest-search"
+  },
+  "client": { ... },
+  "daemon": { ... }
+}
+```
+
 ---
 
 ## 5. Fetcher / Pusher（目标机侧）
@@ -196,7 +233,8 @@ Fetcher/pusher 作为 bifrost 自身的 **`bifrost fetcher` / `bifrost pusher`**
 loop {
     let remote = http.list_pending();          // REST search + path 前缀过滤（§4.2 list_pending_tasks，D8）
     let seen   = ledger.load();                // <shared_storage>/.fetcher-state/<task_id>（D9）
-    for f in remote where task_id(f) not in seen {
+    let first  = remote.iter().find(|f| !seen.contains(task_id(f)));
+    if let Some(f) = first {                   // ⭐ V1 顺序模式：每轮最多拿 1 个（D11）
         let content = http.get(f);             // 先判 200：404 页带 body
         atomic_write(local_commands_dir + f, content);
         ledger.mark(task_id(f));               // 先落 ledger，再动远端
@@ -209,13 +247,19 @@ loop {
 }
 ```
 
+顺序模式说明（**V1 不做并发提交**，见 D11）：
+
+- client 一次只能 `submit` **一个**任务；`bifrost client submit` 会阻塞直到结果回来（或 `wait_timeout` 到期抛 `TaskLost`）
+- fetcher 每轮**最多拉 1 个**新任务落本地（`first` + `find`），把节奏对齐到 daemon 实际执行能力，也天然避免多任务并发时 daemon/Protocol 侧出现并发竞争
+- 需要并发？V2 再议——前提是先跑通顺序模式，再决定要不要 manifest 合并 + 多 client 竞争协调那套（见 §7 YAGNI 注）
+
 幂等性：**唯一依据是 ledger，不是本地文件名**。daemon 执行完会 `Protocol::remove_task` 删掉 `commands/<ts>_<id>.json`，`spawn_task` 末尾又删 `.processing`——任务终态后本地 `commands/` 什么都不剩。靠「本地有没有同名文件」判断，下一轮就会把同一任务再拉一遍、**再执行一次**（删除一旦不生效就是每个 poll 周期一次）。ledger 与远端对象做差，删除失败只影响清场、不影响幂等。
 
 fetcher 首轮必须打一行日志：`backend=nexus repo=<repo> prefix=<prefix> listing=rest-search first_round=<N>` —— 否则外场分不清「fetcher 没起」和「没任务」（D7 不做 heartbeat 的补偿）。拉到 `cancel/<id>.json` 写进本地后，同样 DELETE 远端对象。
 
 ### Pusher 行为
 
-对称：扫本地 `results/`、`status/`，本地有远端没有的，PUT 上去。差分靠本地记账（远端有 search 可查，但每轮全量列举比本地 mtime 扫描贵），只搬 `results/`、`status/`、`cancel/`，不搬 `artifacts/`。
+对称：扫本地 `results/`、`status/`，本地出现的文件 PUT 到远端对应路径，**PUT 成功后删除本地**。差分依赖本地记账（每次 PUT 成功后立即删本地即是最简单的 ledger，**不需要远端 manifest**——顺序模式下同一时刻只有一个 client 和一个结果在等待，不会出现并发 merge 场景）。只搬 `results/`、`status/`、`cancel/`，不搬 `artifacts/`。
 
 ### 部署形态
 
@@ -257,6 +301,7 @@ fetcher 首轮必须打一行日志：`backend=nexus repo=<repo> prefix=<prefix>
 - ❌ 健康检查 (`heartbeat_age_secs`) —— **D7 决策：fetcher/pusher 活性看日志时间戳 / pid 就够**，不需要额外 heartbeat 文件
 - ❌ 加密 —— 内网明文 Basic Auth + HTTPS 已够；要加密就走 VPN/mTLS
 - ❌ HTTP redirect 跟随 —— Nexus 不跳；S3 确实可能跳，未来加
+- ❌ **并发任务提交 / 批量 fetcher 拉取 / manifest 合并** —— **D11 决策：V1 顺序模式**，一次一个任务、fetcher 每轮最多 1 条。如果真要多任务并发，V2 再说，前提是顺序模式跑通且证明有需求
 
 ---
 
@@ -299,7 +344,7 @@ fetcher 首轮必须打一行日志：`backend=nexus repo=<repo> prefix=<prefix>
 
 ---
 
-## 9. 评审决策（2026-11-03 锁定 D1~D7；2026-11-06 实测复核后重写 D3、新增 D8~D10）
+## 9. 评审决策（2026-11-03 锁定 D1~D7；2026-11-06 实测复核后重写 D3、新增 D8~D12）
 
 | # | 决策 | 结论 | 备注 |
 |---|---|---|---|
@@ -313,21 +358,23 @@ fetcher 首轮必须打一行日志：`backend=nexus repo=<repo> prefix=<prefix>
 | **D8** | fetcher 怎么列目录 | **Nexus REST search + 本地 path 前缀过滤**（2026-11-06 新增） | 实测 raw 仓库 `GET <dir>/` 返回 **404**（`text/html`，1582B 错误页，即使目录内有对象）→ `listing_style=html` 不可用，默认改 `rest-search`。接口 `GET /service/rest/v1/search/assets?repository=<repo>&q=<prefix>` 匿读 **200**、`continuationToken` 分页、写完才可见；但 **`q` 是分词 OR 匹配**（实测把无关的 `materials/.../cni_bin/bridge` 一起返回）→ 必须本地 `path.starts_with(prefix)` 二次过滤，否则会执行别人的任务。schema 相应新增 `repository` 字段 |
 | **D9** | fetcher 幂等依据 | **自持 ledger**（`<shared_storage>/.fetcher-state/<task_id>`），删除失败不静默（2026-11-06 新增） | daemon 消费完会删 `commands/<ts>_<id>.json`、`.processing` 也被删——本地「没有同名文件」不代表没执行过。靠文件名匹配会**每个 poll 周期重复执行一次**。顺序：写本地 → 记 ledger → DELETE 远端；DELETE 失败只记 error log，不许静默 |
 | **D10** | G5 的到期语义 | **`wait_timeout` 到期抛 `TaskLost`**（2026-11-06 新增） | 「被运维清掉」和「还在排队」不再靠猜：到期时 search 查 `results/status/commands` 三处，都无 → `TaskLost`（新增错误变体，进 `core/error.rs`）；只有 search 自身失败才继续报 Pending |
+| **D11** | 并发模型 | **V1 顺序模式**：client 一次只提交一个任务并阻塞等待该结果；fetcher 每轮最多拉 1 个 task；`poll_interval_secs` 默认 10s（2026-11-06 新增，用户拍板） | 现阶段允许「一次提交、等执行结果、顺序执行」。**省掉多套机制**：不需要 manifest 合并、不需要多 client 竞争协调、fetcher 不需要并发下载、client 不需要任务队列。需要并发？V2 再议——前提是顺序模式已跑通 |
+| **D12** | 双方契约 | **`prefix` 必填**，用 `<owner>/<project>` 稳定前缀；client/daemon 双方抄同一份 settings（2026-11-06 新增，用户拍板） | 上传点 `commands/`、结果点 `results/`/`status/`、发现点（fetcher 用 REST search 在 `<prefix>/commands/`）都由同一份 `[http]` 配置唯一决定；没有同一份配置，两端无法协作。详见 §4.6 |
 
 ---
 
 ## 10. 时序（评审通过后）
 
 ```
-Day 1  settings schema（含 repository / 两段超时）+ transport.is_http 分支 + `AuthError`/`TaskLost` 枚举 + 占位 HttpBridge（全部 Err）+ 框架单测
+Day 1  settings schema（含 repository / 两段超时 / **prefix 必填** 校验，见 D12）+ transport.is_http 分支 + `AuthError`/`TaskLost` 枚举 + 占位 HttpBridge（全部 Err）+ 框架单测
 Day 2  HTTP client 封装（**reqwest::blocking**，见 §4.2 注）+ submit_task/read_task 实现 + mock server 单测
 Day 3  query_status/get_result/write_*/remove_*（2xx 全谱 + 404 body 陷阱）+ 单测补全
-Day 4  fetcher 子命令（REST search listing + ledger）+ 对接真 Nexus tmp-raw 拉通
-Day 5  pusher 子命令 + E2E host→Nexus→target→result 完整链路 + 文档/README/AGENTS.md 更新
+Day 4  fetcher 子命令（REST search listing + ledger + **首轮只拉 1 个的顺序节流**，见 D11）+ 对接真 Nexus tmp-raw 拉通
+Day 5  pusher 子命令（PUT 成功即删本地，无 manifest，见 D11）+ E2E host→Nexus→target→result 完整链路 + 文档/README/AGENTS.md 更新
 Day 6  review-review，merge 到 main
 ```
 
-总工作量 ~3-4 天（含测试与文档）。D8/D9 必须在 Day 1 前落进 schema 和 fetcher 设计——否则 Day 4 的 E2E 会卡在「fetcher 拉不到任务」上。
+总工作量 ~3-4 天（含测试与文档）。**D8/D9/D11/D12 必须在 Day 1 前落进 schema 和 fetcher 设计**——否则 Day 4 的 E2E 会卡在「fetcher 拉不到任务」或「prefix 不匹配两端对不上」上。
 
 ---
 
