@@ -1,6 +1,6 @@
 # HTTP Bridge 设计方案（feature/http-bridge）
 
-> 设计稿（2026-11-03 评审通过，D1~D7 已锁定，见 §9）。目标是在不重写 daemon 的前提下，让 bifrost 通过「裸 HTTP PUT/GET」对接内网制品/对象存储（第一个落地目标：**Nexus Raw Hosted Repo**，如 `tmp-raw`）。
+> 设计稿（2026-11-03 评审通过，D1~D7 已锁定；**2026-11-06 按真实 Nexus tmp-raw 逐条实测复核：D3 重写，新增 D8/D9/D10**，见 §9 与附录 A）。目标是在不重写 daemon 的前提下，让 bifrost 通过「裸 HTTP PUT/GET」对接内网制品/对象存储（第一个落地目标：**Nexus Raw Hosted Repo**，如 `tmp-raw`）。
 
 ---
 
@@ -52,7 +52,7 @@ Bifrost 已有 2 种 transport：
 
 **目标机新增 2 个可选辅助进程**（脚本/小工具，不属于 core bifrost）：
 
-- **fetcher**：轮询 HTTP 存储的 `commands/` 目录（Listing 接口），新出现的 `.json` 任务文件 GET 下来写入本地 `shared_storage/commands/`。**Daemon 完全无感知**
+- **fetcher**：轮询 HTTP 存储的 `commands/` 前缀（listing 走 Nexus REST search，见 D8），新出现的 `.json` 任务文件 GET 下来写入本地 `shared_storage/commands/`。**Daemon 完全无感知**
 - **pusher**：监控本地 `shared_storage/results/`、`status/`，把新生成的文件 PUT 到 HTTP 存储对应路径
 
 > ✅ **D2 已锁定**：fetcher/pusher **纳入 bifrost 主体**，作为 `bifrost fetcher` / `bifrost pusher` 子命令（**不是 daemon 模块**）。理由：复用 settings 解析 + transport 抽象 + 现有日志/重试；单一二进制部署；独立 shell 脚本会引入第二套配置读取和错误处理，长期维护更贵。保持 daemon 纯净，`subcommand` 承载。
@@ -67,15 +67,17 @@ Bifrost 已有 2 种 transport：
   "transport": "http",
   "http": {
     "base_url": "https://nexus.zs.shaipower.online/repository/tmp-raw/uploads",
+    "repository": "tmp-raw",
     "auth": {
       "kind": "basic",
       "user": "tmp-raw",
       "password": "<REDACTED>"
     },
     "prefix": "team-lx/session-20261103",
-    "timeout_secs": 30,
+    "connect_timeout_secs": 10,
+    "read_timeout_secs": 30,
     "poll_interval_secs": 5,
-    "listing_style": "html"
+    "listing_style": "rest-search"
   },
   "client": { ... },
   "daemon": { ... }
@@ -87,14 +89,16 @@ Bifrost 已有 2 种 transport：
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `transport` | `"http"` | ✅ | 新增枚举值；与 `"shared"`/`"ssh"` 并列 |
-| `http.base_url` | `String` | ✅ | HTTP 存储的根，所有资源路径都是 `<base_url>/<prefix>/<subdir>/<filename>` |
+| `http.base_url` | `String` | ✅ | HTTP 存储的根，所有资源路径都是 `<base_url>/<prefix>/<subdir>/<filename>`。**必须 `https://`**——Basic Auth 明文，`http://` 在配置解析期直接报错 |
 | `http.auth.kind` | `"basic"` / `"none"` | ✅ | 现在只支持 basic；不填=匿名（如内网开放 GET） |
 | `http.auth.user`/`password` | `String` | kind=basic 必填 | Basic Auth 凭证 |
 | `http.prefix` | `String` | ❌ | URL 中的隔离前缀（多用户/多任务共存于一个 repo 时用） |
-| `http.timeout_secs` | `u64` | ❌ 默认 30 | 单次 PUT/GET 超时 |
+| `http.connect_timeout_secs` | `u64` | ❌ 默认 10 | TCP/TLS 建连超时 |
+| `http.read_timeout_secs` | `u64` | ❌ 默认 30 | **inactivity** 读超时（相邻两次收到数据的最大间隔），**不是整个请求的总超时** |
 | `http.poll_interval_secs` | `u64` | ❌ 默认 5 | fetcher 轮询间隔；client 查 status/result 的最小间隔 |
 | `http.atomic_upload` | `bool` | ❌ 默认 false | 默认单次 PUT 已足够（Nexus Raw 每个 PUT 落一个独立 blob，写完才可见，文件级原子性天然有）。开 true 则先 PUT `<file>.tmp` 再 PUT `<file>` 两步法，**裸 HTTP 没有 rename**，这种「原子」也只是约定，留给真正需要的后端 opt-in |
-| `http.listing_style` | `"html"` / `"none"` | ❌ 默认 `"html"` | fetcher 怎么列目录：Nexus Raw 支持 GET 目录返回 HTML；未来 S3 兼容要加 `"s3"` / `"json"` |
+| `http.repository` | `String` | listing_style=`rest-search` 必填 | Nexus 仓库名（如 `tmp-raw`）。search API 在 `/service/rest/v1/` 下，**从 `base_url` 推不出 repo 名**，必须单独给 |
+| `http.listing_style` | `"rest-search"` / `"html"` / `"none"` | ❌ 默认 `"rest-search"` | fetcher 怎么列目录：`rest-search` = Nexus REST search（实测可用）；`html` = GET 目录解析 `<a href>`（**Nexus raw 实测 404，只留给 nginx autoindex 类后端**）；未来 S3 兼容再加 `"s3"` / `"json"` |
 
 ### 与 SSH section 的对称性
 
@@ -103,7 +107,7 @@ Bifrost 已有 2 种 transport：
 | 必填字段 | `host`, `remote_dir` | `base_url` |
 | 鉴权 | 复用 ssh-agent/key | `auth.{kind,user,password}` |
 | 隔离 | `remote_dir` 天然用户目录 | `prefix` 显式 |
-| 超时 | `connect_timeout` | `timeout_secs` |
+| 超时 | `connect_timeout` | `connect_timeout_secs` + `read_timeout_secs`（inactivity） |
 | 默认 transport | shared | shared |
 | 未知 transport 行为 | serde 报错 | serde 报错 ✅ |
 
@@ -119,7 +123,7 @@ HTTP Bridge 与 SSH Bridge **完全对称**——都是「client 端在远端目
 
 ### 4.1 路径约定
 
-`<base_url>/<prefix>/<subdir>/<filename>`，其中 `<subdir>` ∈ `{commands, results, status, artifacts, cancel}`。
+`<base_url>/<prefix>/<subdir>/<filename>`，其中 `<subdir>` ∈ `{commands, results, status, cancel}`（都是 <1MB 的 JSON）。`artifacts/` **不走 HTTP 链路**，见 §7。
 
 例：`https://nexus.../uploads/team-lx/session-20261103/commands/20261103_184512_xxx-yyy.json`
 
@@ -127,14 +131,16 @@ HTTP Bridge 与 SSH Bridge **完全对称**——都是「client 端在远端目
 
 | 方法 | 实现 | 关键约束 |
 |---|---|---|
-| `submit_task` | 单次 `PUT <base>/commands/<task_file>`（默认，`atomic_upload=false`）。开 `atomic_upload=true` 则 `PUT <task_file>.tmp` → `PUT <task_file>`（两次 PUT，第二次作 rename 替代） | Nexus Raw 单 PUT 落独立 blob、写完才可见，原子性天然有（见 D1）；G4 Nexus 支持 PUT 覆盖 |
-| `query_status` | GET `<base>/results/<id>_result.json`；缺则 GET `<base>/status/<id>.json`；缺则 GET `<base>/commands/*<id>*.json`（需要 listing）兜底 Pending | 与 SshBridge 同优先级 |
-| `get_result` | GET + parse | 404 → `TaskNotFound`；其他 4xx/5xx → `ExecutionError` |
-| `list_pending_tasks` | GET `<base>/commands/`（HTML listing）正则提取 `*.json`；逐个 GET 解析 | 仅 fetcher 用；client 不会调 |
-| `read_task` | GET `<base>/commands/<candidate>.json`（也是 listing 辅助） | 同 SshBridge 用 `ls + grep id` |
+| `submit_task` | 单次 `PUT <base>/commands/<task_file>`（默认，`atomic_upload=false`）。开 `atomic_upload=true` 则 `PUT <task_file>.tmp` → `PUT <task_file>`（两次 PUT，第二次作 rename 替代） | Nexus Raw 单 PUT 落独立 blob、写完才可见，原子性天然有（见 D1）；PUT 新对象实测 **201**、覆盖同路径也 **201** → 判定一律 `status().is_success()`，别写 `== 200` |
+| `query_status` | GET `<base>/results/<id>_result.json`；缺则 GET `<base>/status/<id>.json`；缺则 REST search 在 `<prefix>/commands/` 下查 `<id>`（D8）兜底 Pending | 与 SshBridge 同优先级；三级都查不到且 `wait_timeout` 已到期 → `TaskLost`（D10） |
+| `get_result` | GET + parse | **先看 `status == 200` 再读 body**——Nexus 的 404 页带 1601B body 和 `Content-Length`，靠长度判存在会把「不存在」当成「存在但解析失败」；404 → `TaskNotFound`；其他 4xx/5xx → `ExecutionError` |
+| `list_pending_tasks` | Nexus REST search：`GET /service/rest/v1/search/assets?repository=<repo>&q=<prefix>/commands&continuationToken=...`，取 `items[].path`，**本地 `path.starts_with(prefix)` 二次过滤**（D8） | 仅 fetcher 用；client 不会调。`q` 是分词 OR 匹配，**不过滤会把别人的任务拉下来执行** |
+| `read_task` | 先 search 列出 `commands/` 前缀，再按 `<id>` 匹配对象 GET | 无 listing 时不能靠 HEAD 猜文件名：命令文件名带 `<ts>_` 前缀，光有 id 拼不出来 |
 | `write_result` / `write_status` | PUT `<subdir>/<filename>` | 仅 pusher 用；client 不会调 |
-| `remove_task` | HTTP `DELETE` | ⚠️ Nexus Raw 未必支持；遇到 405 就静默当作成功（见 D3） |
-| `cancel_task` | PUT `<base>/cancel/<id>.json` | 与 SshBridge 一致；fetcher 也要把这个拉到本地 |
+| `remove_task` | `DELETE <base>/.../<file>` | 2xx / 404 → 视为已不存在（成功）；401/403 → `AuthError`；405 → 后端不支持删除，记 warning 后依赖 ledger（D3/D9） |
+| `cancel_task` | PUT `<base>/cancel/<id>.json` | 与 SshBridge 一致；fetcher 拉到本地后**要 DELETE 远端 cancel 对象**（`Protocol::clear_cancel` 只清本地，否则远端永久堆积） |
+
+> **同步还是异步：用 `reqwest::blocking`（Day 2 前定死）**。`Bridge` trait 全是同步方法（`core/bridge.rs`），SshBridge 也是阻塞实现，按对称性选 blocking；**禁止在 tokio runtime 内调用**。HTTP bridge 只被 client CLI / fetcher / pusher 使用，daemon 永不选 http（G1），所以这个约束成立。
 
 ### 4.3 原子性策略（D1 已锁定）
 
@@ -150,23 +156,33 @@ HTTP Bridge 与 SSH Bridge **完全对称**——都是「client 端在远端目
 
 ### 4.4 Listing 协议（关键扩展点）
 
-`listing_style` 是未来加 S3 后端的扩展口：
+`listing_style` 是未来加 S3 后端的扩展口。**2026-11-06 实测推翻了「Nexus Raw 支持 GET 目录返回 HTML」这个前提**：目录里明明有对象，`GET <base>/commands/` 仍返回 **404**（`text/html`，1582B 错误页）。所以默认改成 REST search：
 
 | style | 实现 | 适配 |
 |---|---|---|
-| `html` | GET 目录，正则 `<a href="...">` 提取文件名（Nexus Raw 默认） | Nexus tmp-raw ✅ |
+| `rest-search` | `GET /service/rest/v1/search/assets?repository=<repo>&q=<prefix>`，读 `items[].path`，`continuationToken` 分页 | Nexus Raw ✅ **默认**（实测匿读 200） |
+| `html` | GET 目录，正则 `<a href="...">` 提取文件名 | ❌ Nexus raw 实测 404；只留给 nginx autoindex 类后端 |
 | `none` | 不支持 listing → `list_pending_tasks` 报错（fetcher 不可用） | 只 client→server 单向场景 |
 | （未来）`s3` | `<base>?list-type=2&prefix=...` XML 解析 | MinIO/AWS S3 |
 | （未来）`oss-json` | OSS ListObjects JSON | oss://apmm |
+
+用 REST search 当 listing 的三条硬约束（都实测过）：
+
+1. **`q` 是分词 OR 匹配，必须本地再过滤**：`q=review-probe/hermes-http-bridge` 除了本前缀对象，还返回了一条无关的 `materials/.../cni_bin/bridge`。因此拿到 `items[].path` 后必须 `path.starts_with("<prefix>/commands/")`，否则会**把别人的任务拉到本地执行**（安全事故，不是性能问题）。
+2. **对象写完才出现**：语义上比目录 listing 更安全，天然等价于「完整可见」——不会读到半截文件。
+3. **repo 名推不出来**：search API 在 `/service/rest/v1/` 下，`base_url` 里只有 `/repository/<repo>/...` 路径，所以 schema 必须单列 `repository` 字段。
 
 ### 4.5 错误分类与重试
 
 | 类别 | 处理 |
 |---|---|
 | 网络 / 5xx | 重试 3 次（指数退避 1s → 2s → 4s），抛 `ExecutionError` |
-| 404 | `TaskNotFound` 或 None（具体看方法） |
+| 超时 | 拆两段：`connect_timeout_secs` 建连、`read_timeout_secs` inactivity。**别用一个总超时**——单流实测 26 MiB/s，30s 总超时等于给大对象判 780MB 死刑 |
+| 2xx（含 201/204） | 一律成功（`status().is_success()`）。实测 PUT 新对象/覆盖都是 **201**、DELETE 是 **204** |
+| 404 | 读操作 → `TaskNotFound`；DELETE → 已不存在（成功）；**判存在必须先看状态码**（404 页也带 body） |
 | 401/403 | 立即抛 `AuthError`（settings 填错时早暴露）—— **新错误枚举值需要加进 `core/error.rs`** |
-| 405 (Method Not Allowed) | DELETE 时静默通过（Nexus tmp-raw 实测可能不允许 DELETE——任务文件被 fetcher 拉走后**不主动清理**，文档「随时可能被删除」正好接受这个语义，见 D3） |
+| 405 (Method Not Allowed) | 只在 DELETE 上有意义：后端真不支持删除 → 记 warning，幂等靠 ledger（D3/D9）。**不是「静默当成功」** |
+| `TaskLost` | `wait_timeout` 到期、且 search 在 `results/status/commands` 三处都查不到 → 抛 `TaskLost`（新增变体，D10），别继续报 Pending |
 
 ---
 
@@ -178,22 +194,28 @@ Fetcher/pusher 作为 bifrost 自身的 **`bifrost fetcher` / `bifrost pusher`**
 
 ```
 loop {
-    let remote_files = http.list("<base>/commands/");        // 同 §4.2 list_pending_tasks 定义（仅 fetcher 用）
-    let local_files = scan_local("commands/");                // 已有任务的 id 集合
-    for f in remote_files where f not in local_files {
-        let content = http.get(f);
+    let remote = http.list_pending();          // REST search + path 前缀过滤（§4.2 list_pending_tasks，D8）
+    let seen   = ledger.load();                // <shared_storage>/.fetcher-state/<task_id>（D9）
+    for f in remote where task_id(f) not in seen {
+        let content = http.get(f);             // 先判 200：404 页带 body
         atomic_write(local_commands_dir + f, content);
-        http.delete(f)?;        // 拿到就删；405 按成功处理（见 §4.5/D3），其他错误重试
+        ledger.mark(task_id(f));               // 先落 ledger，再动远端
+        match http.delete(f) {
+            ok(2xx) | 404 => {}
+            Err(e)        => log::error!("delete {f} failed: {e}"),   // 不静默，靠 ledger 兜
+        }
     }
     sleep(poll_interval_secs);
 }
 ```
 
-幂等性：靠**本地文件名匹配**（task_id 子串匹配，与 Protocol 同规则），重复拉取不会产生新任务。
+幂等性：**唯一依据是 ledger，不是本地文件名**。daemon 执行完会 `Protocol::remove_task` 删掉 `commands/<ts>_<id>.json`，`spawn_task` 末尾又删 `.processing`——任务终态后本地 `commands/` 什么都不剩。靠「本地有没有同名文件」判断，下一轮就会把同一任务再拉一遍、**再执行一次**（删除一旦不生效就是每个 poll 周期一次）。ledger 与远端对象做差，删除失败只影响清场、不影响幂等。
+
+fetcher 首轮必须打一行日志：`backend=nexus repo=<repo> prefix=<prefix> listing=rest-search first_round=<N>` —— 否则外场分不清「fetcher 没起」和「没任务」（D7 不做 heartbeat 的补偿）。拉到 `cancel/<id>.json` 写进本地后，同样 DELETE 远端对象。
 
 ### Pusher 行为
 
-对称：扫本地 `results/`、`status/`，本地有远端没有的，PUT 上去。
+对称：扫本地 `results/`、`status/`，本地有远端没有的，PUT 上去。差分靠本地记账（远端有 search 可查，但每轮全量列举比本地 mtime 扫描贵），只搬 `results/`、`status/`、`cancel/`，不搬 `artifacts/`。
 
 ### 部署形态
 
@@ -219,16 +241,18 @@ loop {
 | 工厂分支 | `transport.is_ssh()` → SshBridge | `transport.is_http()` → HttpBridge |
 | daemon 是否用 | ❌ 只 client | ❌ 只 client（fetcher 才用） |
 | 文件原子写 | tmp + mv（远程） | **单次 PUT**（默认；如需 tmp+rename 语义开 `atomic_upload`，见 D1） |
-| 错误类型 | 复用 `ExecutionError` / `TaskNotFound` | 新增 `AuthError`（401/403） |
-| Heartbeat | `heartbeat_age_secs()` 跑 remote shell | HTTP bridge **不支持** health（**D7 决策：不做**。fetcher/pusher 本身就是轮询循环，活性看日志时间戳 / pid 就够，heartbeat 文件只会让 fetcher 多一个角色要处理） |
+| 错误类型 | 复用 `ExecutionError` / `TaskNotFound` | 新增 `AuthError`（401/403）+ `TaskLost`（D10 到期未找到） |
+| Heartbeat | `heartbeat_age_secs()` 跑 remote shell | HTTP bridge **不支持** health（**D7 决策：不做**。fetcher/pusher 本身就是轮询循环，活性看日志时间戳 / pid 就够，heartbeat 文件只会让 fetcher 多一个角色要处理）。**补偿**：fetcher 首轮打 `backend/repo/prefix/listing_style + 首轮条数` 一行日志 |
 | `.processing` marker | 保留不删 | 同（fetcher 拉到本地后由 Protocol 管理） |
+| 列目录 | `ls + grep`（`ssh_bridge.rs:170/291`） | REST search + `path.starts_with` 过滤（D8） |
+| 幂等依据 | 远端文件仍在（无消费删除） | fetcher 自持 ledger `.fetcher-state/<task_id>`（D9） |
 
 ---
 
 ## 7. YAGNI 删除清单（明确不做）
 
 - ❌ S3 签名（v4 / presigned URL）—— 未来加，进入 `listing_style="s3"` / `auth.kind="aws-sigv4"`
-- ❌ Multipart upload（>100MB 分块）—— >1MB 的任务文件很少见，要的话传公网 storage 而不是 HTTP
+- ❌ Multipart upload（>100MB 分块）—— HTTP 链路只搬 `commands/results/status/cancel` 的 <1MB JSON；**`artifacts/` 不走这条链路**（`TaskResult.artifacts` 在 http 模式下不搬，要传日志/图片另走带宽通道；实测单流 26 MiB/s、4 并发 ≈111 MiB/s，是将来真要搬时的起点）
 - ❌ TLS 客户端证书 / mTLS —— 内网 HTTP Basic 够
 - ❌ 健康检查 (`heartbeat_age_secs`) —— **D7 决策：fetcher/pusher 活性看日志时间戳 / pid 就够**，不需要额外 heartbeat 文件
 - ❌ 加密 —— 内网明文 Basic Auth + HTTPS 已够；要加密就走 VPN/mTLS
@@ -240,18 +264,23 @@ loop {
 
 ### 单测（`src/core/http_bridge.rs` `#[cfg(test)]`）
 
-复用 SSH bridge 的 `local: true` 测试模式——**起本地 mock HTTP server**（用 `axum` 或 `tiny_http` 在单测里 spawn），把 `base_url` 指向 `http://127.0.0.1:<port>`。覆盖：
+复用 SSH bridge 的 `local: true` 测试模式——**起本地 mock HTTP server**（用 `axum` 或 `tiny_http` 在单测里 spawn），把 `base_url` 指向 `http://127.0.0.1:<port>`（https 强制校验对 loopback 放行，仅单测用）。覆盖：
 
 1. `submit_task` 默认单次 PUT（无 `.tmp` 中间态）；开 `atomic_upload=true` 时按 `.tmp → .json` 顺序两次 PUT
 2. `submit_task` + `read_task` round-trip
 3. `query_status` 三态分支（Completed/Running/Pending）
 4. `query_status` NotFound
 5. `get_result` 解析 + status string 归一化
-6. `remove_task` 405 静默通过
+6. `remove_task` 语义：204/200 → 成功、404 → 成功（已不存在）、401 → `AuthError`、405 → warning 且不阻塞
 7. Basic Auth header 正确编码
 8. URL 拼接：`prefix` 边界（空 / 有 / 含斜杠）
 9. 网络失败重试计数（用 mock 强制 500）
 10. Auth 失败（401）立即失败
+11. 404 响应**带 body + `Content-Length`** 时不被误判成「解析失败」
+12. 目录 GET 返回 404 时 `listing_style=html` 的失败路径（报错，不是静默空列表）
+13. 「任务已被消费、远端对象再次出现」→ 断言 ledger 命中、**不重复写入 commands/**
+14. `prefix` 含 `/`、空格、`#` 时的 URL 编码
+15. REST search 返回越界路径（`q` 分词误命中）时被本地前缀过滤掉
 
 ### E2E
 
@@ -270,29 +299,53 @@ loop {
 
 ---
 
-## 9. 评审决策（2026-11-03 锁定）
+## 9. 评审决策（2026-11-03 锁定 D1~D7；2026-11-06 实测复核后重写 D3、新增 D8~D10）
 
 | # | 决策 | 结论 | 备注 |
 |---|---|---|---|
 | **D1** | `atomic_upload` 默认值 | **false**（单次 PUT） | Nexus Raw 每个 PUT 落独立 blob、写完才可见，文件级原子性天然有；`.tmp → .json` 在 Raw 上不是 rename，只是两个 key，反而多一步 delete |
 | **D2** | fetcher/pusher 归属 | **进 bifrost 主体（Rust 子命令）** | 复用 settings 解析 + transport 抽象 + 日志/重试；单一二进制部署；shell 脚本会引入第二套配置读取和错误处理 |
-| **D3** | `remove_task` 在 HTTP 上的行为 | **405 静默通过** | 保持方案原默认；Nexus Raw 不保证稳定，不把「不可删」当错误 |
+| **D3** | `remove_task` 在 HTTP 上的行为 | **DELETE 照发，结果不影响任务成败**（2026-11-06 重写） | 实测 Nexus raw **支持** DELETE：删存在对象 **204**、再删 **404**、匿名 **401** → 「405 静默通过」的事实前提不成立。正确映射：2xx/404 → 视为已不存在；401/403 → `AuthError`；405 → 后端真不支持（记 warning）。**清场失败不是错误，幂等由 D9 的 ledger 保证** |
 | **D4** | 命名 `transport: "http"` | **保持** | 描述机制而非后端；S3 也是 HTTP，将来 `listing_style: "s3"` 正好嵌在 http 之下 |
 | **D5** | `[http]` 段预留 `auth.kind = "none"` | **预留** | 保持方案原默认（内网开放 GET 场景） |
 | **D6** | `password` 明文 + 文件 600 | **保持** | 保持方案原默认；与 ssh `password` 一致，不进 ENV |
 | **D7** | heartbeat/health | **不做** | fetcher/pusher 本身是轮询循环，活性看日志时间戳 / pid 就够；heartbeat 文件意味着第三个角色要处理它，YAGNI |
+| **D8** | fetcher 怎么列目录 | **Nexus REST search + 本地 path 前缀过滤**（2026-11-06 新增） | 实测 raw 仓库 `GET <dir>/` 返回 **404**（`text/html`，1582B 错误页，即使目录内有对象）→ `listing_style=html` 不可用，默认改 `rest-search`。接口 `GET /service/rest/v1/search/assets?repository=<repo>&q=<prefix>` 匿读 **200**、`continuationToken` 分页、写完才可见；但 **`q` 是分词 OR 匹配**（实测把无关的 `materials/.../cni_bin/bridge` 一起返回）→ 必须本地 `path.starts_with(prefix)` 二次过滤，否则会执行别人的任务。schema 相应新增 `repository` 字段 |
+| **D9** | fetcher 幂等依据 | **自持 ledger**（`<shared_storage>/.fetcher-state/<task_id>`），删除失败不静默（2026-11-06 新增） | daemon 消费完会删 `commands/<ts>_<id>.json`、`.processing` 也被删——本地「没有同名文件」不代表没执行过。靠文件名匹配会**每个 poll 周期重复执行一次**。顺序：写本地 → 记 ledger → DELETE 远端；DELETE 失败只记 error log，不许静默 |
+| **D10** | G5 的到期语义 | **`wait_timeout` 到期抛 `TaskLost`**（2026-11-06 新增） | 「被运维清掉」和「还在排队」不再靠猜：到期时 search 查 `results/status/commands` 三处，都无 → `TaskLost`（新增错误变体，进 `core/error.rs`）；只有 search 自身失败才继续报 Pending |
 
 ---
 
 ## 10. 时序（评审通过后）
 
 ```
-Day 1  实现 settings schema + transport.is_http 分支 + 占位 HttpBridge（全部 Err）+ 框架单测
-Day 2  HTTP client 封装（用 reqwest，blocking 或 async 待选）+ submit_task/read_task 实现 + mock server 单测
-Day 3  query_status/get_result/write_*/remove_* + 单测补全
-Day 4  fetcher 子命令 + 一次性 manual test 对接真 Nexus tmp-raw
+Day 1  settings schema（含 repository / 两段超时）+ transport.is_http 分支 + `AuthError`/`TaskLost` 枚举 + 占位 HttpBridge（全部 Err）+ 框架单测
+Day 2  HTTP client 封装（**reqwest::blocking**，见 §4.2 注）+ submit_task/read_task 实现 + mock server 单测
+Day 3  query_status/get_result/write_*/remove_*（2xx 全谱 + 404 body 陷阱）+ 单测补全
+Day 4  fetcher 子命令（REST search listing + ledger）+ 对接真 Nexus tmp-raw 拉通
 Day 5  pusher 子命令 + E2E host→Nexus→target→result 完整链路 + 文档/README/AGENTS.md 更新
 Day 6  review-review，merge 到 main
 ```
 
-总工作量 ~3-4 天（含测试与文档）。
+总工作量 ~3-4 天（含测试与文档）。D8/D9 必须在 Day 1 前落进 schema 和 fetcher 设计——否则 Day 4 的 E2E 会卡在「fetcher 拉不到任务」上。
+
+---
+
+## 附录 A. 后端能力实测记录（2026-11-06，Nexus `tmp-raw`）
+
+客户端本机 curl；目标 `https://nexus.zs.shaipower.online`（= 10.9.190.129，`/etc/hosts` 手配）；探测前缀 `review-probe/hermes-http-bridge/`（探测后已 DELETE，search 复核 0 残留）。
+
+| 探测 | 结果 | 结论 |
+|---|---|---|
+| `GET <base>/commands/`（目录内有对象） | **404**，`text/html`，body 1582B | 目录 listing 不存在（D8） |
+| `GET /service/rest/v1/search/assets?repository=tmp-raw&q=<prefix>` | **200**，匿读可用；返回本前缀对象 + 1 条无关 `materials/.../cni_bin/bridge` | 可当 listing，但必须本地前缀过滤 |
+| `PUT` 新对象（含认证） | **201** | 2xx 全谱判定 |
+| `PUT` 覆盖同路径 | **201**（不是 204） | 同上 |
+| 匿名 `GET` 已存在对象 / 匿名 `PUT` / 匿名 `DELETE` | 200 / **401** / **401** | 读可匿名，写必须账号 |
+| `DELETE` 存在对象 / 再删一次 / 匿名删 | **204** / **404** / 401 | D3 前提推翻 |
+| `HEAD` 存在对象 | 200 + 正确 `content-length` | 可做大小校验 |
+| `HEAD` 不存在对象 | 404 + `content-length: 1601` | 404 也带 body，判存在先看状态码 |
+| `Range: bytes=0-3` | **206** | 断点续传可用 |
+| 单流吞吐 / 4 并发 PUT | 26 MiB/s / ≈111 MiB/s | 只有大对象/artifacts 才需要并发 |
+
+认证事实核对：示例里的 `user: "tmp-raw"` 是**正确的账号名**（匿名 PUT 401、带它 201），不存在「拿 repo 名当账号」的问题。
