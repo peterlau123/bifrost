@@ -41,7 +41,13 @@ pub fn create_bridge(settings: &BifrostSettings) -> Result<Box<dyn Bridge>> {
         let http = settings.http.as_ref().ok_or_else(|| {
             BifrostError::ConfigInvalid("transport=http but no http section".into())
         })?;
-        Ok(Box::new(crate::core::http_bridge::HttpBridge::new(http)?))
+        if http.listing_style == crate::core::settings::ListingStyle::Oss {
+            Ok(Box::new(crate::core::aliyun_oss::client::OssBridge::new(
+                http,
+            )?))
+        } else {
+            Ok(Box::new(crate::core::http_bridge::HttpBridge::new(http)?))
+        }
     } else {
         Ok(Box::new(crate::core::protocol::Protocol::new(
             settings.shared_storage.clone(),
