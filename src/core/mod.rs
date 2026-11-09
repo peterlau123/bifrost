@@ -1,4 +1,5 @@
 // Core module - data models, error types, and bridge abstraction
+pub mod aliyun_oss;
 pub mod batch_tracker;
 pub mod bridge;
 pub mod error;

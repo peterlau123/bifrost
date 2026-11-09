@@ -128,6 +128,11 @@ pub enum ListingStyle {
     /// No listing support: fetcher cannot operate; client-only setups only.
     #[serde(rename = "none")]
     None,
+    /// Aliyun Object Storage Service — ListObjectsV2 XML, optional
+    /// continuation token, request signing per `src/core/aliyun_oss/sign.rs`.
+    /// Requires `[http.oss]` config section (bucket/region/endpoint).
+    #[serde(rename = "oss")]
+    Oss,
 }
 
 /// HTTP bridge configuration (used when `transport == "http"`).
@@ -186,6 +191,33 @@ pub struct HttpSection {
     /// How the fetcher enumerates task objects on the relay.
     #[serde(default = "default_listing_style")]
     pub listing_style: ListingStyle,
+    /// Aliyun OSS-specific configuration. **Required** iff
+    /// `listing_style == "oss"`. Contains bucket + region + optional
+    /// endpoint override. RAM auth comes from env vars / config files
+    /// (`credentials.rs`), never inline here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oss: Option<OssSection>,
+}
+
+/// Aliyun OSS-specific configuration block.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OssSection {
+    /// Bucket name (e.g. `apmm`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
+    /// Region label (e.g. `cn-beijing`). Default: cn-beijing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Optional endpoint override. Default derived as
+    /// `https://<bucket>.oss-<region>.aliyuncs.com`.
+    /// Use the `-internal.aliyuncs.com` hostname to talk to the OSS
+    /// intranet endpoint from a VPC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// RAM user label — purely informational so the operator can
+    /// cross-check the credentials file. Not used in signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_user: Option<String>,
 }
 
 // 手工 Default: 保证 Rust 代码里 HttpSection::default() 与 JSON 缺省值保持一致,
@@ -203,6 +235,7 @@ impl Default for HttpSection {
             poll_interval_secs: default_10secs(),
             atomic_upload: default_false(),
             listing_style: default_listing_style(),
+            oss: None,
         }
     }
 }
@@ -431,69 +464,92 @@ impl BifrostSettings {
                         .into(),
                 });
             }
-            let base_url = http.base_url.as_deref().unwrap_or("").trim();
-            if base_url.is_empty() {
-                return Err(SettingsError::Duration {
-                    value: "http.base_url".into(),
-                    reason: "transport=http requires 'http.base_url'".into(),
-                });
-            }
-            // Basic auth 明文 + https 强制 (loopback 单测例外).
-            let is_https = base_url.starts_with("https://");
-            let is_loopback_http = base_url.starts_with("http://127.0.0.1")
-                || base_url.starts_with("http://localhost");
-            if !is_https && !is_loopback_http {
-                return Err(SettingsError::Duration {
-                    value: "http.base_url".into(),
-                    reason: "http.base_url must be https:// (Basic auth cleartext); \
-                             loopback http://127.0.0.1 allowed only in tests"
+
+            // OSS path: validate sibling [oss] section instead of Nexus fields.
+            if http.listing_style == ListingStyle::Oss {
+                let oss = http.oss.as_ref().ok_or_else(|| SettingsError::Duration {
+                    value: "http.oss".into(),
+                    reason: "listing_style=oss requires an 'http.oss' config block \
+                             (bucket, region, optional endpoint)"
                         .into(),
-                });
-            }
-            // rest-search 必须能推出 repo 名.
-            if http.listing_style == ListingStyle::RestSearch {
-                let repo = http.repository.as_deref().unwrap_or("").trim();
-                if repo.is_empty() {
+                })?;
+                let bucket = oss.bucket.as_deref().unwrap_or("").trim();
+                if bucket.is_empty() {
                     return Err(SettingsError::Duration {
-                        value: "http.repository".into(),
-                        reason: "listing_style=rest-search requires 'http.repository' (search API \
-                             is on /service/rest/v1 and cannot be derived from base_url)"
+                        value: "http.oss.bucket".into(),
+                        reason: "listing_style=oss requires 'http.oss.bucket'".into(),
+                    });
+                }
+                // Skip the rest of Nexus-specific validation in OSS mode
+                // (no base_url, no repository, no auth.x — auth handled via
+                // env-vars / file; base_url replaced by oss.endpoint).
+            } else {
+                // Nexus raw / generic HTTP relay path (unchanged):
+                let base_url = http.base_url.as_deref().unwrap_or("").trim();
+                if base_url.is_empty() {
+                    return Err(SettingsError::Duration {
+                        value: "http.base_url".into(),
+                        reason: "transport=http requires 'http.base_url'".into(),
+                    });
+                }
+                // Basic auth 明文 + https 强制 (loopback 单测例外).
+                let is_https = base_url.starts_with("https://");
+                let is_loopback_http = base_url.starts_with("http://127.0.0.1")
+                    || base_url.starts_with("http://localhost");
+                if !is_https && !is_loopback_http {
+                    return Err(SettingsError::Duration {
+                        value: "http.base_url".into(),
+                        reason: "http.base_url must be https:// (Basic auth cleartext); \
+                                 loopback http://127.0.0.1 allowed only in tests"
                             .into(),
                     });
                 }
-                // D13: base_url 必须与 repository 名字一致——否则 search 查 A 库,
-                // PUT 进 B 库, 任务永远拉不到, 症状跟「fetcher 没起」一模一样.
-                // 校验仅作为配置期快速失败; loopback 测试 base_url 例外.
-                if is_https {
-                    let expect_marker = format!("/repository/{}/", repo);
-                    if !base_url.contains(&expect_marker) {
+                // rest-search 必须能推出 repo 名.
+                if http.listing_style == ListingStyle::RestSearch {
+                    let repo = http.repository.as_deref().unwrap_or("").trim();
+                    if repo.is_empty() {
                         return Err(SettingsError::Duration {
-                            value: "http.base_url".into(),
-                            reason: format!(
-                                "http.base_url must contain '{}' to match http.repository \
+                            value: "http.repository".into(),
+                            reason:
+                                "listing_style=rest-search requires 'http.repository' (search API \
+                             is on /service/rest/v1 and cannot be derived from base_url)"
+                                    .into(),
+                        });
+                    }
+                    // D13: base_url 必须与 repository 名字一致——否则 search 查 A 库,
+                    // PUT 进 B 库, 任务永远拉不到, 症状跟「fetcher 没起」一模一样.
+                    // 校验仅作为配置期快速失败; loopback 测试 base_url 例外.
+                    if is_https {
+                        let expect_marker = format!("/repository/{}/", repo);
+                        if !base_url.contains(&expect_marker) {
+                            return Err(SettingsError::Duration {
+                                value: "http.base_url".into(),
+                                reason: format!(
+                                    "http.base_url must contain '{}' to match http.repository \
                                  (otherwise search hits one repo, PUT lands in another)",
-                                expect_marker.trim_end_matches('/')
-                            ),
-                        });
+                                    expect_marker.trim_end_matches('/')
+                                ),
+                            });
+                        }
                     }
                 }
-            }
-            // basic 必须连 user+password 一起给.
-            if let Some(auth) = &http.auth {
-                if auth.kind == AuthKind::Basic {
-                    let u = auth.user.as_deref().unwrap_or("").trim();
-                    let p = auth.password.as_deref().unwrap_or("").trim();
-                    if u.is_empty() || p.is_empty() {
-                        return Err(SettingsError::Duration {
-                            value: "http.auth".into(),
-                            reason: "auth.kind=basic requires both 'http.auth.user' and \
-                                 'http.auth.password'"
-                                .into(),
-                        });
+                // basic 必须连 user+password 一起给.
+                if let Some(auth) = &http.auth {
+                    if auth.kind == AuthKind::Basic {
+                        let u = auth.user.as_deref().unwrap_or("").trim();
+                        let p = auth.password.as_deref().unwrap_or("").trim();
+                        if u.is_empty() || p.is_empty() {
+                            return Err(SettingsError::Duration {
+                                value: "http.auth".into(),
+                                reason: "http.auth.kind=basic requires both \
+                                 'http.auth.user' and 'http.auth.password'"
+                                    .into(),
+                            });
+                        }
                     }
                 }
-            }
-        }
+            } // closes `} else {` (Nexus-specific branch)
+        } // closes `if transport.is_http()`
         Ok(())
     }
 }
@@ -1014,5 +1070,52 @@ mod tests {
                     .to_string()
             });
         assert_eq!(q, "bifrost-http-bridge");
+    }
+
+    // ── OSS listing_style=oss validation (Day 1 OSS bridge) ──
+
+    fn oss_section(cfg: Option<&str>) -> OssSection {
+        OssSection {
+            bucket: cfg.map(str::to_string),
+            region: Some("cn-beijing".into()),
+            ram_user: Some("oss-cli".into()),
+            endpoint: None,
+        }
+    }
+
+    #[test]
+    fn http_oss_listing_style_requires_oss_section() {
+        let mut h = http_section_valid();
+        h.listing_style = ListingStyle::Oss;
+        h.oss = None;
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(err.contains("http.oss"), "OSS 配置缺失: {err}");
+    }
+
+    #[test]
+    fn http_oss_listing_style_requires_bucket() {
+        let mut h = http_section_valid();
+        h.listing_style = ListingStyle::Oss;
+        h.oss = Some(oss_section(None));
+        let err = http_settings(h).validate().unwrap_err().to_string();
+        assert!(err.contains("http.oss.bucket"), "bucket 必填: {err}");
+    }
+
+    #[test]
+    fn http_oss_listing_style_accepted_with_bucket() {
+        let mut h = http_section_valid();
+        h.listing_style = ListingStyle::Oss;
+        h.oss = Some(oss_section(Some("apmm")));
+        // OSS 不需要 base_url/repository/auth 字段 (走 OSS env/file 双路)
+        h.base_url = None;
+        h.repository = None;
+        h.auth = None;
+        assert!(http_settings(h).validate().is_ok());
+    }
+
+    #[test]
+    fn http_nexus_style_still_valid_after_oss_addition() {
+        // 已存在的 Nexus raw 配置仍然通过 — 反向兼容.
+        assert!(http_settings(http_section_valid()).validate().is_ok());
     }
 }

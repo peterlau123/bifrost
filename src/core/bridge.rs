@@ -88,7 +88,7 @@ pub trait Bridge: Send + Sync {
 
     /// Remove a task after it has been processed.
     ///
-    /// **HTTP transports**: prefer [`HttpBridge::delete_path`] which takes the
+    /// **HTTP transports**: prefer [`Bridge::delete_task_blob`] which takes the
     /// full remote filename (including any timestamp prefix). Some HTTP
     /// implementations encode additional data in the command filename
     /// (e.g. a `<ts>_` prefix preserved from `submit_task`), and an id-only
@@ -97,6 +97,28 @@ pub trait Bridge: Send + Sync {
     /// the caller expected. (Lesson learned Day 5; see
     /// docs/design/http-bridge-review.md §议题 1.)
     fn remove_task(&self, task_id: &Uuid) -> Result<()>;
+
+    /// Remote-relative filename for a command blob. Default impl yields
+    /// `<task_id>.json` (SSH transport convention). Override when your
+    /// transport encodes additional info into the filename (e.g. HTTP
+    /// transport's `<ts>_<id>.json` from `submit_task`). Caller passes
+    /// the result to [`Bridge::delete_task_blob`] so DELETE hits the
+    /// exact PUT destination.
+    fn task_blob_name(&self, task: &Task) -> String {
+        format!("{}.json", task.task_id)
+    }
+
+    /// Delete a command blob at `<subdir>/<task_blob_name(task)>`.
+    /// Default impl delegates to [`Bridge::remove_task`] which conflates
+    /// blob name with bare task id and is therefore transport-agnostic
+    /// only when `task_blob_name` is also overridden to be a pure
+    /// `<id>.json`. Transports like HttpBridge override this with a
+    /// direct DELETE on the filename produced by their overridden
+    /// `task_blob_name`.
+    fn delete_task_blob(&self, subdir: &str, task: &Task) -> Result<()> {
+        let _ = subdir; // subclasses that care use it; trait-default keeps SSH convention (subdir ignored).
+        self.remove_task(&task.task_id)
+    }
 
     // ── Both sides ────────────────────────────────────────────────
 
