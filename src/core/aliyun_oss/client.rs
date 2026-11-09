@@ -197,9 +197,7 @@ impl OssBridge {
     // ── HTTP verbs (signed) ───────────────────────────────────────
 
     fn http_put(&self, key: &str, body: Vec<u8>, content_type: &str) -> Result<StatusCode> {
-        let date = Utc::now().to_rfc2822();
-        // RFC 2822 emits "+0000"; OSS RFC 1123 requires "GMT".
-        let date_gmt = rfc2822_to_gmt(&date);
+        let date_gmt = oss_date();
         let url = self.object_url(key);
         let sts = string_to_sign(&SignRequest {
             verb: "PUT",
@@ -233,7 +231,7 @@ impl OssBridge {
     }
 
     fn http_get(&self, key: &str) -> Result<reqwest::blocking::Response> {
-        let date = rfc2822_to_gmt(&Utc::now().to_rfc2822());
+        let date = oss_date();
         let url = self.object_url(key);
         let auth = self.make_auth("GET", key, None, &date);
         self.client
@@ -245,7 +243,7 @@ impl OssBridge {
     }
 
     fn http_delete(&self, key: &str) -> Result<StatusCode> {
-        let date = rfc2822_to_gmt(&Utc::now().to_rfc2822());
+        let date = oss_date();
         let url = self.object_url(key);
         let auth = self.make_auth("DELETE", key, None, &date);
         let resp = self
@@ -266,7 +264,7 @@ impl OssBridge {
     /// delimiter so we see files AND dirs as flat keys — the bridge's
     /// `<prefix>/commands/...` namespace is flat by contract (D12).
     fn list_objects(&self, prefix: &str) -> Result<ListBucketResult> {
-        let date = rfc2822_to_gmt(&Utc::now().to_rfc2822());
+        let date = oss_date();
         // Bucket-level operation: URL is `<endpoint>/<encoded>?prefix=<enc>&max-keys=N`.
         // CanonicalizedResource must NOT include the `prefix` query because
         // it's not on the V1 sub-resource whitelist. So sign with empty key.
@@ -642,23 +640,17 @@ fn parse_task_status(s: &str) -> Option<TaskStatus> {
     })
 }
 
-/// Convert RFC 2822's numeric timezone (`+0000`) to RFC 1123's `GMT`
-/// literal — OSS accepts only the latter as the `Date` header.
-/// Input must be an RFC 2822 string ending in `+0000` (i.e. came from
-/// `Utc::now().to_rfc2822()`). The conversion is string-only; no
-/// normalisation of clock skew happens here.
-fn rfc2822_to_gmt(rfc: &str) -> String {
-    if let Some(prefix) = rfc.strip_suffix("+0000") {
-        // strip_suffix removes ONLY "+0000", leaving the original
-        // trailing space ("…:00 ") from RFC 2822's "…:00 +0000" layout.
-        // RFC 1123 wants "…:00 GMT" — same shape. Just paste "GMT".
-        format!("{}GMT", prefix)
-    } else {
-        // Best-effort fallback: pass through. Will likely fail the
-        // OSS Date-strictness check on the server but that's the same
-        // behaviour the caller would have had without this helper.
-        rfc.to_string()
-    }
+/// RFC 1123 `Day, DD Mon YYYY HH:MM:SS GMT` as OSS requires. chrono's
+/// `to_rfc2822()` uses an **unpadded** day-of-month by default
+/// (`"Mon, 9 Nov 2026 15:12:35 +0000"` — note the single-digit 9).
+/// Aliyun-OSS rejects that with `OSS authentication requires a valid
+/// Date. EC=0002-00000502`. Use `format!("{} GMT", ..)` over the
+/// RFC2822 layout with explicit `%d` to force the leading zero.
+///
+/// (p.s. %e also pads with a *space*, not 0 — `%d` is the only
+/// day-padding directive that yields "09".)
+fn oss_date() -> String {
+    Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()
 }
 
 /// Percent-encode a single path segment under RFC 3986 (unreserved set
@@ -805,21 +797,26 @@ mod tests {
     // ── date / rfc2822 to GMT ─────────────────────────────────────
 
     #[test]
-    fn rfc2822_to_gmt_swaps_plus0000_for_gmt() {
-        assert_eq!(
-            rfc2822_to_gmt("Mon, 09 Nov 2026 22:45:00 +0000"),
-            "Mon, 09 Nov 2026 22:45:00 GMT"
-        );
-        // chrono's `Utc::now().to_rfc2822()` emits "+0000" with a space
-        // in front; strip_suffix removes the "+0000" only, leaving the
-        // original trailing space; we paste "GMT" in its place, which
-        // yields exactly the RFC 1123 form OSS expects.
+    fn oss_date_emits_strict_rfc1123_with_leading_zero_day() {
+        // The whole reason this helper exists: a wrong day-padding was
+        // rejected by Aliyun with `OSS authentication requires a valid
+        // Date. EC=0002-00000502`. We assert structural invariants so
+        // any future "let's go back to to_rfc2822()" regression trips
+        // the test.
+        let d = oss_date();
+        // shape: "<3> <day> <mon> <year> <time> GMT". The day field is
+        // an RFC 1123 two-digit-day (zero-padded), not space/blank.
+        assert!(d.ends_with(" GMT"), "missing trailing GMT: {}", d);
+        let parts: Vec<&str> = d.splitn(4, ' ').collect();
+        assert_eq!(parts.len(), 4);
+        // Second token is the day; assert its length is 2 and it's
+        // a digit string.
+        let day = parts[1];
+        assert_eq!(day.len(), 2, "day must be zero-padded: {}", day);
+        assert!(day.chars().all(|c| c.is_ascii_digit()), "day not digits: {}", day);
     }
 
-    #[test]
-    fn rfc2822_to_gmt_passes_through_unrecognised_input() {
-        assert_eq!(rfc2822_to_gmt("already GMT"), "already GMT");
-    }
+
 
     // ── per-segment URL encoding ─────────────────────────────────
 
