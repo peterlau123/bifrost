@@ -154,10 +154,16 @@ pub struct HttpSection {
     /// it means "new namespace". Validated as non-empty by `validate()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
-    /// Search query (`q`) for Nexus REST search (D8). `q` is a tokenized OR
-    /// match, so feeding the full path pulls in unrelated objects; feed only
-    /// the most distinctive token. Default: last segment of `prefix` (e.g.
-    /// `bifrost-http-bridge` from `team-lx/bifrost-http-bridge`).
+    /// Search query (`q`) for Nexus REST search (D8). **STRONGLY recommend
+    /// setting this explicitly in production.** The default derives from the
+    /// last path segment of `prefix`, but Nexus search is **tokenized OR**:
+    /// `bifrost-http-bridge` searches as `bifrost OR http OR bridge`. A
+    /// generic token like `http` will pull in every "http"-related object
+    /// in the repo (112 hits in Ax's probe appendix B). Local
+    /// `path.starts_with(repo_prefix)` filtering still protects
+    /// correctness/security, but the search page count escalates badly
+    /// (cost/latency). Production deployments: always set this to the
+    /// most distinctive single token in your prefix. Caller-explicit wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing_query: Option<String>,
     /// TCP/TLS connect timeout (seconds).

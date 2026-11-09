@@ -87,6 +87,15 @@ pub trait Bridge: Send + Sync {
     ) -> Result<()>;
 
     /// Remove a task after it has been processed.
+    ///
+    /// **HTTP transports**: prefer [`HttpBridge::delete_path`] which takes the
+    /// full remote filename (including any timestamp prefix). Some HTTP
+    /// implementations encode additional data in the command filename
+    /// (e.g. a `<ts>_` prefix preserved from `submit_task`), and an id-only
+    /// URL misses the actual object — Nexus returns 404, which D3 treats
+    /// as "already gone" — producing a silent no-op rather than the cleanup
+    /// the caller expected. (Lesson learned Day 5; see
+    /// docs/design/http-bridge-review.md §议题 1.)
     fn remove_task(&self, task_id: &Uuid) -> Result<()>;
 
     // ── Both sides ────────────────────────────────────────────────

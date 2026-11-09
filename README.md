@@ -395,8 +395,10 @@ Bifrost HTTP Bridge 目前只支持**顺序提交**：
 
 - **daemon 完全不改**，仍只听本地 inotify——HTTP Bridge 只是「把文件搬到目标机本地」的中继
 - **不支持大文件**：`artifacts/` 不走 HTTP 链路，要传日志/图片另想办法（或先压缩放进任务 JSON）
+- **V1 不支持 cancel 通道**：`bifrost client cancel <id>` 在 http 模式下暂无效（fetcher 暂未把远端 `cancel/<id>.json` 拉到本地）。要取消请去 daemon 机器上编辑 `cancel/<id>.json` 后由 daemon 接管。V2 计划补齐对账单、删除远端 canceled blob 的完整通道
 - **tmp-raw 是临时仓库**，管理员可能随时清理——client 必须有 `wait_timeout`，到期抛 `TaskLost`
 - **REST search 有秒级~分钟级索引延迟**——任务提交到 fetcher 拉到的端到端延迟 ≈ `poll_interval_secs` + 索引延迟，通常 10-30s
+- **生产环境请显式配置 `listing_query`**：默认从 prefix 末段取值会触发 Nexus 的 tokenized OR 匹配（见 docs/design/http-bridge-review.md §议题 3）
 
 ### 完整文档
 
