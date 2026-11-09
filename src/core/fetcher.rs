@@ -69,6 +69,7 @@ use uuid::Uuid;
 
 use crate::core::bridge::Bridge;
 use crate::core::error::{BifrostError, Result};
+use crate::core::http_bridge::HttpBridge;
 use crate::core::models::Task;
 use crate::core::settings::HttpSection;
 
@@ -310,8 +311,8 @@ pub fn atomic_write(target: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// Returns the number of commands delivered (0 or 1 in D11 sequential
 /// mode) and the number of cancel records delivered (any).
-pub fn fetch_round<B: Bridge + ?Sized>(
-    bridge: &B,
+pub fn fetch_round(
+    bridge: &HttpBridge,
     ledger: &FetcherLedger,
     shared_storage: &Path,
     http_cfg: &HttpSection,
@@ -381,8 +382,11 @@ pub fn fetch_round<B: Bridge + ?Sized>(
             // execute it; we just won't trim the ledger entry. Next
             // round won't claim again so we don't duplicate-deliver.
         }
-        // Step 4: best-effort DELETE (D3/D9). Failure is logged only.
-        if let Err(e) = bridge.remove_task(&task.task_id) {
+        // Step 4: best-effort DELETE (D3/D9). Use delete_path so the timestamp
+        // prefix in the commands/<ts>_<id>.json filename is preserved —
+        // `Bridge::remove_task(id)` would not see the prefix and silently
+        // no-op (Nexus 404 on a different key = "already gone").
+        if let Err(e) = bridge.delete_path("commands", &task_filename_public(task)) {
             log::error!(
                 "fetcher: DELETE {} failed (ok per D3/D9): {e}",
                 task.task_id

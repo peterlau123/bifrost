@@ -139,6 +139,54 @@ daemon needs no changes.
 Requirements: passwordless `ssh <host>` from the client (`BatchMode=yes`). File contents travel over
 ssh stdin (`cat >` plus an atomic `mv`), and paths are shell-escaped.
 
+### HTTP bridge
+
+When the client and the daemon have **neither shared storage nor an SSH path** but can both reach a
+dumb HTTP relay (a Nexus Raw hosted repo, an S3-compatible bucket proxy, an nginx autoindex, ...)
+the HTTP bridge forwards tasks via bare `PUT`/`GET`. The daemon still listens on local storage; two
+auxiliary processes on the daemon side do the bridging:
+
+```bash
+# on the target machine, run daemon + fetcher + pusher in three processes
+bifrost server   --config /etc/bifrost/settings.json
+bifrost fetcher  --config /etc/bifrost/settings.json   # polls the relay for new commands/
+bifrost pusher   --config /etc/bifrost/settings.json   # ships local results/, status/, cancel/ upstream
+```
+
+The `[http]` section configures the relay. The same prefix MUST be used on both sides — it is the
+bilateral contract (D12):
+
+```json
+{
+  "shared_storage": "/var/bifrost/local",
+  "transport": "http",
+  "http": {
+    "base_url": "https://nexus.example.com/repository/tmp-raw/uploads",
+    "repository": "tmp-raw",
+    "auth":      { "kind": "basic", "user": "tmp-raw", "password": "<REAL_PASSWORD>" },
+    "prefix":    "team-lx/production",
+    "listing_query": "production",
+    "connect_timeout_secs": 10,
+    "read_timeout_secs":    30,
+    "poll_interval_secs":   10,
+    "atomic_upload": false,
+    "listing_style": "rest-search"
+  },
+  "client": { "poll_interval": "2s", "heartbeat_timeout": "3m", "wait_timeout": "12h" },
+  "daemon": { "max_concurrent": 1 }
+}
+```
+
+Then on the client side, `bifrost client submit --command 'hostname'` PUTs the task JSON to
+`<base_url>/<prefix>/commands/<ts>_<id>.json`. The fetcher finds it via Nexus REST search, drops a
+copy in local `commands/`, the daemon picks it up through inotify, executes, and writes results +
+status locally. The pusher uploads those to `<base_url>/<prefix>/results/` and `/status/`. The
+client polls those paths for completion (D14: with `listing_style=none`, the third-tier
+"still on relay?" fallback is skipped).
+
+For the full design, security model, and D1–D14 decisions see
+[docs/design/http-bridge.md](../design/http-bridge.md).
+
 ## Advanced usage
 
 ### Shared storage semantics

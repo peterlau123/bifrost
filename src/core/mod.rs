@@ -8,6 +8,7 @@ pub mod job;
 pub mod lock;
 pub mod models;
 pub mod protocol;
+pub mod pusher;
 pub mod sdnotify;
 pub mod ssh_bridge;
 pub use batch_tracker::BatchTracker;

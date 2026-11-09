@@ -203,6 +203,66 @@ impl HttpBridge {
         )
     }
 
+    /// Direct-PUT entry point for the pusher: forwards a local file to
+    /// `<base_url>/<prefix>/<subdir>/<filename>` as the request body.
+    /// Unlike `Bridge::write_result/write_status` (which rebuild JSON via
+    /// serde), this takes raw bytes so the pusher can stream a file
+    /// straight from disk without an intermediate parse step. Naming kept
+    /// symmetric with `object_url` for predictability.
+    ///
+    /// Success is the 2xx family (Nexus PUT new or update is 201, see
+    /// appendix A). 401/403 → AuthError; other 4xx/5xx → ExecutionError.
+    pub fn put_path(&self, subdir: &str, filename: &str, body: Vec<u8>) -> Result<()> {
+        let url = self.object_url(subdir, filename);
+        let status = self.http_put(&url, body)?;
+        if status.is_success() {
+            return Ok(());
+        }
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Err(BifrostError::AuthError(format!(
+                "put_path {}: {} (check http.auth)",
+                subdir,
+                status.as_u16()
+            )));
+        }
+        Err(BifrostError::ExecutionError(format!(
+            "put_path {}: {}",
+            subdir,
+            status.as_u16()
+        )))
+    }
+
+    /// Direct-DELETE entry point for the fetcher. Same D3 semantics as
+    /// `remove_task`, but takes the FULL filename (including the `<ts>_`
+    /// timestamp prefix baked into command filenames). The Bridge trait's
+    /// `remove_task(task_id)` only knows the UUID and cannot intercept the
+    /// timestamp always prepended by submit_task, so callers that already
+    /// know the concrete remote blob name (fetcher, pusher) MUST use this
+    /// entry point.
+    pub fn delete_path(&self, subdir: &str, filename: &str) -> Result<()> {
+        let url = self.object_url(subdir, filename);
+        let status = self.http_delete(&url)?;
+        match status {
+            s if s.is_success() => Ok(()),
+            StatusCode::NOT_FOUND => Ok(()), // D3: already gone
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(BifrostError::AuthError(
+                format!("delete_path {}", status.as_u16()),
+            )),
+            StatusCode::METHOD_NOT_ALLOWED => {
+                // D3/D9: warning + rely on the ledger, do not error out.
+                log::warn!(
+                    "delete_path: METHOD_NOT_ALLOWED on {}/{} — backend lacks DELETE; idempotency relies on fetcher ledger",
+                    subdir, filename
+                );
+                Ok(())
+            }
+            other => Err(BifrostError::ExecutionError(format!(
+                "delete_path: {}",
+                other.as_u16()
+            ))),
+        }
+    }
+
     /// URL for the Nexus REST search endpoint. `continuationToken` is the
     /// pagination cursor handed back in the previous page (D8).
     fn search_url(&self, continuation: Option<&str>) -> String {

@@ -76,6 +76,19 @@ enum Mode {
         #[arg(long)]
         once: bool,
     },
+
+    /// HTTP-bridge pusher: upload local results/ status/ cancel/ to the remote
+    /// relay and delete the local copy on confirmed PUT. Companion to the
+    /// fetcher on the target machine. Only meaningful when transport="http".
+    Pusher {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Run a single push round then exit (used by cron/manual probes).
+        #[arg(long)]
+        once: bool,
+    },
 }
 
 /// Server-side subcommands
@@ -245,13 +258,107 @@ fn main() {
         }
         Mode::McpServe { config } => handle_mcp_serve(config, storage, gpus),
         Mode::Fetcher { config, once } => handle_fetcher_mode(config, storage, once),
+        Mode::Pusher { config, once } => handle_pusher_mode(config, storage, once),
+    }
+}
+
+/// HTTP-bridge pusher loop (D11). Synchronous for the same reason as fetcher:
+/// HttpBridge uses reqwest::blocking. Walks results/ status/ cancel/ once per
+/// `http.poll_interval_secs`, PUTs each file RAW to the relay, removes locals
+/// on 2xx.
+fn handle_pusher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: bool) {
+    use bifrost::core::pusher::Pusher;
+    use bifrost::core::settings;
+    use std::time::Duration;
+
+    let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
+    let settings = match config {
+        Some(ref p) => match std::fs::read_to_string(p) {
+            Ok(c) => match serde_json::from_str::<settings::BifrostSettings>(&c) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Bad config {}: {e}", p.display());
+                    std::process::exit(2);
+                }
+            },
+            Err(e) => {
+                eprintln!("Cannot read config {}: {e}", p.display());
+                std::process::exit(2);
+            }
+        },
+        None => settings::load(),
+    };
+    let mut settings = settings;
+    if let Some(dir) = storage {
+        settings.shared_storage = dir;
+    }
+    if !settings.transport.is_http() {
+        eprintln!(
+            "error: transport is not 'http' (got {:?}); pusher only matters with http",
+            settings.transport
+        );
+        std::process::exit(2);
+    }
+    let Some(http_cfg) = settings.http.clone() else {
+        eprintln!("error: [http] section missing in settings");
+        std::process::exit(2);
+    };
+    let shared_storage = settings.shared_storage.clone();
+    let pusher = match Pusher::new(&shared_storage, &http_cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cannot create pusher: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if once {
+        match pusher.push_round() {
+            Ok(o) => {
+                println!(
+                    "pusher --once: results={} status={} cancel={} failed={}",
+                    o.results, o.status, o.cancel, o.failed
+                );
+                if o.failed > 0 {
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("pusher: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let interval = Duration::from_secs(http_cfg.poll_interval_secs);
+    log::info!(
+        "pusher: backend=nexus repo={} prefix={} poll_interval={:?}",
+        http_cfg.repository.as_deref().unwrap_or("?"),
+        http_cfg.prefix.as_deref().unwrap_or("?"),
+        interval
+    );
+    loop {
+        match pusher.push_round() {
+            Ok(o) => {
+                if o.results + o.status + o.cancel + o.failed > 0 {
+                    log::debug!(
+                        "pusher round: results={} status={} cancel={} failed={}",
+                        o.results,
+                        o.status,
+                        o.cancel,
+                        o.failed
+                    );
+                }
+            }
+            Err(e) => log::error!("pusher round: {e}"),
+        }
+        std::thread::sleep(interval);
     }
 }
 
 /// HTTP-bridge fetcher loop (D2/D9). Sync main like the client CLI — no tokio
 /// runtime because HttpBridge uses reqwest::blocking and panics in a runtime.
 fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: bool) {
-    use bifrost::core::bridge::create_bridge;
     use bifrost::core::fetcher::{plan_recovery, FetcherLedger, RecoveryAction};
     use bifrost::core::settings;
     use std::time::Duration;
@@ -292,8 +399,10 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
     };
 
     // Open the bridge (Daemon never selects http; only the fetcher/pusher
-    // and the client CLI use it, which is exactly what this binary is for).
-    let bridge = match create_bridge(&settings) {
+    // and the client CLI use it). Build HttpBridge directly rather than
+    // through the factory so fetch_round can use the delete_path helper
+    // (which preserves the timestamp prefix on command filenames).
+    let bridge = match bifrost::core::http_bridge::HttpBridge::new(&http_cfg) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("failed to create http bridge: {e}");
@@ -329,7 +438,7 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
 
     if once {
         // One round, then exit.
-        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
+        match bifrost::core::fetcher::fetch_round(&bridge, &ledger, &shared_storage, &http_cfg) {
             Ok(out) => {
                 println!(
                     "fetcher --once: remote_seen={} commands_delivered={} cancels_delivered={}",
@@ -352,7 +461,7 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
         interval
     );
     loop {
-        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
+        match bifrost::core::fetcher::fetch_round(&bridge, &ledger, &shared_storage, &http_cfg) {
             Ok(out) => {
                 log::debug!(
                     "fetcher round: remote_seen={} commands_delivered={} cancels_delivered={}",
