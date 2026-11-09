@@ -85,6 +85,11 @@ pub enum BifrostError {
     /// because the temp store was cleaned by ops (G5). (HTTP bridge, D10)
     #[error("Task lost: {0}")]
     TaskLost(Uuid),
+
+    /// XML response body parse failure (aliyun-oss ListObjectsV1 returns
+    /// XML — `quick_xml` de error bubbles through here).
+    #[error("XML parse error: {0}")]
+    XmlError(String),
 }
 
 /// Result type alias for Bifrost operations
