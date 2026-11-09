@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::core::aliyun_oss::credentials::OssCredentials;
 use crate::core::aliyun_oss::list::{parse_list_objects, ListBucketResult};
-use crate::core::aliyun_oss::sign::{sign_v1, SignRequest};
+use crate::core::aliyun_oss::sign::{sign_v1, string_to_sign, SignRequest};
 use crate::core::bridge::{Bridge, TaskStatusResponse};
 use crate::core::error::{BifrostError, Result};
 use crate::core::models::{Task, TaskResult, TaskStatus};
@@ -201,18 +201,34 @@ impl OssBridge {
         // RFC 2822 emits "+0000"; OSS RFC 1123 requires "GMT".
         let date_gmt = rfc2822_to_gmt(&date);
         let url = self.object_url(key);
+        let sts = string_to_sign(&SignRequest {
+            verb: "PUT",
+            content_md5: None,
+            content_type: Some(content_type),
+            date: &date_gmt,
+            oss_headers: &[],
+            resource: &self.resource(key),
+        });
         let auth = self.make_auth("PUT", key, Some(content_type), &date_gmt);
         let resp = self
             .client
             .put(&url)
-            .header("Date", date_gmt)
+            .header("Date", date_gmt.clone())
             .header("Authorization", auth)
             .header("Content-Type", content_type.to_string())
             .body(body)
             .send()
             .map_err(|e| BifrostError::ExecutionError(format!("oss PUT {key}: {e}")))?;
         let status = resp.status();
-        let _ = resp.text();
+        let body = resp.text().unwrap_or_default();
+        if !status.is_success() && std::env::var("OSS_DEBUG").is_ok() {
+            eprintln!("[oss-debug] PUT url={url}");
+            eprintln!("[oss-debug] Date={date_gmt}");
+            eprintln!("[oss-debug] resource={}", self.resource(key));
+            eprintln!("[oss-debug] StringToSign=\n---\n{sts}\n---");
+            eprintln!("[oss-debug] resp-body-preview: {}",
+                      body.chars().take(500).collect::<String>());
+        }
         Ok(status)
     }
 
