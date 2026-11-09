@@ -11,7 +11,27 @@
 //                works because we override `task_blob_name` to produce
 //                the same `<ts>_<id>.json` shape HttpBridge uses.
 //
-// Day-3 status (this commit):
+// Day-5 status (this commit, fix-up):
+//   - examples/oss_e2e_probe.rs runs against the real apmm bucket from
+//     mx002 (where Ax has the oss-cli AK/SK seeded at ~/.secure/oss-ak|sk).
+//     Probe wires OssBridge::new() production constructor directly (no
+//     test-only bypass) and confirms PUT → LIST → query_status → DELETE
+//     round-trip; AuthError on DELETE is expected because bundled oss-cli
+//     RAM user has ListObjects/GetObject/PutObject but NOT DeleteObject
+//     (per Ax's实战 note in the ossutil SKILL).
+//   - OSS_DEBUG=1 inserts a verbose dump (URL, Date, resource,
+//     StringToSign, response body preview) on any non-2xx PUT/GET path
+//     for live forensics; no-op by default.
+//
+//   **Date header padding bug** — chrono::Utc::now().to_rfc2822() emits
+//   an *unpadded* day-of-month: "Mon, 9 Nov 2026 …". Aliyun validates
+//   strictly and rejects the entire signature chain with
+//   `OSS authentication requires a valid Date. EC=0002-00000502`.
+//   Custom helpers in ToRFC 1123 via `format!("%a, %d %b %Y %H:%M:%S
+//   GMT")` are required. `rfc2822_to_gmt` removed; new `oss_date()` is
+//   the single source of the header value.
+//
+// Day-3 status (prior commit):
 //   - client.rs implements the full Bridge trait surface:
 //     * submit_task PUTs `<prefix>/commands/<ts>_<id>.json`
 //     * query_status three-tier probe: results/ → status/ → LIST commands/
@@ -47,13 +67,11 @@
 //     Config error surfaced from a transport parser.
 //
 // Remaining skeleton:
-//   - Day 4: fetcher trait generalization (default impls for SSH/HTTP
-//     filename derivation) was already done in Day 1, so all that's
-//     left is pulling the cancellation scanner forward (currently a
-//     stub at fetcher.rs::cancels_for_visible_tasks returns Ok(()) —
-//     OSS could trivially implement listing for `<prefix>/cancel/`).
-//   - Day 5: live e2e against apmm bucket (oss-cli fixture exists at
-//     /tmp/aliyun-skill/aliyun-oss/SKILL.md for environment notes).
+//   - Day 4 optional polish: cancellation scanner at
+//     fetcher.rs::cancels_for_visible_tasks is currently a stub; OSS
+//     could trivially implement it via LIST on `<prefix>/cancel/`. Not
+//     on Day 5's critical path — the fetcher per D11 sequential rarely
+//     needs to observe a cancel mid-task.
 
 pub mod client;
 pub mod credentials;
