@@ -62,6 +62,20 @@ enum Mode {
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
+
+    /// HTTP-bridge fetcher: pull task blobs from the remote relay into local
+    /// shared_storage. The daemon still only listens on local storage. Only
+    /// meaningful when `transport = "http"` (see docs/design/http-bridge.md).
+    Fetcher {
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Run a single fetch round + recovery pass then exit (used by
+        /// cron/manual recovery after a crash).
+        #[arg(long)]
+        once: bool,
+    },
 }
 
 /// Server-side subcommands
@@ -230,6 +244,128 @@ fn main() {
             std::process::exit(bifrost::core::warmup::run(&settings));
         }
         Mode::McpServe { config } => handle_mcp_serve(config, storage, gpus),
+        Mode::Fetcher { config, once } => handle_fetcher_mode(config, storage, once),
+    }
+}
+
+/// HTTP-bridge fetcher loop (D2/D9). Sync main like the client CLI — no tokio
+/// runtime because HttpBridge uses reqwest::blocking and panics in a runtime.
+fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: bool) {
+    use bifrost::core::bridge::create_bridge;
+    use bifrost::core::fetcher::{plan_recovery, FetcherLedger, RecoveryAction};
+    use bifrost::core::settings;
+    use std::time::Duration;
+
+    let config = config.or_else(|| std::env::var("BIFROST_CONFIG").ok().map(PathBuf::from));
+    let settings = match config {
+        Some(ref p) => match std::fs::read_to_string(p) {
+            Ok(c) => match serde_json::from_str::<settings::BifrostSettings>(&c) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Bad config {}: {e}", p.display());
+                    std::process::exit(2);
+                }
+            },
+            Err(e) => {
+                eprintln!("Cannot read config {}: {e}", p.display());
+                std::process::exit(2);
+            }
+        },
+        None => settings::load(),
+    };
+    let mut settings = settings;
+    if let Some(dir) = storage {
+        settings.shared_storage = dir;
+    }
+
+    if !settings.transport.is_http() {
+        eprintln!(
+            "error: transport is not 'http' (got {:?}); fetcher only makes sense with http",
+            settings.transport
+        );
+        std::process::exit(2);
+    }
+
+    let Some(http_cfg) = settings.http.clone() else {
+        eprintln!("error: [http] section missing in settings");
+        std::process::exit(2);
+    };
+
+    // Open the bridge (Daemon never selects http; only the fetcher/pusher
+    // and the client CLI use it, which is exactly what this binary is for).
+    let bridge = match create_bridge(&settings) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("failed to create http bridge: {e}");
+            std::process::exit(1);
+        }
+    };
+    let shared_storage = settings.shared_storage.clone();
+    let ledger = match FetcherLedger::open(&shared_storage) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("cannot open fetcher ledger: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Always run recovery first (cheap when nothing to do).
+    match plan_recovery(&ledger, &shared_storage) {
+        Ok(plan) if plan.is_empty() => {}
+        Ok(plan) => {
+            let count = plan
+                .iter()
+                .filter(|(_, a)| matches!(a, RecoveryAction::Redeliver))
+                .count();
+            eprintln!(
+                "fetcher recovery: {} claimed-but-undelivered tasks queued for redeliver check",
+                count
+            );
+        }
+        Err(e) => {
+            log::warn!("fetcher: recovery plan: {e}");
+        }
+    }
+
+    if once {
+        // One round, then exit.
+        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
+            Ok(out) => {
+                println!(
+                    "fetcher --once: remote_seen={} commands_delivered={} cancels_delivered={}",
+                    out.remote_seen, out.commands_delivered, out.cancels_delivered
+                );
+            }
+            Err(e) => {
+                eprintln!("fetcher: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let interval = Duration::from_secs(http_cfg.poll_interval_secs);
+    log::info!(
+        "fetcher: backend=nexus repo={} prefix={} poll_interval={:?}",
+        http_cfg.repository.as_deref().unwrap_or("?"),
+        http_cfg.prefix.as_deref().unwrap_or("?"),
+        interval
+    );
+    loop {
+        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
+            Ok(out) => {
+                log::debug!(
+                    "fetcher round: remote_seen={} commands_delivered={} cancels_delivered={}",
+                    out.remote_seen,
+                    out.commands_delivered,
+                    out.cancels_delivered
+                );
+            }
+            Err(e) => {
+                log::error!("fetcher round: {e}");
+            }
+        }
+        std::thread::sleep(interval);
     }
 }
 
