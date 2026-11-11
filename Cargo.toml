@@ -26,8 +26,16 @@ humantime = "2.1"
 shell-words = "1.0"
 ctrlc = "3.4"
 libc = "0.2"
+log = "0.4"
 rmcp = { version = "3.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2"
+
+# HTTP bridge (Day 2; docs/design/http-bridge.md §4.2):
+# blocking (the Bridge trait is sync throughout) + rustls (no system OpenSSL
+# dependency, works in static musl builds). default-features=false drops
+# the default tokio/native-tls chain we don't need. `json` feature is needed
+# for typed response parsing of the Nexus search asset listing (D8).
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], default-features = false }
 
 # TODO: SQLite integration (task history persistence)
 

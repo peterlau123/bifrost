@@ -257,6 +257,7 @@ mod tests {
             shared_storage: tmp.path().to_path_buf(),
             transport: crate::core::settings::Transport::Shared,
             ssh: None,
+            http: None,
             client: crate::core::settings::ClientSection {
                 poll_interval: None,
                 heartbeat_timeout: Some(std::time::Duration::from_secs(180)),

@@ -28,6 +28,7 @@ Bifrost is a Rust framework for executing commands on offline / air-gapped machi
   - [End-to-end verification](#end-to-end-verification)
 - [Configuration](#configuration)
 - [Basic Usage](#basic-usage)
+- [HTTP Bridge (Nexus Raw)](#http-bridge-nexus-raw)
 - [Release and Update](#release-and-update)
 - [MCP Server (Agent Integration)](#mcp-server-agent-integration)
 - [Development](#development)
@@ -326,6 +327,83 @@ the advanced reference.
 
 Advanced operations — cleanup, task types and priority, retries, pytest containers, SSH transport —
 are documented in [docs/developer/advanced_usage.md](docs/developer/advanced_usage.md).
+
+## HTTP Bridge (Nexus Raw)
+
+```bash
+# ---- 客户端示例（机器 A，能联网） ----
+bifrost client submit --command "hostname" --timeout 60
+
+# ---- 目标机示例（机器 B，离线，跑着 daemon + fetcher + pusher 三进程） ----
+bifrost server &     # daemon (transport=shared)
+bifrost fetcher &    # 从 Nexus 拉 commands/ 到本地，DELETE 远端
+bifrost pusher &     # 把本地 results/、status/ 推到 Nexus
+```
+
+双方不需要 SSH 互通、也不需要 GPFS/NFS——所有任务/结果文件都通过 Nexus 的 `tmp-raw` 裸 PUT/GET 中转。
+
+### 契约
+
+> **核心约定：双方抄同一份 `[http]` 配置**
+
+#### 共享 settings 模板（client 和 daemon **必须一致**）
+
+`~/.bifrost/settings.json`（填上真实密码、确定一个稳定 `prefix`）：
+
+```json
+{
+  "transport": "http",
+  "shared_storage": "/var/bifrost/local",
+  "http": {
+    "base_url": "https://nexus.zs.shaipower.online/repository/tmp-raw/uploads",
+    "repository": "tmp-raw",
+    "auth": { "kind": "basic", "user": "tmp-raw", "password": "<REAL_PASSWORD>" },
+    "prefix": "team-lx/bifrost-http-bridge",
+    "listing_query": "bifrost-http-bridge",
+    "connect_timeout_secs": 10,
+    "read_timeout_secs": 30,
+    "poll_interval_secs": 10,
+    "listing_style": "rest-search"
+  },
+  "client": { "poll_interval": "2s", "heartbeat_timeout": "180s" },
+  "daemon": { "task_timeout": "300s", "max_concurrent": 1 }
+}
+```
+
+这四条路径规则双方都用得上：
+
+| # | 方向 | 路径 | 说明 |
+|---|---|---|---|
+| 1 | **client → server**：任务上传点 | `<base_url>/<prefix>/commands/<ts>_<task_id>.json` | client `bifrost client submit` PUT，每次新增不覆盖 |
+| 2 | **server → client**：结果落点 | `<base_url>/<prefix>/results/<task_id>_result.json` | pusher 监测本地 `results/` 后 PUT；client GET |
+| 3 | **server → client**：状态心跳 | `<base_url>/<prefix>/status/<task_id>.json` | pusher 监测本地 `status/` 后 PUT |
+| 4 | **取消通道** | `<base_url>/<prefix>/cancel/<task_id>.json` | client PUT；fetcher 拉到本地后 DELETE 远端 |
+
+`prefix` 命名约定 **`<owner>/<project>`**（例 `team-lx/bifrost-http-bridge`），**不要带时间戳**——一旦改变就把它视作「换 namespace 重新开始」，旧队列不再接收。
+
+### 顺序模式（V1，D11 决策）
+
+Bifrost HTTP Bridge 目前只支持**顺序提交**：
+
+- 一次只能 `submit` **一个**任务；`bifrost client` 会**阻塞**直到结果回来（或 `wait_timeout` 到期抛 `TaskLost`）
+- fetcher 每轮**最多拉 1 个**任务到本地，跟随 daemon 的实际执行节奏
+- pusher 把本地结果 PUT 到远端后**立即删除本地**，无需远端 manifest
+
+需要并发？先把顺序模式跑通，再决定要不要 V2。
+
+### 限制
+
+- **daemon 完全不改**，仍只听本地 inotify——HTTP Bridge 只是「把文件搬到目标机本地」的中继
+- **不支持大文件**：`artifacts/` 不走 HTTP 链路，要传日志/图片另想办法（或先压缩放进任务 JSON）
+- **V1 不支持 cancel 通道**：`bifrost client cancel <id>` 在 http 模式下暂无效（fetcher 暂未把远端 `cancel/<id>.json` 拉到本地）。要取消请去 daemon 机器上编辑 `cancel/<id>.json` 后由 daemon 接管。V2 计划补齐对账单、删除远端 canceled blob 的完整通道
+- **tmp-raw 是临时仓库**，管理员可能随时清理——client 必须有 `wait_timeout`，到期抛 `TaskLost`
+- **REST search 有秒级~分钟级索引延迟**——任务提交到 fetcher 拉到的端到端延迟 ≈ `poll_interval_secs` + 索引延迟，通常 10-30s
+- **生产环境请显式配置 `listing_query`**：默认从 prefix 末段取值会触发 Nexus 的 tokenized OR 匹配（见 docs/design/http-bridge-review.md §议题 3）
+
+### 完整文档
+
+- [设计与契约详情 (docs/design/http-bridge.md)](docs/design/http-bridge.md) — D1~D12 决策、实测矩阵、双方契约的 4.6 节
+- [Advanced Usage](docs/developer/advanced_usage.md) — `transport: "http"` 的完整字段表
 
 ## Release and Update
 
