@@ -37,6 +37,15 @@ schemars = "1.2"
 # for typed response parsing of the Nexus search asset listing (D8).
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], default-features = false }
 
+# Aliyun OSS bridge (Day 2; mod.rs skeleton):
+#   hmac + sha1 → Signature V1 HMAC-SHA1 of CanonicalizedString
+#   base64      → Authorization header value encoding
+#   quick-xml   → ListObjects v1 XML deserialization (serde feature)
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+quick-xml = { version = "0.36", features = ["serialize"] }
+
 # TODO: SQLite integration (task history persistence)
 
 [[bin]]

@@ -715,6 +715,19 @@ impl Bridge for HttpBridge {
             )))
         }
     }
+
+    /// HTTP Bridge override: preserve the `<ts>_<id>.json` filename
+    /// returned by submit_task, so DELETE targets the exact PUTted
+    /// resource. The default trait impl falls back to remove_task(id)
+    /// which would DELETE a non-existent key and silently return Ok
+    /// under the D3-404-ok rule.
+    fn task_blob_name(&self, task: &Task) -> String {
+        task_filename(task)
+    }
+
+    fn delete_task_blob(&self, subdir: &str, task: &Task) -> Result<()> {
+        self.delete_path(subdir, &task_filename(task))
+    }
 }
 
 impl HttpBridge {

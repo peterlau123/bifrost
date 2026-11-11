@@ -398,11 +398,11 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
         std::process::exit(2);
     };
 
-    // Open the bridge (Daemon never selects http; only the fetcher/pusher
-    // and the client CLI use it). Build HttpBridge directly rather than
-    // through the factory so fetch_round can use the delete_path helper
-    // (which preserves the timestamp prefix on command filenames).
-    let bridge = match bifrost::core::http_bridge::HttpBridge::new(&http_cfg) {
+    // Open the bridge via the shared factory. fetch_round now takes
+    // `&dyn Bridge` directly and uses the trait's default-helper overrides
+    // (`task_blob_name` / `delete_task_blob`) so the right filename pattern
+    // is used per transport (HTTP keeps `<ts>_<id>.json`, SSH keeps `<id>.json`).
+    let bridge = match bifrost::core::bridge::create_bridge(&settings) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("failed to create http bridge: {e}");
@@ -438,7 +438,7 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
 
     if once {
         // One round, then exit.
-        match bifrost::core::fetcher::fetch_round(&bridge, &ledger, &shared_storage, &http_cfg) {
+        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
             Ok(out) => {
                 println!(
                     "fetcher --once: remote_seen={} commands_delivered={} cancels_delivered={}",
@@ -461,7 +461,7 @@ fn handle_fetcher_mode(config: Option<PathBuf>, storage: Option<PathBuf>, once: 
         interval
     );
     loop {
-        match bifrost::core::fetcher::fetch_round(&bridge, &ledger, &shared_storage, &http_cfg) {
+        match bifrost::core::fetcher::fetch_round(&*bridge, &ledger, &shared_storage, &http_cfg) {
             Ok(out) => {
                 log::debug!(
                     "fetcher round: remote_seen={} commands_delivered={} cancels_delivered={}",
