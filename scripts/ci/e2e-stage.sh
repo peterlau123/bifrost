@@ -1,7 +1,8 @@
 #!/bin/bash
 # e2e-stage.sh —— 流水线第 2 阶段：工具链 → release 构建 → 6 个 e2e 场景
 #
-# 同样合成一个脚本的原因：Gitee Go 每条 command 是独立 shell，PATH/工具链状态不跨命令。
+# 合成一个脚本（同 gates.sh）：让 toolchain.sh 装的 stable + PATH 调整
+# 在同一 shell 内对后续步骤生效，避免分隔 steps 各自起新 shell 导致状态不传递。
 #
 # 用法: bash scripts/ci/e2e-stage.sh
 set -euo pipefail

@@ -1,11 +1,12 @@
 #!/bin/bash
 # toolchain.sh —— 保证构建机上的 Rust 足够新（流水线用）
 #
-# 为什么需要：Gitee Go 的 build@rust 插件版本偏旧（生成模板里是 1.69），而
-#   - bifrost 的依赖（rmcp 3 / schemars 1.x）需要更新的 stable
-#   - Cargo.lock 是 version 4（cargo >= 1.78 才认识），1.69 连 lock 都读不了，
+# 为什么需要：
+#   - bifrost 的依赖（rmcp 3 / schemars 1.x）需要较新的 stable
+#   - Cargo.lock 是 version 4（cargo >= 1.78 才认识），旧 cargo 连 lock 都读不了，
 #     会直接 "failed to parse lock file ... perhaps Cargo needs to be updated?"
-# 这里先探测，不够就用 rustup 装一份 stable；装完**硬校验**版本，不达标就红。
+#   构建镜像自带的 Rust 可能偏旧；这里先探测，不够就用 rustup 装一份 stable；
+#   装完**硬校验**版本，不达标就红。
 #
 # 用法: bash scripts/ci/toolchain.sh [--min 1.85]
 #       RUST_MIN_VERSION=1.85 bash scripts/ci/toolchain.sh

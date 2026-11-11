@@ -7,7 +7,7 @@ name: CI
 #   - 所有 pull_request
 #   - release.yml 通过 workflow_call 复用同一套门禁
 #
-# 构建逻辑不写在这里，统一走 scripts/ci/*.sh（与本地、Gitee 共用同一份实现）：
+# 构建逻辑不写在这里，统一走 scripts/ci/*.sh（与本地共用同一份实现）：
 #   scripts/ci/gates.sh      环境诊断 → 工具链 → fmt → clippy → cargo test --all
 #   scripts/ci/e2e-stage.sh  工具链 → release 构建 → tests/e2e/run_all.py 的 6 个场景
 

@@ -1,9 +1,8 @@
 #!/bin/bash
 # dist-stage.sh —— 流水线第 3 阶段：工具链 → 按分支通道打包/发布
 #
-# 同样合成一个脚本的原因：Gitee Go 每条 command 是独立 shell，
-# toolchain.sh 装的 rust 1.6x→stable 的 PATH 变化不会带到下一条命令，
-# 结果 release.sh 里的 cargo 还是插件自带的 1.69（读不了 Cargo.lock v4）。
+# 合成一个脚本（同 gates.sh）：让 toolchain.sh 装的 stable + PATH 调整
+# 在同一 shell 内对 release.sh 里的 cargo 生效，避免 PATH 不传递导致旧版 cargo。
 #
 # 用法: bash scripts/ci/dist-stage.sh
 set -euo pipefail

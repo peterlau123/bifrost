@@ -244,5 +244,5 @@ bifrost warmup --storage <storage>
 - **不要在目标机 `cargo build`** —— 发行包就是为免编译准备的；除非用户明确要求改代码并验证
 - **不要自动执行 server 侧 sudo 安装** —— 打印命令让用户执行；systemd 和 `/etc` 的改动必须由用户确认
 - **不要覆盖已有的 `settings.json`** —— 里面可能是另一套集群的路径；用 `--force` 前先备份
-- **不要把 GitHub 当唯一源** —— 内网/气隙环境用共享盘或离线介质；Gitee 镜像可作备选
+- **不要把 GitHub 当唯一源** —— 内网/气隙环境用共享盘或离线介质
 - **不要动 `/etc/bifrost/settings.json`**（daemon 侧配置），那是 server 的，与 MCP 客户端无关

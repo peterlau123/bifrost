@@ -75,7 +75,6 @@ jobs:
       - name: Package & publish (channel decided by branch)
         env:
           GH_TOKEN: ${{ github.token }}
-          BIFROST_PUBLISHER: github
           BIFROST_BRANCH: ${{ github.ref_name }}
           BIFROST_REF: ${{ github.sha }}
         run: bash scripts/ci/dist-stage.sh
